@@ -1211,6 +1211,14 @@ pub struct RemoteAction {
     pub step: RemoteStep,
 }
 
+impl RemoteAction {
+    /// The sequence number of a step that answers no action of the client: nobody waits
+    /// for it, and the region that takes it sends no `RemoteDone`. A client's own are
+    /// never negative (the edge disconnects a client that sends one, as the game's
+    /// `ackBlockChangesUpTo` does).
+    pub const UNANSWERED: i32 = i32::MIN;
+}
+
 /// The next step of a [`RemoteAction`]. The player's region has found the player to be
 /// within reach and, for placing, to hold the block.
 ///
@@ -1255,13 +1263,32 @@ pub enum RemoteStep {
     /// in the off hand (a flower into a pot) being a difference to mend when they matter.
     /// Added at the end, so that what is stored of remote actions reads as it did.
     OffHandOn { click: Click },
+    /// A survival player's break of the block at `position` (V2): the region that holds
+    /// it breaks it as `ServerPlayerGameMode.destroyBlock` does, if it is still the block
+    /// `expected` (`same_block`: a lit redstone ore or a grown crop is the same block), and
+    /// drops it by its table with `tool`, the stack the player held before the break wore
+    /// it. The wear is the player's region's, and so is what `canDestroyBlock` and the mode
+    /// forbid. `sneaking` is the breaker's, for the vibration their entity (the action's)
+    /// is the source of.
+    BreakWith {
+        position: BlockPos,
+        expected: BlockState,
+        tool: Option<ItemStack>,
+        sneaking: bool,
+    },
+    /// `BlockState.attack` of the block at `position` by a player who began to dig it
+    /// (START): a note block plays, redstone ore lights. It answers no action
+    /// ([`RemoteAction::UNANSWERED`]).
+    Attack { position: BlockPos },
 }
 
 impl RemoteStep {
     /// The block this step is about: the region that has it is the one to take the step.
     pub fn concerns(&self) -> BlockPos {
         match self {
-            Self::Break { position } => *position,
+            Self::Break { position }
+            | Self::BreakWith { position, .. }
+            | Self::Attack { position } => *position,
             Self::PlaceAgainst { against, .. } => *against,
             Self::Place { target, .. } => *target,
             Self::UseOn { click } | Self::OffHandOn { click } => click.position,

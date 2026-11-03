@@ -19,7 +19,7 @@ After M3 the owner asked for two pieces of work as milestones of their own
 (2026-10-08): every service with several replicas, and terrain generation. Both have
 agreed plans, below.
 
-## Where the work stands (2026-11-02)
+## Where the work stands (2026-11-03)
 
 This section is the current state; the sections after it are the history of how it
 came about, with what was measured on the way.
@@ -650,7 +650,20 @@ attributes; an operator changes a player's mode and gives them items
 (`clustine gamemode`, `clustine give`, or the same lines typed into the single binary).
 V2 (breaking) has its data (hardness, the items' `tool` component), loot that reads the
 tool, and the attributes a player's equipment gives (Efficiency, Aqua Affinity, armour)
-told to the client; the digging itself is next.
+told to the client; a survival player digs as the game's (the progress from the tool,
+its enchantments, effects, water and the ground; the cracks the others see; drops by
+the loot table with the tool; the tool's wear), and across a line too: the player's
+region wears the tool and the region that holds the block breaks it with the tool and
+drops it. Crafting and menus (V3) are next.
+
+**What to try with a real client** (survival digging, since 2026-11-03): start the
+server (`cargo run --release -p clustine -- --pin 4 --reshape by-hand` puts a fixed
+boundary at x = 64), join, and type `gamemode <you> survival` and
+`give <you> iron_pickaxe` into the server's terminal. Dig dirt by hand, stone with the
+pickaxe (it should take as long as in the game, with the cracks and the pickaxe's wear
+in its bar), and stone by hand (slow, no drop); a second player should see the cracks.
+Dig the same blocks on the other side of x = 64 while standing on this side: the same
+time, the same drop, the same wear, and no flicker of the block.
 
 **What to try with a real client** (the End, since 2026-10-31): start a new world
 (`cargo run --release -p clustine`; a world made before is refused), find a stronghold

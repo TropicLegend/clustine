@@ -36,8 +36,9 @@
 //! - **The break** (`destroyBlock @0-273`): the held item may forbid it (a debug stick),
 //!   the block goes (`playerWillDestroy`, `removeBlock`), the held tool wears where the
 //!   block's hardness is not 0 (`ItemStack.mineBlock`, whether or not anything was
-//!   removed or the tool is right), and only where the block was removed with the right
-//!   tool its `playerDestroy` drops it by its table with the tool and spawns what comes
+//!   removed or the tool is right; shears wherever the block is not in `#fire`,
+//!   `ShearsItem.mineBlock`), and only where the block was removed with the right tool
+//!   its `playerDestroy` drops it by its table with the tool and spawns what comes
 //!   after (an ore's experience, an infested block's silverfish), with the stack as it
 //!   was before the wear.
 //!
@@ -48,18 +49,29 @@
 //! stick's own interaction; the statistics (`BLOCK_MINED`, `ITEM_USED`) and the
 //! exhaustion of 0.005 (V4); a tripwire cut with shears, a beehive's bees and a turtle
 //! egg's eggs when broken by a player (their `playerWillDestroy` and `playerDestroy`).
-//! **V2, across a line (the lead's)**: a break whose block another region holds goes as
-//! it went before, a `RemoteStep::Break` that the holder does as a creative player's
-//! (no drops, no wear); a delayed destroy whose block another region holds is not
-//! broken; and START's `attack` of a block another region holds is not made. The
-//! choice is [`Region::break_for_player`]'s alone.
+//!
+//! **Across a line** (V2c): the player's region judges the dig on its copy of the block
+//! (the chunks around its viewers), as it judges a click. A survival player's break of a
+//! block another region holds is split where the game's knowledge is: the player's
+//! region asks `canDestroyBlock` and the mode, angers the piglins near the player (who
+//! are its own or its copies'), wears the held tool by the block of its copy, and sends
+//! a [`RemoteStep::BreakWith`] with the stack as it was; the holder breaks the block if
+//! it is still the same block, and drops it with that stack. A creative player's stays a
+//! `RemoteStep::Break`. A delayed destroy's step carries the highest action the player's
+//! region handled in the tick, which it then leaves to the holder's answer to
+//! acknowledge, so that the client keeps its guess until the block is gone; START's
+//! `attack` goes as a [`RemoteStep::Attack`] that nobody answers. Named: where the
+//! holder's block changed on the way (another player broke it), the game would wear the
+//! tool by what is there; here by the copy. The choice is
+//! [`Region::break_for_player`]'s alone.
 
-use clustine_blocks::data::{flag, is_class};
+use clustine_blocks::data::{flag, in_tag, is_class, same_block};
 use clustine_data::{BlockClass, BlockState, ItemComponents, blocks, items};
 use clustine_world::{BlockPos, ItemStack, PlayerId};
 
 use super::Region;
 use super::breaking::{Digger, has_correct_tool_for_drops};
+use super::vibrations::Source;
 use crate::api::{
     DestroyAction, Durable, Face, PlayerEvent, RegionEvent, RemoteAction, RemoteStep, TickOutput,
 };
@@ -112,7 +124,7 @@ pub(super) enum Broke {
     Here(bool),
     /// By the region that holds the block, which acknowledges the action.
     Across,
-    /// Not at all: the block is another region's and nothing goes there (named).
+    /// Not at all: the player has gone.
     NotDone,
 }
 
@@ -337,9 +349,10 @@ impl Region {
     }
 
     /// Where the break of the block at `position` for the player `id` is done: here where
-    /// the region holds the block, else by the region that does, as a
-    /// `RemoteStep::Break` that acknowledges `sequence`, the action's, and not at all for
-    /// a break that answers no action (a delayed destroy). The one place that chooses.
+    /// the region holds the block, else by the region that does, as a step that
+    /// acknowledges `sequence`, the action's. A break that answers no action (a delayed
+    /// destroy) passes on the highest action handled in the tick instead, if there is
+    /// one. The one place that chooses.
     pub(super) fn break_for_player(
         &mut self,
         id: PlayerId,
@@ -350,24 +363,132 @@ impl Region {
         if self.land.holds(position.chunk()) {
             return Broke::Here(self.destroy_block_as(id, position, output));
         }
-        // V2, across a line (the lead's): the holder breaks it as it broke every player's
-        // block before, and a delayed destroy's break is not passed on.
-        let Some(sequence) = sequence else {
-            return Broke::NotDone;
-        };
         let Some(player) = self.players.get(&id) else {
             return Broke::NotDone;
         };
+        let held = player.held();
+        let sneaking = player.keys.sneak;
+        let abilities = player.mode.current.abilities();
+        let step = if abilities.instabuild {
+            RemoteStep::Break { position }
+        } else {
+            // What `destroyBlock` asks before anything changes: the block is shown and
+            // the action acknowledged here.
+            let Some(expected) = self.block(position) else {
+                return Broke::Here(false);
+            };
+            if !can_destroy_block(held.as_ref()) || !abilities.may_build {
+                return Broke::Here(false);
+            }
+            // `Block.playerWillDestroy`'s piglins, near the player and so here.
+            if in_tag(expected, "minecraft:guarded_by_piglins") {
+                self.anger_nearby_piglins(id, false, output);
+            }
+            self.mine_block(id, expected, output);
+            RemoteStep::BreakWith {
+                position,
+                expected,
+                tool: held,
+                sneaking,
+            }
+        };
+        let sequence = match sequence {
+            Some(sequence) => sequence,
+            // The client was told nothing of this break, but it guessed it at its STOP:
+            // what the tick handled is acknowledged when the holder has answered.
+            None => self
+                .players
+                .get_mut(&id)
+                .and_then(|player| player.handled_sequence.take())
+                .unwrap_or(RemoteAction::UNANSWERED),
+        };
+        self.send_remote(id, sequence, step, output);
+        Broke::Across
+    }
+
+    /// Sends `step` of the player `id`'s action `sequence` to the region believed to hold
+    /// the block it concerns, through the player's edge.
+    fn send_remote(
+        &mut self,
+        id: PlayerId,
+        sequence: i32,
+        step: RemoteStep,
+        output: &mut TickOutput,
+    ) {
+        let Some(player) = self.players.get(&id) else {
+            return;
+        };
         let (edge, entity) = (player.edge, player.entity_id);
+        let to = self.land.knowledge(step.concerns().chunk()).holder();
         let action = RemoteAction {
             player: id,
             entity,
             sequence,
-            step: RemoteStep::Break { position },
+            step,
         };
-        let to = self.land.knowledge(position.chunk()).holder();
         self.send(edge, Durable::Remote { action, to }, output);
-        Broke::Across
+    }
+
+    /// `ItemStack.mineBlock` of what the player `id` holds, on breaking `state`: a tool
+    /// with a `damage_per_block` above 0 wears by it where the block's hardness is not 0
+    /// (`Item.mineBlock` @0-61), shears wherever the block is not in `#fire`
+    /// (`ShearsItem.mineBlock` @0-59).
+    fn mine_block(&mut self, id: PlayerId, state: BlockState, output: &mut TickOutput) {
+        let Some(held) = self.players.get(&id).and_then(|player| player.held()) else {
+            return;
+        };
+        let Some(tool) = ItemComponents::of(held.item).tool.as_ref() else {
+            return;
+        };
+        let wears = if held.item == items::SHEARS {
+            !in_tag(state, "minecraft:fire")
+        } else {
+            state
+                .breaking()
+                .is_some_and(|breaking| breaking.hardness != 0.0)
+        };
+        if wears && tool.damage_per_block > 0 {
+            let amount = i32::try_from(tool.damage_per_block).unwrap_or(i32::MAX);
+            self.hurt_and_break_in_hand(id, crate::api::Hand::Main, amount, output);
+        }
+    }
+
+    /// A survival player's break of another region, [`RemoteStep::BreakWith`]: the part
+    /// of `destroyBlock` that needs the block, by the player whose entity `source` names.
+    pub(super) fn break_from_afar(
+        &mut self,
+        id: PlayerId,
+        source: Source,
+        position: BlockPos,
+        expected: BlockState,
+        tool: Option<&ItemStack>,
+        output: &mut TickOutput,
+    ) {
+        let Some(state) = self.own_block(position) else {
+            return;
+        };
+        if !same_block(state, expected) {
+            return;
+        }
+        let correct = has_correct_tool_for_drops(tool, state);
+        self.player_will_destroy_from(
+            position,
+            state,
+            Some(id),
+            Some(source),
+            Some((tool, correct)),
+            output,
+        );
+        let removed = self.set_block_updated(
+            position,
+            super::updates::fluid_block(state),
+            super::updates::UPDATE_ALL,
+            super::updates::UPDATE_LIMIT,
+            output,
+        );
+        if removed && correct {
+            self.player_destroy(position, state, tool, output);
+        }
     }
 
     /// `ServerPlayerGameMode.destroyBlock` (@0-273) of the block at `position`, which
@@ -418,20 +539,8 @@ impl Region {
             super::updates::UPDATE_LIMIT,
             output,
         );
-        // @210-241: the stack as it was is the tool of the drops; the held one wears
-        // (`Item.mineBlock` @0-61: a tool, a block whose hardness is not 0, and a
-        // `damage_per_block` above 0).
-        if let Some(tool) = held
-            .as_ref()
-            .and_then(|stack| ItemComponents::of(stack.item).tool.as_ref())
-            && tool.damage_per_block > 0
-            && state
-                .breaking()
-                .is_some_and(|breaking| breaking.hardness != 0.0)
-        {
-            let amount = i32::try_from(tool.damage_per_block).unwrap_or(i32::MAX);
-            self.hurt_and_break_in_hand(id, crate::api::Hand::Main, amount, output);
-        }
+        // @210-241: the stack as it was is the tool of the drops; the held one wears.
+        self.mine_block(id, state, output);
         // @244-269: `playerDestroy` only where the block was removed with the right tool.
         if removed && correct {
             self.player_destroy(position, state, held.as_ref(), output);
@@ -461,18 +570,32 @@ impl Region {
 
     /// `BlockState.attack` of the block at `position` by the player `id` (START @340-351):
     /// a note block plays (`NoteBlock.attack`), redstone ore lights
-    /// (`RedStoneOreBlock.attack`). A dragon egg's teleport is named; and a block another
-    /// region holds is not attacked (V2, across a line (the lead's)).
+    /// (`RedStoneOreBlock.attack`). A dragon egg's teleport is named. A block another
+    /// region holds is attacked there, if the copy says it is one that does something.
     fn attack_block(
         &mut self,
-        _id: PlayerId,
+        id: PlayerId,
         position: BlockPos,
         state: BlockState,
         output: &mut TickOutput,
     ) {
-        if !self.land.holds(position.chunk()) {
-            return;
+        if self.land.holds(position.chunk()) {
+            self.attack_here(position, state, output);
+        } else if is_class(state, BlockClass::NoteBlock)
+            || is_class(state, BlockClass::RedStoneOreBlock)
+        {
+            let step = RemoteStep::Attack { position };
+            self.send_remote(id, RemoteAction::UNANSWERED, step, output);
         }
+    }
+
+    /// The attack of `state`, a block the region holds at `position`.
+    pub(super) fn attack_here(
+        &mut self,
+        position: BlockPos,
+        state: BlockState,
+        output: &mut TickOutput,
+    ) {
         if is_class(state, BlockClass::NoteBlock) {
             self.play_note(position, state);
         } else if is_class(state, BlockClass::RedStoneOreBlock) && !flag(state, "lit") {

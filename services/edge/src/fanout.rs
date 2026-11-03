@@ -2585,7 +2585,11 @@ impl Fanout {
             // Nobody is left to be told how it ended.
             return;
         };
-        view.under_way.insert(sequence);
+        // A step that answers no action holds no acknowledgement back, and nobody
+        // answers it.
+        if sequence != RemoteAction::UNANSWERED {
+            view.under_way.insert(sequence);
+        }
         let Some(to) = to.filter(|to| *to != from || back) else {
             debug!(%from, ?to, "an action on blocks has nowhere to go and ends here");
             self.arrived(player, sequence).await;

@@ -489,6 +489,7 @@ async fn acted(
         | player_action::STOP_DESTROY_BLOCK
         | player_action::ABORT_DESTROY_BLOCK
         | player_action::CHANGE_DESTROY_DIRECTION => {
+            counted(action.sequence)?;
             send_input(shared, client, destroyed(&action)).await
         }
         // F: the region swaps the hands and tells the client, which does not foresee it.
@@ -505,6 +506,16 @@ async fn acted(
         }
         _ => Ok(()),
     }
+}
+
+/// `ServerGamePacketListenerImpl.ackBlockChangesUpTo`, which throws at a negative
+/// sequence number, and the client is disconnected: a negative one is the regions' own
+/// (`RemoteAction::UNANSWERED`).
+fn counted(sequence: i32) -> Result<(), ConnectionError> {
+    if sequence < 0 {
+        return Err(ConnectionError::Protocol("a negative sequence number"));
+    }
+    Ok(())
 }
 
 /// What a client's step of breaking a block says to the region: the face as the game
@@ -626,6 +637,7 @@ async fn used_item_on(
     packet: UseItemOn,
     sneaking: bool,
 ) -> Result<(), ConnectionError> {
+    counted(packet.sequence)?;
     let face = match u8::try_from(packet.face) {
         Ok(face::BOTTOM) => Some(Face::Bottom),
         Ok(face::TOP) => Some(Face::Top),
@@ -670,6 +682,7 @@ async fn used_item(
     packet: ServerboundUseItem,
     sneaking: bool,
 ) -> Result<(), ConnectionError> {
+    counted(packet.sequence)?;
     // A rotation that is no number aims at nothing: only the guess is handled.
     let rotation = if packet.yaw.is_finite() && packet.pitch.is_finite() {
         (packet.yaw, packet.pitch.clamp(-90.0, 90.0))

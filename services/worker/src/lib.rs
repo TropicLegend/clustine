@@ -3929,7 +3929,9 @@ impl RegionRunner {
                 | PlayerInput::Loaded => return false,
             },
             EdgeToWorker::Remote(action) => match &action.step {
-                RemoteStep::Break { position } => vec![chunk(*position)],
+                RemoteStep::Break { position }
+                | RemoteStep::BreakWith { position, .. }
+                | RemoteStep::Attack { position } => vec![chunk(*position)],
                 RemoteStep::PlaceAgainst {
                     against, target, ..
                 } => vec![chunk(*against), chunk(*target)],

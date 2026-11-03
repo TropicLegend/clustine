@@ -1336,6 +1336,10 @@ impl Region {
             }
             let mut answer = self.apply_remote(action, &mut output);
             if let Durable::RemoteDone { shown, .. } = &mut answer {
+                // Nobody waits for a step that answers no action.
+                if action.sequence == RemoteAction::UNANSWERED {
+                    continue;
+                }
                 *shown = self.shown_after(&action.step);
             }
             self.send(*edge, answer, &mut output);
@@ -3174,7 +3178,13 @@ impl Region {
             | RemoteStep::PlaceAt { click, .. } => {
                 self.readable_after_use(click.position, click.face)
             }
+            // The client guessed the block gone: it is shown what is there.
+            RemoteStep::BreakWith { position, .. } => self
+                .block(*position)
+                .map(|state| vec![(*position, state)])
+                .unwrap_or_default(),
             RemoteStep::Break { .. }
+            | RemoteStep::Attack { .. }
             | RemoteStep::PlaceAgainst { .. }
             | RemoteStep::Place { .. } => Vec::new(),
         }
@@ -3667,6 +3677,27 @@ impl Region {
         match action.step {
             RemoteStep::Break { position } => {
                 self.break_by_player(position, Some(action.player), output);
+                done
+            }
+            RemoteStep::BreakWith {
+                position,
+                expected,
+                ref tool,
+                sneaking,
+            } => {
+                let source = vibrations::Source {
+                    entity: action.entity,
+                    careful: sneaking,
+                    dampens: false,
+                };
+                let tool = tool.as_ref();
+                self.break_from_afar(action.player, source, position, expected, tool, output);
+                done
+            }
+            RemoteStep::Attack { position } => {
+                if let Some(state) = self.own_block(position) {
+                    self.attack_here(position, state, output);
+                }
                 done
             }
             RemoteStep::PlaceAgainst {
@@ -10160,7 +10191,9 @@ mod tests {
         let mut kinds = [0; 3];
         for action in actions {
             let kind = match action.step {
-                RemoteStep::Break { .. } => 0,
+                RemoteStep::Break { .. }
+                | RemoteStep::BreakWith { .. }
+                | RemoteStep::Attack { .. } => 0,
                 RemoteStep::PlaceAgainst { .. }
                 | RemoteStep::UseOn { .. }
                 | RemoteStep::OffHandOn { .. } => 1,

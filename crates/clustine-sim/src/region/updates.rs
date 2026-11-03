@@ -387,6 +387,22 @@ impl Region {
         survival: Option<(Option<&ItemStack>, bool)>,
         output: &mut TickOutput,
     ) {
+        let source = player.and_then(|player| self.player_source(player));
+        self.player_will_destroy_from(pos, state, player, source, survival, output);
+    }
+
+    /// [`Region::player_will_destroy`] with the vibration's `source` given: that of a
+    /// player of another region, whom this one does not have (and whose piglins their
+    /// own region angers).
+    pub(crate) fn player_will_destroy_from(
+        &mut self,
+        pos: BlockPos,
+        state: BlockState,
+        player: Option<PlayerId>,
+        source: Option<super::vibrations::Source>,
+        survival: Option<(Option<&ItemStack>, bool)>,
+        output: &mut TickOutput,
+    ) {
         let prevents_drops = survival.is_none();
         // `PistonHeadBlock.playerWillDestroy`: only where drops are prevented; else the
         // base goes, with its drop, when the head's removal tells it.
@@ -447,7 +463,6 @@ impl Region {
         }
         // `Block.playerWillDestroy`'s `block_destroy`, of the player and the block
         // (`vibrations.rs`).
-        let source = player.and_then(|player| self.player_source(player));
         let context = super::vibrations::Context::of(source, Some(state));
         self.vibrate_at(super::vibrations::Vibration::BLOCK_DESTROY, pos, context);
     }
