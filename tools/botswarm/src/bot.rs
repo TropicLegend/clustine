@@ -1487,6 +1487,51 @@ impl Bot {
         Ok(())
     }
 
+    /// Begins or stops sprinting (`player_command`'s `START_SPRINTING` and
+    /// `STOP_SPRINTING`), as a client says when its player does.
+    pub async fn sprint(&mut self, sprinting: bool) -> Result<()> {
+        use clustine_protocol::packets::play::player_command;
+        let action = if sprinting {
+            player_command::START_SPRINTING
+        } else {
+            player_command::STOP_SPRINTING
+        };
+        self.connection
+            .write(&clustine_protocol::packets::play::PlayerCommand {
+                entity_id: self.info.login.entity_id,
+                action,
+                data: 0,
+            })
+            .await?;
+        self.has_sent();
+        Ok(())
+    }
+
+    /// Says the bot is at `x`, `y` and `z`, on the ground or in the air, ends its tick and
+    /// handles what the server sends until the next tick is due: one move of a client
+    /// that jumps or falls, a tick at a time. A server that takes a client at its word
+    /// counts a fall from such moves.
+    pub async fn move_in_tick(&mut self, x: f64, y: f64, z: f64, on_ground: bool) -> Result<()> {
+        self.location = (x, y, z);
+        self.connection
+            .write(&SetPlayerPosition {
+                x,
+                y,
+                z,
+                flags: if on_ground {
+                    movement_flags::ON_GROUND
+                } else {
+                    0
+                },
+            })
+            .await?;
+        self.has_sent();
+        self.connection.write(&ClientTickEnd).await?;
+        let next_tick = Instant::now() + TICK;
+        while self.step(next_tick).await? {}
+        Ok(())
+    }
+
     /// Holds down or lets go of the sneak key, and no other.
     pub async fn sneak(&mut self, sneaking: bool) -> Result<()> {
         self.hold_keys(if sneaking { player_input::SHIFT } else { 0 })

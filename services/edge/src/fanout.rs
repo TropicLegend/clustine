@@ -10710,6 +10710,7 @@ mod scenarios {
     mod respawn_specification;
     mod riding;
     mod riding_specification;
+    mod survival;
     mod tracking;
 
     /// The flat world's spawn, which these tests' edges tell their clients.
@@ -11543,6 +11544,9 @@ mod scenarios {
         respawns: Vec<Respawn>,
         /// Every login it was sent, in order.
         logins: Vec<Login>,
+        /// Every packet it was sent that none of the fields above keeps, in order (the
+        /// health, a death, the game's events, a hurt's shake of the view).
+        others: Vec<ClientboundPlay>,
     }
 
     /// One of what a client was told, in [`Client::heard`].
@@ -11595,6 +11599,7 @@ mod scenarios {
                 awaiting,
                 respawns: Vec::new(),
                 logins: Vec::new(),
+                others: Vec::new(),
                 chunks: BTreeMap::new(),
                 sent: Vec::new(),
                 of_chunks: Vec::new(),
@@ -11824,7 +11829,7 @@ mod scenarios {
                     self.told
                         .extend(removed.players.into_iter().map(Told::Unlisted));
                 }
-                _ => {}
+                other => self.others.push(other),
             }
         }
 
