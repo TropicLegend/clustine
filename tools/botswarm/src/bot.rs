@@ -418,6 +418,9 @@ pub struct Bot {
     /// Once [`Bot::record_packets`] is asked for, every packet the bot is sent but the
     /// chunks and their light, with when it came, in order.
     pub packets: Option<Vec<(Instant, ClientboundPlay)>>,
+    /// The recipes' property sets and the stonecutter's recipes as the server last sent
+    /// them (`update_recipes`, at a join).
+    pub recipes: Option<clustine_protocol::packets::play::UpdateRecipes>,
 }
 
 /// A menu's window as a client shows it: what `open_screen` said, then the slots and the
@@ -660,6 +663,7 @@ impl Bot {
             menu_log: Vec::new(),
             difficulty: None,
             packets: None,
+            recipes: None,
         };
         // Every server places a joining player before anything else can happen.
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -1874,8 +1878,9 @@ impl Bot {
             ClientboundPlay::ClientboundKeepAlive(_) => {
                 self.stats.keep_alives_answered += 1;
             }
-            // The bots craft nothing by the recipe book.
-            ClientboundPlay::UpdateRecipes(_) => {}
+            // The bots craft nothing by the recipe book; what was sent is kept to be
+            // compared.
+            ClientboundPlay::UpdateRecipes(packet) => self.recipes = Some(packet),
             ClientboundPlay::SynchronizePlayerPosition(packet) => {
                 if self.behaviour.confirm_teleports {
                     self.confirm_teleport(&packet).await?;
