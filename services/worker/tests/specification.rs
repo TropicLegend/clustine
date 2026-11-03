@@ -5444,6 +5444,7 @@ fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
         kept: Vec::new(),
         menu: None,
         raid_omen_position: None,
+        crafting: Default::default(),
     }
 }
 

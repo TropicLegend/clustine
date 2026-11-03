@@ -289,6 +289,41 @@ pub struct PlayerState {
     pub game_origin: i64,
     /// Their dig.
     pub dig: Dig,
+    /// What their own inventory screen holds of its own (window 0), which stays with
+    /// them across a hand-over as the game never closes it (`docs/groundwork/v-plan.md`,
+    /// section 4.7).
+    pub crafting: Crafting,
+}
+
+/// The player's own inventory screen's (`InventoryMenu`'s) state beyond the inventory:
+/// the 2×2 grid, row by row, its result (`ResultContainer`, set only where the game's
+/// `slotChangedCraftingGrid` runs), the stack on the cursor and a drag under way. Its
+/// serial is 0, which no input has.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Crafting {
+    pub grid: [Option<ItemStack>; 4],
+    pub result: Option<ItemStack>,
+    pub carried: Option<ItemStack>,
+    pub drag: Option<Drag>,
+}
+
+impl Crafting {
+    /// What a place keeps of it: all but a drag, which no client that enters by the
+    /// place has under way.
+    pub fn kept(&self) -> Self {
+        Self {
+            drag: None,
+            ..self.clone()
+        }
+    }
+
+    /// Whether nothing is in it.
+    pub fn is_empty(&self) -> bool {
+        self.grid.iter().all(Option::is_none)
+            && self.result.is_none()
+            && self.carried.is_none()
+            && self.drag.is_none()
+    }
 }
 
 /// A level of an effect as a region's state keeps it: the effect by name, its amplifier,
@@ -347,6 +382,9 @@ pub enum MenuOf {
     Entity(EntityId),
     /// A villager's or a wandering trader's trades.
     Merchant(EntityId),
+    /// The player's own inventory screen (window 0): only ever the menu a click of it
+    /// runs over, never the player's open menu.
+    Inventory,
 }
 
 /// A drag of the carried stack over slots (the game's quick craft), between its start

@@ -1206,6 +1206,9 @@ mod tests {
                         effects: Vec::new(),
                         time_since_rest: 0,
                         raid_omen_position: None,
+                        crafting_grid: [const { None }; 4],
+                        crafting_result: None,
+                        carried: None,
                     }),
                 },
             ],
@@ -1392,6 +1395,8 @@ mod tests {
         body.push(0);
         // Creative (1), with no mode before it (255).
         body.extend_from_slice(&[1, 255]);
+        // An empty crafting grid, no result and nothing on the cursor.
+        body.extend_from_slice(&[0; 6]);
         assert_eq!(bytes[..body.len()], body);
         assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
         assert_eq!(PlayersFile::decode(&bytes), Ok(players()));
@@ -1751,6 +1756,9 @@ mod tests {
                                     effects: Vec::new(),
                                     time_since_rest: 0,
                                     raid_omen_position: None,
+                                    crafting_grid: [const { None }; 4],
+                                    crafting_result: None,
+                                    carried: None,
                                 }
                             },
                         ),

@@ -140,7 +140,7 @@ async fn a_close_by_the_client_goes_to_the_region_and_a_late_report_opens_nothin
     edge.tell(WEST, to(player(1), opened(3)));
     edge.settle(WEST).await;
     edge.sync(&mut client).await;
-    edge.menu(&client, MenuCommand::Close { window: 1 }).await;
+    edge.menu(&client, MenuCommand::Close).await;
     let (number, body) = edge.next_numbered(WEST).await;
     assert!(
         matches!(

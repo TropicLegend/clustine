@@ -536,6 +536,7 @@ fn walker(n: u128, at: Vec3) -> PlayerTransfer {
         keys: Default::default(),
         kept: Vec::new(),
         raid_omen_position: None,
+        crafting: Default::default(),
     }
 }
 
@@ -1308,6 +1309,7 @@ fn a_unit_sent_on_while_a_seat_is_kept_forwards_the_player_who_comes_after_it() 
         keys: Default::default(),
         kept: Vec::new(),
         raid_omen_position: None,
+        crafting: Default::default(),
     };
     let output = middle.tick(&TickInputs {
         player_changes: vec![arrive(&transfer)],

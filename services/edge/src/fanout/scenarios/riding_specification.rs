@@ -323,6 +323,7 @@ fn riding_transfer() -> PlayerTransfer {
         keys: Default::default(),
         kept: Vec::new(),
         raid_omen_position: None,
+        crafting: Default::default(),
     }
 }
 

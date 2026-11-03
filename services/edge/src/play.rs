@@ -303,8 +303,9 @@ async fn pump(
                     ServerboundPlay::SetCreativeModeSlot(packet) => {
                         // A slot of the inventory screen sets that slot of the
                         // inventory, and a negative one throws the stack out of the
-                        // screen. The crafting grid is the client's own business. The
-                        // fan-out drops either from a player who is not creative.
+                        // screen. One of the crafting grid is passed over (named: the
+                        // creative screen shows no grid; V3c may take it). The fan-out
+                        // drops either from a player who is not creative.
                         let input = if packet.slot < 0 {
                             creative_throw(packet.stack, &mut drops, Instant::now())
                         } else {
@@ -343,9 +344,8 @@ async fn pump(
                     ServerboundPlay::ContainerClick(packet) => {
                         menu_command(shared, client, MenuCommand::Click(packet)).await?;
                     }
-                    ServerboundPlay::ServerboundContainerClose(packet) => {
-                        let window = packet.window_id;
-                        menu_command(shared, client, MenuCommand::Close { window }).await?;
+                    ServerboundPlay::ServerboundContainerClose(_) => {
+                        menu_command(shared, client, MenuCommand::Close).await?;
                     }
                     ServerboundPlay::SelectTrade(packet) => {
                         let item = packet.item;

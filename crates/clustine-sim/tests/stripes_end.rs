@@ -450,6 +450,7 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         effects: Vec::new(),
         rested: 0,
         raid_omen_position: None,
+        crafting: Default::default(),
     }
 }
 

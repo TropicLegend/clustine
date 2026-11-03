@@ -662,12 +662,17 @@ fn an_open_and_a_click_in_one_tick_are_answered_in_their_order() {
             },
         ],
     );
+    // The chest's, not window 0's (serial 0), which V3 reports beside it.
     let menu_events: Vec<PlayerEvent> = events_of(&output, player(1))
         .into_iter()
         .filter(|event| {
             matches!(
                 event,
                 PlayerEvent::MenuOpened { .. } | PlayerEvent::MenuChanged { .. }
+            ) && !matches!(
+                event,
+                PlayerEvent::MenuOpened { serial: 0, .. }
+                    | PlayerEvent::MenuChanged { serial: 0, .. }
             )
         })
         .collect();

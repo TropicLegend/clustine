@@ -398,7 +398,7 @@ impl Region {
 
     /// The slots of the container the menu `of` shows, as the region has them now:
     /// `None` where any of it is not here to read.
-    fn container_slots(
+    pub(super) fn container_slots(
         &self,
         id: PlayerId,
         of: MenuOf,
@@ -449,11 +449,20 @@ impl Region {
                 let [first, second] = trade.payments.clone();
                 Some(vec![first, second, trade.result.clone()])
             }
+            // The inventory screen's own: the result, then the grid row by row.
+            MenuOf::Inventory => {
+                let crafting = &self.players.get(&id)?.crafting;
+                Some(
+                    std::iter::once(crafting.result.clone())
+                        .chain(crafting.grid.iter().cloned())
+                        .collect(),
+                )
+            }
         }
     }
 
     /// Writes back the container's slots `slots` of the menu `of`, where they changed.
-    fn write_container_slots(
+    pub(super) fn write_container_slots(
         &mut self,
         id: PlayerId,
         of: MenuOf,
@@ -552,6 +561,20 @@ impl Region {
                     self.merchant_payments_changed(id, key, output);
                 }
             }
+            MenuOf::Inventory => {
+                let Some(player) = self.players.get_mut(&id) else {
+                    return;
+                };
+                let crafting = &mut player.crafting;
+                let result = slots.first().cloned().flatten();
+                let grid: [Option<ItemStack>; 4] =
+                    std::array::from_fn(|index| slots.get(1 + index).cloned().flatten());
+                if crafting.result != result || crafting.grid != grid {
+                    crafting.result = result;
+                    crafting.grid = grid;
+                    self.journal.players.insert(id);
+                }
+            }
         }
     }
 
@@ -594,7 +617,7 @@ impl Region {
             MenuOf::Merchant(key) | MenuOf::Entity(key) => self
                 .find_entity(key)
                 .map(|(_, entity)| (entity.uuid.as_u128(), entity.kind)),
-            MenuOf::Ender { .. } | MenuOf::Block { .. } => None,
+            MenuOf::Ender { .. } | MenuOf::Block { .. } | MenuOf::Inventory => None,
         };
         self.reported.insert(
             id,
@@ -785,7 +808,7 @@ impl Region {
     }
 
     /// `PlayerInput::MenuResync`: the menu whole, or the inventory whole where none is
-    /// open.
+    /// open; then window 0 whole, whose changes may have been lost too.
     pub(super) fn menu_resync(&mut self, id: PlayerId, output: &mut TickOutput) {
         let Some(player) = self.players.get(&id) else {
             return;
@@ -802,6 +825,7 @@ impl Region {
                 },
             ));
         }
+        self.report_inventory_whole(id, output);
     }
 
     /// `doCloseContainer` of the player's menu, for a player who stays: the carried
@@ -999,6 +1023,8 @@ impl Region {
                     Validity::Invalid
                 }
             }
+            // `InventoryMenu.stillValid` is always true.
+            MenuOf::Inventory => Validity::Valid,
         }
     }
 
@@ -1079,7 +1105,7 @@ fn block_positions(of: MenuOf) -> Vec<BlockPos> {
     match of {
         MenuOf::Block { at, other } => std::iter::once(at).chain(other).collect(),
         MenuOf::Ender { at } => vec![at],
-        MenuOf::Entity(_) | MenuOf::Merchant(_) => Vec::new(),
+        MenuOf::Entity(_) | MenuOf::Merchant(_) | MenuOf::Inventory => Vec::new(),
     }
 }
 
@@ -1111,6 +1137,8 @@ fn vehicle_menu(kind: u16) -> Option<MenuKind> {
 fn title_of(of: MenuOf, kind: MenuKind, region: &Region) -> String {
     let key = match of {
         MenuOf::Ender { .. } => "container.enderchest",
+        // Never opened by `open_screen`, so never sent.
+        MenuOf::Inventory => "container.crafting",
         // A villager's by its profession, a trader's by its name (`trading.rs`).
         MenuOf::Merchant(key) => return region.merchant_title(key),
         MenuOf::Entity(key) => {

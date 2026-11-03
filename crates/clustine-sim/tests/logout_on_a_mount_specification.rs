@@ -235,6 +235,7 @@ fn place_at(at: [f64; 3]) -> Place {
         effects: Vec::new(),
         time_since_rest: 0,
         raid_omen_position: None,
+        crafting: Default::default(),
     }
 }
 
@@ -741,6 +742,7 @@ fn walker(entity: EntityId, at: Vec3) -> PlayerTransfer {
         keys: Default::default(),
         kept: Vec::new(),
         raid_omen_position: None,
+        crafting: Default::default(),
     }
 }
 

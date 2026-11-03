@@ -769,6 +769,7 @@ mod tests {
             effects: Vec::new(),
             time_since_rest: 0,
             raid_omen_position: None,
+            crafting: Default::default(),
         };
         let standing = Place {
             health: 20.0,
@@ -789,6 +790,7 @@ mod tests {
             effects: Vec::new(),
             time_since_rest: 0,
             raid_omen_position: None,
+            crafting: Default::default(),
         };
 
         round_trip(StoreRequest::Commit {

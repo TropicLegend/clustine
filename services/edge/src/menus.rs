@@ -14,6 +14,14 @@
 //! if what it reports is at least as late as the last opening and the last close the
 //! edge knows of, so that a region restored to before either cannot open an old window
 //! again.
+//!
+//! Window 0, the player's own inventory screen, has a record of its own beside the menu
+//! shown (V3, `docs/groundwork/v-plan.md`, section 4.7, and the V3 review's findings 2, 3
+//! and 9): serial 0, its own held clicks, never closed or dropped. It is shown whenever
+//! no other menu is, and only then are its packets sent; the region reports it every tick
+//! whatever is open, so its real slots stay the region's. When another menu closes, the
+//! 36 slots both show are carried into it, real and remote, as `transferState` carries
+//! them, and what the client does not show of it is sent.
 
 use std::collections::BTreeMap;
 
@@ -28,6 +36,7 @@ use clustine_protocol::packets::play::{
 };
 use clustine_protocol::text::Text;
 use clustine_sim::api::{ClickKind, ItemStack, MenuKind, PlayerInput};
+use clustine_world::Inventory;
 use clustine_world::components::Kind;
 
 use crate::component_hash;
@@ -180,8 +189,11 @@ impl Open {
     }
 }
 
+/// The serial of window 0, which no input has.
+pub(crate) const INVENTORY: u64 = 0;
+
 /// A player's menus as the edge keeps them.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Menus {
     /// The last window id given out (`containerCounter`), 1 to 100.
     counter: i32,
@@ -191,6 +203,35 @@ pub(crate) struct Menus {
     threshold: u64,
     open: Option<Open>,
     held: BTreeMap<u64, HeldClick>,
+    /// Window 0, shown while `open` is none. It has no threshold: it is never dropped,
+    /// so every report of it is applied, in the order its regions sent them; reports of
+    /// a region that is no longer the player's are not taken (`living`).
+    inventory: Open,
+    /// Window 0's clicks, held until a report of it answers them.
+    inventory_held: BTreeMap<u64, HeldClick>,
+}
+
+impl Default for Menus {
+    fn default() -> Self {
+        let slots = MenuKind::Inventory.slots();
+        Self {
+            counter: 0,
+            threshold: 0,
+            open: None,
+            held: BTreeMap::new(),
+            inventory: Open {
+                window: 0,
+                serial: INVENTORY,
+                kind: MenuKind::Inventory,
+                real: vec![None; slots],
+                real_carried: None,
+                remote: vec![Remote::Sent(None); slots],
+                remote_carried: Remote::Sent(None),
+                state_id: 0,
+            },
+            inventory_held: BTreeMap::new(),
+        }
+    }
 }
 
 impl Menus {
@@ -211,13 +252,16 @@ impl Menus {
     /// the input, or `None` for a click the game refuses here, of a window that is not
     /// the one shown (`handleContainerClick`'s `containerId` test).
     pub(crate) fn click(&mut self, packet: ContainerClick, number: u64) -> Option<PlayerInput> {
-        let open = self
-            .open
-            .as_ref()
-            .filter(|open| open.window == packet.window_id)?;
+        let (open, held) = match &self.open {
+            Some(open) => (open, &mut self.held),
+            None => (&self.inventory, &mut self.inventory_held),
+        };
+        if open.window != packet.window_id {
+            return None;
+        }
         let serial = open.serial;
         let stale = packet.state_id != open.state_id;
-        self.held.insert(
+        held.insert(
             number,
             HeldClick {
                 serial,
@@ -234,16 +278,26 @@ impl Menus {
         })
     }
 
-    /// The client closed the window `window`, which goes to the region as the input
-    /// numbered `number`: the input, or `None` for a window that is not the one shown.
-    /// The window is closed here at once; the game sends nothing back.
-    pub(crate) fn close(&mut self, window: i32, number: u64) -> Option<PlayerInput> {
-        let open = self.open.as_ref().filter(|open| open.window == window)?;
-        let serial = open.serial;
-        self.open = None;
-        self.held.clear();
+    /// The client closed a window, which goes to the region as the input numbered
+    /// `number`: `handleContainerClose` reads no window id and closes the menu open,
+    /// whatever the client named, or with none open window 0, whose grid and cursor go
+    /// back into the inventory (`InventoryMenu.removed`). A menu is closed here at once,
+    /// and what the client does not show of window 0 after it is sent, as the next
+    /// tick's `broadcastChanges` sends it.
+    pub(crate) fn close(&mut self, number: u64) -> (PlayerInput, Vec<Bytes>) {
+        let Some(serial) = self.serial() else {
+            return (
+                PlayerInput::CloseContainer { serial: INVENTORY },
+                Vec::new(),
+            );
+        };
         self.threshold = self.threshold.max(number);
-        Some(PlayerInput::CloseContainer { serial })
+        // The client closed it itself: nothing is sent to close it.
+        let _ = self.close_shown();
+        (
+            PlayerInput::CloseContainer { serial },
+            self.show_inventory(),
+        )
     }
 
     /// The client picked a trade in the window it shows (`select_trade`, which names no
@@ -291,6 +345,9 @@ impl Menus {
         carried: Option<ItemStack>,
         mount: Option<i32>,
     ) -> Vec<Bytes> {
+        if serial == INVENTORY {
+            return self.inventory_whole(applied, slots, carried);
+        }
         if applied < self.threshold {
             return Vec::new();
         }
@@ -343,6 +400,9 @@ impl Menus {
         slots: &[(u16, Option<ItemStack>)],
         carried: Option<Option<ItemStack>>,
     ) -> Vec<Bytes> {
+        if serial == INVENTORY {
+            return self.inventory_changed(applied, slots, carried);
+        }
         if applied < self.threshold {
             return Vec::new();
         }
@@ -397,18 +457,23 @@ impl Menus {
             return Vec::new();
         }
         self.threshold = self.threshold.max(applied);
-        self.close_shown()
+        let mut packets = self.close_shown();
+        packets.extend(self.show_inventory());
+        packets
     }
 
     /// The player's region let them go: a hand-over always closes the menu, and the
     /// close it reported may have been lost on a link that resumed (section 7 item 7).
+    /// Window 0 stays, with its clicks in flight, which the next region applies.
     pub(crate) fn departed(&mut self) -> Vec<Bytes> {
-        self.close_shown()
+        let mut packets = self.close_shown();
+        packets.extend(self.show_inventory());
+        packets
     }
 
     /// The region answered a resync of a player with no menu: one still shown is
     /// closed. `None` for an answer older than what the client shows, which is passed
-    /// over.
+    /// over. Window 0 whole follows it from the region.
     pub(crate) fn none(&mut self, applied: u64) -> Option<Vec<Bytes>> {
         if applied < self.threshold {
             return None;
@@ -416,10 +481,132 @@ impl Menus {
         Some(self.close_shown())
     }
 
+    /// Window 0 reported whole by the region (a resync's answer, a dead player's
+    /// click): its real slots taken, the clicks it answers dropped, and, if it is
+    /// shown, sent whole with the next state id (`sendAllDataToRemote`).
+    fn inventory_whole(
+        &mut self,
+        applied: u64,
+        slots: Vec<Option<ItemStack>>,
+        carried: Option<ItemStack>,
+    ) -> Vec<Bytes> {
+        if slots.len() == self.inventory.real.len() {
+            self.inventory.real = slots;
+        }
+        self.inventory.real_carried = carried;
+        self.inventory_held.retain(|number, _| *number > applied);
+        if self.open.is_some() {
+            return Vec::new();
+        }
+        vec![self.inventory.whole()]
+    }
+
+    /// Changes of window 0 reported by the region, answering its clicks up to the input
+    /// `applied`: as [`Menus::changed`], sent only while window 0 is shown.
+    fn inventory_changed(
+        &mut self,
+        applied: u64,
+        slots: &[(u16, Option<ItemStack>)],
+        carried: Option<Option<ItemStack>>,
+    ) -> Vec<Bytes> {
+        let inventory = &mut self.inventory;
+        let mut touched: Vec<usize> = Vec::new();
+        for (slot, stack) in slots {
+            let slot = usize::from(*slot);
+            if let Some(real) = inventory.real.get_mut(slot) {
+                *real = stack.clone();
+                touched.push(slot);
+            }
+        }
+        if let Some(carried) = carried {
+            inventory.real_carried = carried;
+        }
+        let answered: Vec<u64> = self
+            .inventory_held
+            .range(..=applied)
+            .map(|(number, _)| *number)
+            .collect();
+        let mut stale = false;
+        for number in answered {
+            let held = self.inventory_held.remove(&number).expect("listed above");
+            stale |= held.stale;
+            for (slot, hashed) in held.changed {
+                if let Some(remote) = usize::try_from(slot)
+                    .ok()
+                    .and_then(|slot| inventory.remote.get_mut(slot))
+                {
+                    *remote = Remote::Hashed(hashed);
+                    touched.push(usize::try_from(slot).expect("found above"));
+                }
+            }
+            inventory.remote_carried = Remote::Hashed(held.carried);
+        }
+        if self.open.is_some() {
+            return Vec::new();
+        }
+        if stale {
+            return vec![inventory.whole()];
+        }
+        inventory.changes(touched)
+    }
+
+    /// Window 0 shown again after another menu closed: what the client does not show of
+    /// it is sent (`broadcastChanges` of the inventory menu in the next tick).
+    fn show_inventory(&mut self) -> Vec<Bytes> {
+        if self.open.is_some() {
+            return Vec::new();
+        }
+        let slots = self.inventory.real.len();
+        self.inventory.changes(0..slots)
+    }
+
+    /// The player entered the world by a join: window 0 as the client is to show it, its inventory slots `inventory`,
+    /// its grid and cursor empty until the region reports them, sent whole
+    /// (`initInventoryMenu`), with the next state id: 1 for a new connection's.
+    pub(crate) fn entered(&mut self, inventory: &Inventory) -> Bytes {
+        let mut real = vec![None; self.inventory.real.len()];
+        for (slot, stack) in inventory.0.iter().enumerate() {
+            if let Some(at) = inventory_menu_slot(slot).and_then(|at| real.get_mut(at)) {
+                *at = stack.clone();
+            }
+        }
+        self.inventory.real = real;
+        self.inventory.real_carried = None;
+        self.inventory_held.clear();
+        self.inventory.whole()
+    }
+
+    /// A respawn after death: the client's player is new, with a new window 0 whose
+    /// state id begins again (`initInventoryMenu` of the new player sends 1), and nothing
+    /// it held in flight is answered.
+    pub(crate) fn respawned_after_death(&mut self) {
+        self.inventory.state_id = 0;
+        self.inventory_held.clear();
+    }
+
+    /// A creative player set the slot `slot` of window 0 (`handleSetCreativeModeSlot`'s
+    /// `setRemoteSlot`): the client shows it, so the region's report of it sends
+    /// nothing back.
+    pub(crate) fn creative_slot(&mut self, slot: usize, stack: Option<ItemStack>) {
+        if let Some(remote) = self.inventory.remote.get_mut(slot) {
+            *remote = Remote::Sent(stack);
+        }
+    }
+
     /// The region changed the inventory slot `slot` of its own accord, which the edge
     /// sends with `set_player_inventory`: the menu that shows the slot has it too, in
     /// its copy and as the client shows it, so that it is not sent again.
     pub(crate) fn inventory_slot(&mut self, slot: usize, stack: Option<ItemStack>) {
+        let inventory = &mut self.inventory;
+        if let Some(index) = inventory_menu_slot(slot)
+            && let (Some(real), Some(remote)) = (
+                inventory.real.get_mut(index),
+                inventory.remote.get_mut(index),
+            )
+        {
+            *real = stack.clone();
+            *remote = Remote::Sent(stack.clone());
+        }
         let Some(open) = self.open.as_mut() else {
             return;
         };
@@ -432,15 +619,46 @@ impl Menus {
         }
     }
 
-    /// Closes the window shown, if any, as the server closes one.
+    /// Closes the window shown, if any, as the server closes one, and carries what it
+    /// and window 0 both show into window 0 (`transferState`: the real and remote
+    /// slots, the state id and the carried stack left as they were).
     fn close_shown(&mut self) -> Vec<Bytes> {
         self.held.clear();
-        match self.open.take() {
-            Some(open) => vec![encoded(&ClientboundContainerClose {
-                window_id: open.window,
-            })],
-            None => Vec::new(),
+        let Some(open) = self.open.take() else {
+            return Vec::new();
+        };
+        for (index, (real, remote)) in open.real.iter().zip(&open.remote).enumerate() {
+            let Some(at) = inventory_slot_shown(open.kind, index).and_then(inventory_menu_slot)
+            else {
+                continue;
+            };
+            if let (Some(to_real), Some(to_remote)) = (
+                self.inventory.real.get_mut(at),
+                self.inventory.remote.get_mut(at),
+            ) {
+                *to_real = real.clone();
+                *to_remote = remote.clone();
+            }
         }
+        vec![encoded(&ClientboundContainerClose {
+            window_id: open.window,
+        })]
+    }
+}
+
+/// The slot of window 0 that shows the inventory slot `slot` (0 to 40).
+fn inventory_menu_slot(slot: usize) -> Option<usize> {
+    Inventory::to_container(slot).and_then(|at| usize::try_from(at).ok())
+}
+
+/// The inventory slot (0 to 35) that the menu slot `index` of a menu of N6 shows, if
+/// it shows one: the main inventory after the container's slots, then the hotbar.
+fn inventory_slot_shown(kind: MenuKind, index: usize) -> Option<usize> {
+    let from = index.checked_sub(kind.container_slots())?;
+    match from {
+        0..=26 => Some(from + 9),
+        27..=35 => Some(from - 27),
+        _ => None,
     }
 }
 

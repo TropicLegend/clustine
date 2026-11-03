@@ -62,7 +62,12 @@ fn menu_events(output: &TickOutput) -> Vec<PlayerEvent> {
         .filter(|(id, _)| *id == player(1))
         .map(|(_, event)| event.clone())
         .filter(|event| {
-            matches!(
+            // Window 0's reports (serial 0) are `inventory_menu.rs`'s.
+            !matches!(
+                event,
+                PlayerEvent::MenuOpened { serial: 0, .. }
+                    | PlayerEvent::MenuChanged { serial: 0, .. }
+            ) && matches!(
                 event,
                 PlayerEvent::MenuOpened { .. }
                     | PlayerEvent::MenuChanged { .. }
@@ -229,6 +234,16 @@ fn a_resync_reports_the_menu_whole_or_the_inventory_where_none_is_open() {
         &menu_events(&none)[..],
         [PlayerEvent::NoMenu { applied: 5, .. }]
     ));
+    // Then window 0 whole, whose changes may have been lost too.
+    assert!(none.player_events.iter().any(|(_, event)| matches!(
+        event,
+        PlayerEvent::MenuOpened {
+            serial: 0,
+            applied: 5,
+            kind: MenuKind::Inventory,
+            ..
+        }
+    )));
     region.tick(&use_chest(41));
     let whole = region.tick(&input(42, PlayerInput::MenuResync));
     assert!(matches!(

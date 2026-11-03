@@ -201,6 +201,7 @@ pub(in crate::region) fn add_player(
         travel: None,
         seen_credits: false,
         in_credits: false,
+        crafting: Default::default(),
     };
     region.players.insert(id, player);
     (id, entity_id)

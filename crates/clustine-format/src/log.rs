@@ -305,6 +305,11 @@ pub struct LoggedPlace {
     /// Their game mode's id and the previous one's, if any (`docs/groundwork/v-plan.md`,
     /// section 4.1).
     pub mode: (u8, Option<u8>),
+    /// Their inventory screen's 2×2 grid, row by row, its result and the stack on its
+    /// cursor (section 4.7 of the same plan).
+    pub crafting_grid: [Option<ItemStack>; 4],
+    pub crafting_result: Option<ItemStack>,
+    pub carried: Option<ItemStack>,
 }
 
 impl PartialEq for LoggedPlace {
@@ -336,6 +341,9 @@ impl PartialEq for LoggedPlace {
             && self.dead == other.dead
             && self.last_death == other.last_death
             && self.mode == other.mode
+            && self.crafting_grid == other.crafting_grid
+            && self.crafting_result == other.crafting_result
+            && self.carried == other.carried
     }
 }
 
@@ -1331,6 +1339,14 @@ pub(crate) fn put_place(out: &mut Vec<u8>, place: &LoggedPlace) {
     // The game mode's id, then the previous one's or 255 for none (format 24).
     out.push(place.mode.0);
     out.push(place.mode.1.unwrap_or(NO_PREVIOUS_MODE));
+    // The inventory screen's grid, result and cursor (format 25).
+    for slot in place
+        .crafting_grid
+        .iter()
+        .chain([&place.crafting_result, &place.carried])
+    {
+        put_optional_stack(out, slot.as_ref());
+    }
 }
 
 /// What a place writes for no previous game mode.
@@ -1398,7 +1414,16 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
     if mode > 3 || previous.is_some_and(|previous| previous > 3) {
         return Err(FormatError::Corrupt("a place's game mode"));
     }
+    let mut crafting_grid = [const { None }; 4];
+    for slot in &mut crafting_grid {
+        *slot = take_optional_stack(input, "a crafting grid's slot")?;
+    }
+    let crafting_result = take_optional_stack(input, "a crafting result")?;
+    let carried = take_optional_stack(input, "a carried stack")?;
     Ok(LoggedPlace {
+        crafting_grid,
+        crafting_result,
+        carried,
         mode: (mode, previous),
         last_death,
         dimension,
@@ -3083,6 +3108,9 @@ mod tests {
             effects: Vec::new(),
             time_since_rest: 0,
             raid_omen_position: None,
+            crafting_grid: [None, Some(ItemStack::new(7, 2)), None, None],
+            crafting_result: None,
+            carried: Some(ItemStack::new(8, 1)),
         }
     }
 
@@ -3393,6 +3421,12 @@ mod tests {
         payload.extend_from_slice(&[0, 0, 0, 7]);
         // Survival (0), creative (1) before it.
         payload.extend_from_slice(&[0, 1]);
+        // The crafting grid: two of item 7 in its second slot; no result; one of item 8
+        // on the cursor.
+        payload.push(0);
+        payload.extend_from_slice(&[1, 0, 0, 0, 7, 0, 0, 0, 2, 0, 0, 0, 0]);
+        payload.extend_from_slice(&[0, 0, 0]);
+        payload.extend_from_slice(&[1, 0, 0, 0, 8, 0, 0, 0, 1, 0, 0, 0, 0]);
         assert_eq!(bytes[..4], (payload.len() as u32).to_be_bytes());
         assert_eq!(bytes[4..8], crc32fast::hash(&payload).to_be_bytes());
         assert_eq!(bytes[8..], payload);
@@ -3543,12 +3577,13 @@ mod tests {
     /// kept claims, of 17, before they kept raids, of 18, before places named their
     /// dimension, of 19, before the records written forward named theirs, of 20,
     /// before a place carried the player's health, of 21, before a gateway's travel
-    /// carried its island, and of 22, before a place carried the last death, are refused
+    /// carried its island, of 22, before a place carried the last death, of 23, before it
+    /// carried the game mode, and of 24, before it carried the crafting grid, are refused
     /// as any record of another format is.
     #[test]
-    fn records_of_formats_13_to_23_are_refused() {
-        assert_eq!(FORMAT_VERSION, 24);
-        for earlier in [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23] {
+    fn records_of_formats_13_to_24_are_refused() {
+        assert_eq!(FORMAT_VERSION, 25);
+        for earlier in [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24] {
             let mut payload = commit_with_stays().encode()[FRAME_HEADER_LENGTH..].to_vec();
             assert_eq!(payload[0], FORMAT_VERSION);
             payload[0] = earlier;
@@ -3753,6 +3788,9 @@ mod tests {
                         effects: Vec::new(),
                         time_since_rest: 0,
                         raid_omen_position: None,
+                        crafting_grid: [const { None }; 4],
+                        crafting_result: None,
+                        carried: None,
                     }
                 },
             )

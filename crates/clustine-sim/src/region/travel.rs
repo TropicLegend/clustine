@@ -195,6 +195,9 @@ impl Region {
         let feet = player.pose.position;
         let travel = self.travel_of(kind, to, entry, [feet.x, feet.y, feet.z], PLAYER_SIZE);
         self.stop_sleep(id, true, false, output);
+        // `Player.remove` with `CHANGED_DIMENSION`: window 0's grid and cursor go back
+        // into the inventory first (the V3 review's finding 4).
+        self.inventory_menu_removed(id, output);
         self.menu_leaving(id, true, output);
         let Some(player) = self.players.remove(&id) else {
             return;

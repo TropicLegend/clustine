@@ -173,6 +173,7 @@ fn place_in(chunk: ChunkPos) -> Place {
         effects: Vec::new(),
         time_since_rest: 0,
         raid_omen_position: None,
+        crafting: Default::default(),
     }
 }
 
@@ -235,6 +236,7 @@ fn place_of(state: &PlayerState) -> Place {
         effects: Vec::new(),
         time_since_rest: 0,
         raid_omen_position: None,
+        crafting: Default::default(),
     }
 }
 
@@ -259,6 +261,7 @@ fn place_from(transfer: &PlayerTransfer) -> Place {
         effects: Vec::new(),
         time_since_rest: 0,
         raid_omen_position: None,
+        crafting: Default::default(),
     }
 }
 
@@ -388,6 +391,7 @@ fn transfer(entity: EntityId, hops: u32, attempt: Option<u64>, position: Vec3) -
         effects: Vec::new(),
         time_since_rest: 0,
         raid_omen_position: None,
+        crafting: Default::default(),
     }
 }
 
@@ -697,6 +701,7 @@ fn at_spawn() -> Place {
         effects: Vec::new(),
         time_since_rest: 0,
         raid_omen_position: None,
+        crafting: Default::default(),
     }
 }
 
@@ -832,6 +837,7 @@ fn an_entering_stay_whose_place_nobody_holds_is_placed_there_as_the_player_left(
         // go, as the next region's first tick counts it.
         time_since_rest: 2,
         raid_omen_position: None,
+        crafting: Default::default(),
     };
     let departed = Durable::Departed {
         player: player(1),
@@ -889,6 +895,7 @@ fn an_entering_stay_whose_place_another_region_holds_is_let_go_there_without_bei
         effects: Vec::new(),
         time_since_rest: 0,
         raid_omen_position: None,
+        crafting: Default::default(),
     };
     let departed = Durable::Departed {
         player: player(1),
@@ -932,6 +939,7 @@ fn a_place_below_the_world_counts_as_no_place_whoever_holds_it() {
         effects: Vec::new(),
         time_since_rest: 0,
         raid_omen_position: None,
+        crafting: Default::default(),
     };
     for holder in [None, Some(OTHER)] {
         for y in [-64.01, -70.0, -1.0e7] {
@@ -1204,6 +1212,7 @@ fn the_first_tick_after_a_merge_and_after_a_split_names_every_stay() {
         effects: Vec::new(),
         rested: 0,
         raid_omen_position: None,
+        crafting: Default::default(),
     };
     other.players.insert(player(5), theirs.clone());
     let merged = region.absorb(OTHER, &other);
@@ -1677,6 +1686,7 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
         effects: Vec::new(),
         rested: 0,
         raid_omen_position: None,
+        crafting: Default::default(),
     };
     state.players.insert(player(1), earlier.clone());
     let holdings = Holdings {
@@ -1785,6 +1795,7 @@ fn a_merge_keeps_of_two_copies_of_a_stay_the_one_with_more_hops() {
         effects: Vec::new(),
         rested: 0,
         raid_omen_position: None,
+        crafting: Default::default(),
     };
     for (ours, theirs) in [(1, 3), (3, 1), (2, 2)] {
         let survivor = home();
@@ -1964,6 +1975,7 @@ fn every_ended_of_a_tick_is_numbered_below_every_departed_of_it() {
         effects: Vec::new(),
         rested: 0,
         raid_omen_position: None,
+        crafting: Default::default(),
     };
     state.players.insert(player(1), earlier);
     let holdings = Holdings {

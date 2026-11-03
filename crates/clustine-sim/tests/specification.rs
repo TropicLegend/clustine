@@ -1012,6 +1012,7 @@ fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
         keys: Default::default(),
         kept: Vec::new(),
         raid_omen_position: None,
+        crafting: Default::default(),
     }
 }
 

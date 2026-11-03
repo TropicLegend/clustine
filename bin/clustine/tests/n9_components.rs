@@ -262,6 +262,9 @@ fn place() -> LoggedPlace {
         }],
         time_since_rest: 4_321,
         raid_omen_position: None,
+        crafting_grid: [const { None }; 4],
+        crafting_result: None,
+        carried: None,
     }
 }
 

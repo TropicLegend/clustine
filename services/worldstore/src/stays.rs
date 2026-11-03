@@ -82,6 +82,12 @@ pub(crate) fn place(x: f64, z: f64) -> Place {
         effects: Vec::new(),
         time_since_rest: 0,
         raid_omen_position: None,
+        crafting: clustine_rpc::Crafting {
+            grid: [None, None, Some(ItemStack::new(9, x as i32)), None],
+            result: None,
+            carried: Some(ItemStack::new(5, 2)),
+            drag: None,
+        },
     }
 }
 
@@ -203,6 +209,9 @@ pub(crate) fn on_disk(place: &Place) -> LoggedPlace {
         effects: place.effects.clone(),
         time_since_rest: place.time_since_rest,
         raid_omen_position: place.raid_omen_position.map(|pos| [pos.x, pos.y, pos.z]),
+        crafting_grid: place.crafting.grid.clone(),
+        crafting_result: place.crafting.result.clone(),
+        carried: place.crafting.carried.clone(),
     }
 }
 

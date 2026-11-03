@@ -18,8 +18,8 @@ pub use clustine_sim::{
     RaidSeen, Respawned, SPAWN_CATEGORIES, SpawnCounts, VillageReport,
 };
 pub use clustine_sim::{
-    FaceChange, FaceSeq, GatewayExit, GatewayExitAnswer, GatewayExitQuery, Place, PlayerFace,
-    PortalAnswer, PortalQuery, QueryId, StayNote, Unit, WorldPlayer,
+    Crafting, FaceChange, FaceSeq, GatewayExit, GatewayExitAnswer, GatewayExitQuery, Place,
+    PlayerFace, PortalAnswer, PortalQuery, QueryId, StayNote, Unit, WorldPlayer,
 };
 pub use messages::{
     Assignment, ChunkBox, CopyUse, Coupling, Crowds, Decline, EdgeMessage, EdgeToWorker,

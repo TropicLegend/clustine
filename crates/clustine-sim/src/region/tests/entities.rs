@@ -320,17 +320,25 @@ fn q_takes_one_ctrl_q_the_stack_creative_lessens_it_and_an_empty_hand_throws_not
     region.tick(&moves(vec![set_slot(1, 0, Some(ten))]));
 
     // Q: one of the ten, which the player no longer holds (creative players too, as
-    // `Inventory.removeFromSelected` takes it), and the client is told nothing.
+    // `Inventory.removeFromSelected` takes it). The client foresaw it; it is told only
+    // by window 0's report, as the inventory menu's `broadcastChanges` tells it.
     let output = region.tick(&moves(vec![throw_held(false)]));
     assert_eq!(
         stack_of(&the_whole(&output)),
         ItemStack { count: 1, ..STONE }
     );
     assert_eq!(held(&region, 0), Some(ItemStack { count: 9, ..STONE }));
-    assert!(
-        output.player_events.is_empty(),
-        "{:?}",
-        output.player_events
+    assert_eq!(
+        output.player_events,
+        [(
+            player(1),
+            PlayerEvent::MenuChanged {
+                serial: 0,
+                applied: region.player_state(player(1)).expect("in").last_input,
+                slots: vec![(36, Some(ItemStack { count: 9, ..STONE }))],
+                carried: None,
+            }
+        )]
     );
     // Its change of the player goes to the store with the tick.
     assert!(output.delta.players.iter().any(|(id, _)| *id == player(1)));
@@ -492,8 +500,12 @@ fn a_throw_from_a_chunk_that_does_not_tick_is_sent_as_an_arrival() {
     };
     assert_eq!((*chunk, thrown.key, thrown.hops), (ORIGIN, FIRST_ITEM, 0));
     assert!(output.entity_changes.is_empty());
+    // Window 0's report of the emptied hand is all the client is told.
     assert!(
-        output.player_events.is_empty(),
+        matches!(
+            &output.player_events[..],
+            [(_, PlayerEvent::MenuChanged { serial: 0, slots, .. })] if *slots == [(36, None)]
+        ),
         "{:?}",
         output.player_events
     );

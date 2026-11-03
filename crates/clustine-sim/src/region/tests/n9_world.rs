@@ -163,6 +163,7 @@ pub(super) fn entering_place(
         effects,
         time_since_rest,
         raid_omen_position: None,
+        crafting: Default::default(),
     }
 }
 

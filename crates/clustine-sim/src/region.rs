@@ -83,6 +83,7 @@ mod hoppers;
 mod ice;
 mod infested;
 mod instruments;
+mod inventory_menu;
 mod items;
 mod knots;
 mod leashes;
@@ -512,6 +513,8 @@ struct Player {
     /// See [`PlayerState::game_origin`] and [`PlayerState::dig`] (`digging.rs`).
     game_origin: i64,
     dig: crate::state::Dig,
+    /// See [`PlayerState::crafting`] (`inventory_menu.rs`).
+    crafting: crate::state::Crafting,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -756,6 +759,9 @@ pub struct Region {
     /// What the region last reported of each player's menu (`menu_play.rs`). Not in the
     /// state: a region restored, merged or split reports every menu whole.
     reported: BTreeMap<PlayerId, menu_play::Reported>,
+    /// What the region last reported of each player's window 0 (`inventory_menu.rs`),
+    /// in memory only: a region that has not reported it reports every slot.
+    reported_inventory: BTreeMap<PlayerId, inventory_menu::Reported>,
     /// How far pistons have moved each entity along each axis in this tick
     /// (`Entity.pistonDeltas`, `pushed.rs`); empty between ticks, as the game resets
     /// them at the first push of a tick.
@@ -920,6 +926,7 @@ impl Region {
             foreign_boxes: Vec::new(),
             blast_drops: BTreeMap::new(),
             reported: BTreeMap::new(),
+            reported_inventory: BTreeMap::new(),
             piston_deltas: BTreeMap::new(),
             block_streams: BTreeMap::new(),
             arrival_tickets: BTreeMap::new(),
@@ -1447,6 +1454,7 @@ impl Region {
         // block events are kept, so that a menu closed at a hand-over keeps its lid's
         // events with their chunk (`docs/groundwork/n6-plan.md`, section 8 item 7).
         self.tick_menus(&mut output);
+        self.tick_inventory_menus(&mut output);
         // What the tick changed of sculk sensors goes into their chunks' data
         // (`sculk.rs`).
         self.save_sensors(&mut output);
@@ -1556,6 +1564,7 @@ impl Region {
                     effects: transfer.effects.clone(),
                     time_since_rest: transfer.time_since_rest,
                     raid_omen_position: transfer.raid_omen_position,
+                    crafting: transfer.crafting.kept(),
                 },
                 face: at_portal.clone().unwrap_or_else(|| PlayerFace {
                     sprinting: transfer.keys.sprint,
@@ -1933,6 +1942,9 @@ impl Region {
         let shows_flags = !player.effects.active.is_empty();
         self.players.insert(id, player);
         self.journal.players.insert(id);
+        // The edge sends window 0 whole with the inventory at the join, its grid and
+        // cursor empty: only what differs from that is reported (`inventory_menu.rs`).
+        self.seed_inventory_report(id);
         // Every effect again, and what they show the others (`player_effects.rs`).
         self.tell_effects(id, output);
         if shows_flags {
@@ -2184,6 +2196,7 @@ impl Region {
             // reading the count it ended its tick with (`digging.rs`).
             game_origin: digging::origin_after(self.tick, transfer.digging.game_ticks),
             dig: transfer.digging.dig,
+            crafting: transfer.crafting.clone(),
             cooldowns: transfer
                 .cooldowns
                 .iter()
@@ -2277,6 +2290,12 @@ impl Region {
         let experience = place
             .as_ref()
             .map(|place| place.experience)
+            .unwrap_or_default();
+        // And their inventory screen's grid, result and cursor (the V3 review's finding
+        // 1): below the world too, as the inventory.
+        let crafting = place
+            .as_ref()
+            .map(|place| place.crafting.clone())
             .unwrap_or_default();
         // Their effects and their time since rest too, counted on from now.
         let (effects, time_since_rest, raid_omen_position) = place
@@ -2394,6 +2413,7 @@ impl Region {
                         unit: None,
                         appearance,
                         posture: Default::default(),
+                        crafting: crafting.clone(),
                     };
                     match elsewhere {
                         Some(to) => unplaced.push((edge, id, transfer, to)),
@@ -2476,6 +2496,7 @@ impl Region {
             // A new `ServerPlayerGameMode`, whose count begins at 0 (`digging.rs`).
             game_origin: digging::origin_after(self.tick, 0),
             dig: Default::default(),
+            crafting,
         };
         self.enter(id, player, attempt, output);
     }
@@ -2925,12 +2946,27 @@ impl Region {
                 self.pick_entity_item(id, user, *entity, output);
             }
             // A player's menus (`menu_play.rs`).
+            // Window 0's (`inventory_menu.rs`), which the game takes only while no
+            // other menu is open.
+            PlayerInput::ContainerClick {
+                serial: inventory_menu::SERIAL,
+                slot,
+                button,
+                kind,
+            } => self.inventory_click(id, *slot, *button, *kind, output),
             PlayerInput::ContainerClick {
                 serial,
                 slot,
                 button,
                 kind,
             } => self.menu_click(id, *serial, *slot, *button, *kind, output),
+            PlayerInput::CloseContainer {
+                serial: inventory_menu::SERIAL,
+            } => {
+                if player.menu.is_none() {
+                    self.inventory_menu_removed(id, output);
+                }
+            }
             PlayerInput::CloseContainer { serial } => {
                 self.menu_closed_by_client(id, *serial, output);
             }
@@ -4235,6 +4271,7 @@ impl Player {
             posture: self.posture,
             game_origin: self.game_origin,
             dig: self.dig,
+            crafting: self.crafting.clone(),
         }
     }
 
@@ -4287,6 +4324,7 @@ impl Player {
             worn: Default::default(),
             game_origin: state.game_origin,
             dig: state.dig,
+            crafting: state.crafting,
         }
     }
 
@@ -4348,6 +4386,7 @@ impl Player {
             effects: crate::mobs::body::effects::instances(&self.effects, tick + 1),
             time_since_rest: self.time_since_rest(tick + 1),
             raid_omen_position: self.raid_omen_position,
+            crafting: self.crafting.kept(),
         }
     }
 
@@ -4400,6 +4439,7 @@ impl Player {
                 game_ticks: digging::game_ticks(self.game_origin, tick),
                 dig: self.dig,
             },
+            crafting: self.crafting,
             cooldowns: self
                 .cooldowns
                 .into_iter()
@@ -4608,6 +4648,7 @@ mod tests {
     mod horse_riding;
     mod horses;
     mod instruments;
+    mod inventory_menu;
     mod item_physics;
     mod jockeys;
     mod k4;
@@ -6721,14 +6762,18 @@ mod tests {
             [told(1, Some(STICK)), told(40, Some(DIRT))]
         );
 
-        // Two empty hands change nothing, and nobody is told anything.
+        // Two empty hands change nothing, and the client is told only of the creative
+        // slot, by window 0's report, whose remote the edge has set already.
         let output = region.tick(&moves(vec![set_slot(1, 40, None), select(1, 5), swap()]));
         assert_eq!(
             region.state().players[&player(1)].inventory.0[OFF_HAND],
             None
         );
         assert!(
-            output.player_events.is_empty(),
+            matches!(
+                &output.player_events[..],
+                [(_, PlayerEvent::MenuChanged { serial: 0, slots, .. })] if *slots == [(45, None)]
+            ),
             "{:?}",
             output.player_events
         );
@@ -6845,6 +6890,7 @@ mod tests {
             keys: Default::default(),
             kept: Vec::new(),
             raid_omen_position: None,
+            crafting: Default::default(),
         }
     }
 
@@ -7445,6 +7491,7 @@ mod tests {
                         keys: Default::default(),
                         kept: Vec::new(),
                         raid_omen_position: None,
+                        crafting: Default::default(),
                     }
                 ),
             ]
@@ -7791,6 +7838,7 @@ mod tests {
             keys: Default::default(),
             kept: Vec::new(),
             raid_omen_position: None,
+            crafting: Default::default(),
         };
         assert_eq!(told(&output), [(player(1), spawned), departed(1, transfer)]);
         assert_eq!(let_go(&output), [(player(1), WEST_REGION)]);
@@ -9700,7 +9748,11 @@ mod tests {
                 // A swap of the hands tells the client of its slots, which the state
                 // compared with the reference's covers. Nobody joins or digs, so
                 // nothing else is to be expected.
-                if matches!(event, PlayerEvent::InventorySlot { .. }) {
+                // Window 0's reports, of a creative slot, likewise.
+                if matches!(
+                    event,
+                    PlayerEvent::InventorySlot { .. } | PlayerEvent::MenuChanged { serial: 0, .. }
+                ) {
                     continue;
                 }
                 let PlayerEvent::Departed(transfer) = event else {

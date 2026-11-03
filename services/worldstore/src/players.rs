@@ -484,6 +484,9 @@ pub(crate) fn logged_place(place: &Place) -> LoggedPlace {
         effects: place.effects.clone(),
         time_since_rest: place.time_since_rest,
         raid_omen_position: place.raid_omen_position.map(|pos| [pos.x, pos.y, pos.z]),
+        crafting_grid: place.crafting.grid.clone(),
+        crafting_result: place.crafting.result.clone(),
+        carried: place.crafting.carried.clone(),
     }
 }
 
@@ -535,6 +538,12 @@ pub(crate) fn place(logged: &LoggedPlace) -> Place {
         raid_omen_position: logged
             .raid_omen_position
             .map(|[x, y, z]| clustine_world::BlockPos::new(x, y, z)),
+        crafting: clustine_rpc::Crafting {
+            grid: logged.crafting_grid.clone(),
+            result: logged.crafting_result.clone(),
+            carried: logged.carried.clone(),
+            drag: None,
+        },
     }
 }
 

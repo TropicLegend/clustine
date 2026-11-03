@@ -654,7 +654,22 @@ told to the client; a survival player digs as the game's (the progress from the 
 its enchantments, effects, water and the ground; the cracks the others see; drops by
 the loot table with the tool; the tool's wear), and across a line too: the player's
 region wears the tool and the region that holds the block breaks it with the tool and
-drops it. Crafting and menus (V3) are next.
+drops it. V3 (crafting) has its first part: the player's own inventory screen, window
+0, is the region's (`region/inventory_menu.rs`): a survival player's clicks move stacks,
+put armour on (with its sound, Curse of Binding kept on) and use the 2×2 grid, which is
+kept across a hand-over, in the stored place and while a chest is open, and given back
+when the screen closes or the player changes level; the edge keeps window 0 beside the
+menu shown and sends only what its client does not show. The grid crafts nothing yet:
+the recipes (1266 of the crafting kinds, matched as the game matches them) are generated,
+and the result slot, the crafting table and the recipe packets are next (V3c).
+
+**What to try with a real client** (the inventory screen, since 2026-11-03): in
+survival (`gamemode <you> survival`, `give <you> iron_helmet`, `give <you> oak_log 10`),
+open the inventory with E: move stacks between the hotbar and the main inventory by
+clicks, shift-clicks and drags, put the helmet on by a shift-click (its sound plays; a
+second player sees it), put logs in the 2×2 grid, close the screen (they come back to the
+inventory), and put some in the grid again and walk across x = 64 with the screen open
+(`--pin 4 --reshape by-hand`): nothing should flicker or go back.
 
 **What to try with a real client** (survival digging, since 2026-11-03): start the
 server (`cargo run --release -p clustine -- --pin 4 --reshape by-hand` puts a fixed

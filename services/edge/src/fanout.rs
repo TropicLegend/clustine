@@ -28,13 +28,12 @@ use clustine_protocol::packets::play::{
     ClientboundMoveVehicle, ClockState, Cooldown, DamageEvent, DeathLocation, Disconnect,
     EntityDataValue, EntityEvent, GameEvent, LevelEvent, Login, PlayerAbilities, PlayerCombatKill,
     PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, PositionPath, RemoveEntities,
-    RemoveMobEffect, Respawn, SectionBlocksUpdate, SetCenterChunk, SetContainerContent,
-    SetDefaultSpawnPosition, SetEntityData, SetEntityLink, SetEquipment, SetExperience,
-    SetHeadRotation, SetHealth, SetHeldSlot, SetPassengers, SetPlayerInventory, SetTime, Sound,
-    SpawnEntity, SpawnInfo, SwingAnimation, SyncEntityPosition, SynchronizePlayerPosition,
-    SystemChat, TakeItemEntity, UnloadChunk, UpdateAttributes, UpdateMobEffect, abilities, angle,
-    entity_data, game_event, inventory as protocol_inventory, level_event, player_info, pose,
-    relative,
+    RemoveMobEffect, Respawn, SectionBlocksUpdate, SetCenterChunk, SetDefaultSpawnPosition,
+    SetEntityData, SetEntityLink, SetEquipment, SetExperience, SetHeadRotation, SetHealth,
+    SetHeldSlot, SetPassengers, SetPlayerInventory, SetTime, Sound, SpawnEntity, SpawnInfo,
+    SwingAnimation, SyncEntityPosition, SynchronizePlayerPosition, SystemChat, TakeItemEntity,
+    UnloadChunk, UpdateAttributes, UpdateMobEffect, abilities, angle, entity_data, game_event,
+    level_event, player_info, pose, relative,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -198,9 +197,9 @@ pub(crate) enum Command {
 #[derive(Debug)]
 pub(crate) enum MenuCommand {
     Click(clustine_protocol::packets::play::ContainerClick),
-    Close {
-        window: i32,
-    },
+    /// `container_close`, whose window id the game does not read
+    /// (`handleContainerClose`).
+    Close,
     /// `select_trade`: the trade the player picked in the window shown.
     SelectTrade {
         item: i32,
@@ -1905,13 +1904,23 @@ impl Fanout {
                     let view = self.players.get_mut(&player).expect("session matched");
                     // The number `player_input` gives the input it is passed next.
                     let number = view.inputs_sent + 1;
-                    let input = match what {
-                        MenuCommand::Click(packet) => view.menus.click(packet, number),
-                        MenuCommand::Close { window } => view.menus.close(window, number),
-                        MenuCommand::SelectTrade { item } => view.menus.select_trade(item),
+                    let (input, packets) = match what {
+                        MenuCommand::Click(packet) => {
+                            (view.menus.click(packet, number), Vec::new())
+                        }
+                        MenuCommand::Close => {
+                            let (input, packets) = view.menus.close(number);
+                            (Some(input), packets)
+                        }
+                        MenuCommand::SelectTrade { item } => {
+                            (view.menus.select_trade(item), Vec::new())
+                        }
                     };
                     if let Some(input) = input {
                         self.player_input(session, player, input).await;
+                    }
+                    if !packets.is_empty() {
+                        self.send_to_player(player, packets).await;
                     }
                 }
             }
@@ -2050,7 +2059,8 @@ impl Fanout {
                         entity: entity_id,
                         pose,
                         flying,
-                        inventory: inventory_packets(&inventory, selected_slot),
+                        inventory: inventory.clone(),
+                        selected_slot,
                         riding,
                         last_death,
                         mode,
@@ -2690,7 +2700,8 @@ impl Fanout {
                     entity,
                     pose,
                     flying,
-                    inventory: inventory_packets(&inventory, selected_slot),
+                    inventory: inventory.clone(),
+                    selected_slot,
                     riding,
                     last_death,
                     mode,
@@ -3133,6 +3144,10 @@ impl Fanout {
         }
         // What the region the stay moved to says of the menu may have come before the
         // edge knew it stood for the player's, and been passed over (section 9 item 3).
+        // Named: a report of window 0 passed over so is not asked for again unless a
+        // menu is shown (the V3 review's finding 9 asks for it always); the slot is put
+        // right by its next change or the next whole, and this needs a change of window
+        // 0 in the very ticks of a merge or a split.
         let shown = self
             .players
             .get(&player)
@@ -3429,13 +3444,9 @@ impl Fanout {
                 carried,
             } => view.menus.changed(serial, applied, &slots, carried),
             PlayerEvent::MenuClosed { serial, applied } => view.menus.closed(serial, applied),
-            // The inventory whole, as a resume may have lost what a close sent of it.
-            PlayerEvent::NoMenu { applied, inventory } => match view.menus.none(applied) {
-                Some(mut packets) => {
-                    let [contents, _] = inventory_packets(&inventory, 0);
-                    packets.push(contents);
-                    packets
-                }
+            // Any menu still shown closed; window 0 whole follows from the region.
+            PlayerEvent::NoMenu { applied, .. } => match view.menus.none(applied) {
+                Some(packets) => packets,
                 None => return,
             },
             _ => return,
@@ -3444,9 +3455,10 @@ impl Fanout {
     }
 
     /// Asks the region of each player in `region` whose client shows a menu for it whole
-    /// (`PlayerInput::MenuResync`): what it said of it may have been lost. A player who
-    /// shows none is not asked; what a close the client made sent of their inventory
-    /// is lost only if the link ends in the tick of the close.
+    /// (`PlayerInput::MenuResync`), and window 0 whole with it: what it said of them may
+    /// have been lost. A player who shows none is not asked (named: the V3 review's
+    /// finding 9 asks for window 0 always; a report of it lost on a link that ended is
+    /// put right by the slot's next change or the next whole).
     async fn resync_menus(&mut self, region: RegionId) {
         let players: Vec<(SessionId, PlayerId)> = self
             .players
@@ -4076,6 +4088,11 @@ impl Fanout {
         };
         view.dimension = dimension;
         view.told_clocks = None;
+        // After a death (no data kept) the client's player is new, and so is its
+        // window 0 (the V3 review's finding 4).
+        if respawn.keep == 0 {
+            view.menus.respawned_after_death();
+        }
         let held = view.respawn_owed.take().unwrap_or_default();
         let last_death = view.last_death;
         let mode = view.mode;
@@ -4637,6 +4654,15 @@ impl Fanout {
         else {
             return;
         };
+        // A creative slot is what the client shows of window 0 (`setRemoteSlot`), so
+        // that the region's report of it sends nothing back.
+        if let PlayerInput::SetInventorySlot { slot, stack } = &input
+            && let Some(view) = self.players.get_mut(&player)
+            && let Some(at) = Inventory::to_container(usize::from(*slot))
+        {
+            let at = usize::try_from(at).expect("window 0's slots are not negative");
+            view.menus.creative_slot(at, stack.clone());
+        }
         self.player_input_unchecked(player, input).await;
     }
 
@@ -5810,7 +5836,8 @@ impl Fanout {
             entity,
             pose: transfer.pose,
             flying: transfer.flying,
-            inventory: inventory_packets(&transfer.inventory, transfer.selected_slot),
+            inventory: transfer.inventory.clone(),
+            selected_slot: transfer.selected_slot,
             last_death: transfer.last_death,
             mode: transfer.mode,
         };
@@ -5882,6 +5909,7 @@ impl Fanout {
             pose,
             flying,
             inventory,
+            selected_slot,
             last_death,
             mode,
             ..
@@ -5889,6 +5917,14 @@ impl Fanout {
         let Some(view) = self.players.get_mut(&player) else {
             return false;
         };
+        // Window 0 whole, its grid and cursor empty until the region reports them
+        // (`initInventoryMenu`: state id 1), and the hotbar slot held.
+        let inventory = [
+            view.menus.entered(&inventory),
+            encoded(&SetHeldSlot {
+                slot: selected_slot.into(),
+            }),
+        ];
         view.dimension = dimension;
         view.last_death = last_death;
         view.mode = mode;
@@ -7699,28 +7735,6 @@ impl PlayerView {
     }
 }
 
-/// The packets that tell a client what its player carries: every slot of the inventory
-/// screen, the crafting grid empty, and which hotbar slot is selected.
-fn inventory_packets(inventory: &Inventory, selected_slot: u8) -> [Bytes; 2] {
-    let mut slots = vec![None; protocol_inventory::SLOT_COUNT];
-    for (slot, stack) in inventory.0.iter().enumerate() {
-        let container = Inventory::to_container(slot).expect("every inventory slot is shown");
-        let container = usize::try_from(container).expect("container slots are not negative");
-        slots[container] = stack.as_ref().map(protocol_stack);
-    }
-    [
-        encoded(&SetContainerContent {
-            window_id: protocol_inventory::PLAYER_WINDOW,
-            state_id: 0,
-            slots,
-            carried: None,
-        }),
-        encoded(&SetHeldSlot {
-            slot: selected_slot.into(),
-        }),
-    ]
-}
-
 /// The packet that tells a client what one slot of its inventory holds now, after the
 /// region changed it of its own accord (`PlayerEvent::InventorySlot`): the game's
 /// `ClientboundSetPlayerInventoryPacket`, which names the slot as the inventory does.
@@ -8206,7 +8220,9 @@ struct Entering {
     entity: EntityId,
     pose: Pose,
     flying: bool,
-    inventory: [Bytes; 2],
+    /// What they carry, which window 0 is sent whole with, and the hotbar slot they hold.
+    inventory: Inventory,
+    selected_slot: u8,
     /// What they ride, whose word is taken before their client is told anything.
     riding: Option<EntityId>,
     /// Where they last died, for the login (`docs/groundwork/p-plan.md`, section 19.9).
@@ -8690,6 +8706,7 @@ mod tests {
             keys: Default::default(),
             kept: Vec::new(),
             raid_omen_position: None,
+            crafting: Default::default(),
         }
     }
 
@@ -11603,7 +11620,8 @@ mod scenarios {
                 | ClientboundPlay::SetCursorItem(_)
                 | ClientboundPlay::ClientboundContainerClose(_) => self.menus.push(decoded),
                 ClientboundPlay::SetContainerContent(ref content)
-                    if content.window_id != protocol_inventory::PLAYER_WINDOW =>
+                    if content.window_id
+                        != clustine_protocol::packets::play::inventory::PLAYER_WINDOW =>
                 {
                     self.menus.push(decoded);
                 }
@@ -11784,6 +11802,7 @@ mod scenarios {
             keys: Default::default(),
             kept: Vec::new(),
             raid_omen_position: None,
+            crafting: Default::default(),
         }
     }
 
@@ -14160,17 +14179,20 @@ mod scenarios {
     }
 
     #[test]
-    fn a_client_is_told_every_slot_of_the_inventory_where_its_screen_shows_it() {
+    fn a_joining_client_is_told_every_slot_of_the_inventory_where_its_screen_shows_it() {
         let mut inventory = Inventory::default();
         for slot in 0..clustine_world::INVENTORY_SLOTS {
             let n = i32::try_from(slot).unwrap() + 1;
             inventory.set(slot, Some(ItemStack::new(n, n)));
         }
-        let [content, held] = inventory_packets(&inventory, 4);
+        let content = crate::menus::Menus::default().entered(&inventory);
         let Ok(ClientboundPlay::SetContainerContent(content)) = ClientboundPlay::decode(&content)
         else {
-            panic!("the first packet is the container's content");
+            panic!("window 0 is sent whole");
         };
+        // `initInventoryMenu` of a new player: window 0, state id 1, nothing carried.
+        assert_eq!((content.window_id, content.state_id), (0, 1));
+        assert!(content.carried.is_none());
         let item = |container: usize| content.slots[container].as_ref().map(|stack| stack.item);
         assert_eq!(content.slots.len(), 46);
         // The crafting grid and its result are empty.
@@ -14187,10 +14209,6 @@ mod scenarios {
             content.slots[45].as_ref().map(|stack| stack.count),
             Some(41)
         );
-        let Ok(ClientboundPlay::SetHeldSlot(held)) = ClientboundPlay::decode(&held) else {
-            panic!("the second packet selects the slot");
-        };
-        assert_eq!(held.slot, 4);
     }
 
     /// Scenario 17. A region that was passed an action and believes another to hold

@@ -1494,6 +1494,7 @@ fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
         keys: Default::default(),
         kept: Vec::new(),
         raid_omen_position: None,
+        crafting: Default::default(),
     }
 }
 

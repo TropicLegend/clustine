@@ -394,6 +394,7 @@ impl Scene {
                     effects: Vec::new(),
                     time_since_rest: 0,
                     raid_omen_position: None,
+                    crafting: Default::default(),
                 }),
                 holder: None,
             }],
@@ -694,6 +695,8 @@ pub fn opened(output: &TickOutput, who: PlayerId) -> Vec<Opened> {
     events_of(output, who)
         .into_iter()
         .filter_map(|event| match event {
+            // Window 0's reports (serial 0) are not the menus of N6.
+            PlayerEvent::MenuOpened { serial: 0, .. } => None,
             PlayerEvent::MenuOpened {
                 serial,
                 applied,
@@ -719,6 +722,8 @@ pub fn changed(output: &TickOutput, who: PlayerId) -> Vec<Changed> {
     events_of(output, who)
         .into_iter()
         .filter_map(|event| match event {
+            // Window 0's reports (serial 0) are not the menus of N6.
+            PlayerEvent::MenuChanged { serial: 0, .. } => None,
             PlayerEvent::MenuChanged {
                 serial,
                 applied,

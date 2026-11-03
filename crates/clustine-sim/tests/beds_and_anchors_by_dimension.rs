@@ -182,6 +182,7 @@ fn join_in(scene: &mut Scene, dimension: Dimension, n: u128, feet: Vec3) {
                 effects: Vec::new(),
                 time_since_rest: 0,
                 raid_omen_position: None,
+                crafting: Default::default(),
             }),
             holder: None,
         }],

@@ -68,8 +68,9 @@ pub use region::{
 /// change (section 19.6 of the same plan); 22 since a gateway's travel may carry the island
 /// its exit's holder makes (section 19.8 of the same plan); 23 since a place ends with
 /// where the player last died (section 19.9); 24 since it ends with their game mode and
-/// the one before it (`docs/groundwork/v-plan.md`, section 4.1).
-pub const FORMAT_VERSION: u8 = 24;
+/// the one before it (`docs/groundwork/v-plan.md`, section 4.1); 25 since it ends with
+/// their inventory screen's crafting grid, its result and the cursor (section 4.7).
+pub const FORMAT_VERSION: u8 = 25;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

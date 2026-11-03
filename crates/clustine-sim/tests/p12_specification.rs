@@ -430,6 +430,7 @@ impl Scene {
                     effects: Vec::new(),
                     time_since_rest: 0,
                     raid_omen_position: None,
+                    crafting: Default::default(),
                 }),
                 holder: None,
             }],

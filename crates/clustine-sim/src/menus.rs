@@ -204,13 +204,6 @@ pub(crate) fn inventory_slot_of(kind: MenuKind, index: usize) -> Option<usize> {
 
 /// The menu slot that shows the inventory slot `slot`, if one does: 0 to 35 in every
 /// menu, and in the inventory screen the armour (36 to 39) and the off hand (40) too.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the edge maps the inventory onto a menu itself; kept beside its inverse"
-    )
-)]
 pub(crate) fn menu_slot_of(kind: MenuKind, slot: usize) -> Option<usize> {
     if kind == MenuKind::Inventory {
         return match slot {

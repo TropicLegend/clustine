@@ -203,7 +203,6 @@ fn a_click_of_a_window_not_shown_is_refused() {
     assert_eq!(menus.click(click_at(1, 0, 0, Vec::new(), None), 3), None);
     opened(&mut menus, 7);
     assert_eq!(menus.click(click_at(2, 1, 0, Vec::new(), None), 8), None);
-    assert_eq!(menus.close(2, 8), None);
 }
 
 #[test]
@@ -219,10 +218,7 @@ fn an_answer_of_another_menu_changes_nothing() {
 fn a_menu_the_client_closed_is_not_opened_again_by_an_older_report() {
     let mut menus = Menus::default();
     opened(&mut menus, 7);
-    assert_eq!(
-        menus.close(1, 10),
-        Some(PlayerInput::CloseContainer { serial: 7 })
-    );
+    assert_eq!(menus.close(10).0, PlayerInput::CloseContainer { serial: 7 });
     // A region restored to before the close reports the menu whole.
     assert_eq!(
         read(&menus.opened(7, 9, MenuKind::Rows3, "container.chest", chest(), None)),
@@ -394,4 +390,176 @@ fn an_entity_s_menu_is_titled_with_its_name_as_the_official_server_titles_a_cler
         menu_title("container.chest", None),
         Text::translatable("container.chest").to_nbt()
     );
+}
+
+/// An inventory whose hotbar's first slot holds 64 of item 1.
+fn carrying() -> Inventory {
+    let mut inventory = Inventory::default();
+    inventory.set(0, stack(1, 64));
+    inventory
+}
+
+#[test]
+fn a_join_sends_window_0_whole_with_the_state_id_1() {
+    let mut menus = Menus::default();
+    let packets = read(&[menus.entered(&carrying())]);
+    let [ClientboundPlay::SetContainerContent(content)] = &packets[..] else {
+        panic!("{packets:?}");
+    };
+    assert_eq!((content.window_id, content.state_id), (0, 1));
+    assert_eq!(content.slots.len(), 46);
+    // The hotbar's first slot is window 0's 36.
+    assert_eq!(
+        content.slots[36].as_ref().map(|stack| stack.count),
+        Some(64)
+    );
+    assert!(content.carried.is_none());
+}
+
+#[test]
+fn a_click_on_window_0_with_no_menu_shown_goes_to_the_region_as_serial_0() {
+    let mut menus = Menus::default();
+    let _ = menus.entered(&carrying());
+    assert_eq!(
+        menus.click(click_at(0, 1, 36, vec![(36, None)], hashed(1, 64)), 4),
+        Some(PlayerInput::ContainerClick {
+            serial: INVENTORY,
+            slot: 36,
+            button: 0,
+            kind: ClickKind::Pickup,
+        })
+    );
+    // The region's answer takes the client's hashes as what it shows: nothing is sent.
+    let answer = menus.changed(INVENTORY, 4, &[(36, None)], Some(stack(1, 64)));
+    assert_eq!(read(&answer), []);
+}
+
+#[test]
+fn a_click_on_window_0_while_a_chest_is_shown_is_refused() {
+    let mut menus = Menus::default();
+    opened(&mut menus, 7);
+    assert_eq!(menus.click(click_at(0, 0, 36, Vec::new(), None), 8), None);
+}
+
+#[test]
+fn window_0_answered_after_a_stale_click_is_sent_whole() {
+    let mut menus = Menus::default();
+    let _ = menus.entered(&carrying());
+    menus.click(click_at(0, 0, 36, Vec::new(), None), 4);
+    let packets = read(&menus.changed(INVENTORY, 4, &[], None));
+    let [ClientboundPlay::SetContainerContent(content)] = &packets[..] else {
+        panic!("{packets:?}");
+    };
+    assert_eq!((content.window_id, content.state_id), (0, 2));
+}
+
+#[test]
+fn window_0_reported_while_a_chest_is_shown_sends_nothing_until_the_chest_closes() {
+    let mut menus = Menus::default();
+    let _ = menus.entered(&Inventory::default());
+    opened(&mut menus, 7);
+    // A helmet put on while the chest is open: window 0's slot 5.
+    assert_eq!(
+        read(&menus.changed(INVENTORY, 8, &[(5, stack(2, 1))], None)),
+        []
+    );
+    let packets = read(&menus.closed(7, 9));
+    let [
+        ClientboundPlay::ClientboundContainerClose(close),
+        ClientboundPlay::ContainerSetSlot(set),
+    ] = &packets[..]
+    else {
+        panic!("{packets:?}");
+    };
+    assert_eq!(close.window_id, 1);
+    // The next state id of window 0, which was 1 at the join.
+    assert_eq!((set.window_id, set.state_id, set.slot), (0, 2, 5));
+}
+
+#[test]
+fn a_chests_close_carries_what_the_client_shows_of_the_inventory_into_window_0() {
+    let mut menus = Menus::default();
+    let _ = menus.entered(&carrying());
+    opened(&mut menus, 7);
+    // The hotbar's first slot is the chest menu's 54; the client moves its stack into
+    // the chest's first slot's place and says so by hashes.
+    menus.click(click_at(1, 1, 54, vec![(54, None)], hashed(1, 64)), 8);
+    assert_eq!(
+        read(&menus.changed(7, 8, &[(54, None)], Some(stack(1, 64)))),
+        []
+    );
+    // The region's window 0 says the same of the hotbar.
+    assert_eq!(read(&menus.changed(INVENTORY, 8, &[(36, None)], None)), []);
+    // The client closes the chest: window 0 takes what the client showed of the
+    // inventory in it (`transferState`), which is the region's, and nothing is sent.
+    let (input, packets) = menus.close(9);
+    assert_eq!(input, PlayerInput::CloseContainer { serial: 7 });
+    assert_eq!(read(&packets), []);
+}
+
+#[test]
+fn a_close_with_no_menu_shown_is_window_0s_and_keeps_its_record() {
+    let mut menus = Menus::default();
+    let _ = menus.entered(&carrying());
+    let (input, packets) = menus.close(4);
+    assert_eq!(input, PlayerInput::CloseContainer { serial: INVENTORY });
+    assert!(packets.is_empty());
+    // The region's report of the grid emptied is still taken and sent.
+    let packets = read(&menus.changed(INVENTORY, 4, &[(1, None)], None));
+    assert_eq!(packets, []);
+    let packets = read(&menus.changed(INVENTORY, 5, &[(1, stack(3, 1))], None));
+    let [ClientboundPlay::ContainerSetSlot(set)] = &packets[..] else {
+        panic!("{packets:?}");
+    };
+    assert_eq!((set.window_id, set.slot), (0, 1));
+}
+
+#[test]
+fn a_close_of_another_window_than_the_one_shown_closes_the_one_shown() {
+    let mut menus = Menus::default();
+    opened(&mut menus, 7);
+    let (input, _) = menus.close(9);
+    assert_eq!(input, PlayerInput::CloseContainer { serial: 7 });
+    assert_eq!(menus.serial(), None);
+}
+
+#[test]
+fn a_creative_slot_is_what_the_client_shows_and_is_not_sent_back() {
+    let mut menus = Menus::default();
+    let _ = menus.entered(&Inventory::default());
+    menus.creative_slot(36, stack(4, 16));
+    assert_eq!(
+        read(&menus.changed(INVENTORY, 3, &[(36, stack(4, 16))], None)),
+        []
+    );
+}
+
+#[test]
+fn an_inventory_slot_the_region_set_is_window_0s_too() {
+    let mut menus = Menus::default();
+    let _ = menus.entered(&Inventory::default());
+    // The helmet slot, inventory 39, is window 0's 5.
+    menus.inventory_slot(39, stack(2, 1));
+    assert_eq!(
+        read(&menus.changed(INVENTORY, 3, &[(5, stack(2, 1))], None)),
+        []
+    );
+}
+
+#[test]
+fn window_0_whole_from_a_resync_is_sent_with_the_next_state_id_and_begins_again_after_a_death() {
+    let mut menus = Menus::default();
+    let _ = menus.entered(&Inventory::default());
+    let slots = vec![None; 46];
+    let packets = read(&menus.opened(INVENTORY, 3, MenuKind::Inventory, "", slots.clone(), None));
+    let [ClientboundPlay::SetContainerContent(content)] = &packets[..] else {
+        panic!("{packets:?}");
+    };
+    assert_eq!((content.window_id, content.state_id), (0, 2));
+    menus.respawned_after_death();
+    let packets = read(&menus.opened(INVENTORY, 4, MenuKind::Inventory, "", slots, None));
+    let [ClientboundPlay::SetContainerContent(content)] = &packets[..] else {
+        panic!("{packets:?}");
+    };
+    assert_eq!(content.state_id, 1);
 }

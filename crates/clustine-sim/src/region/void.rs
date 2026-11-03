@@ -176,6 +176,8 @@ impl Region {
         player.last_death = Some(died_in);
         // `dropAllDeathLoot` where they died: below the world, where nothing stays.
         player.inventory = Inventory::default();
+        // And window 0's grid, result and cursor with it.
+        player.crafting = Default::default();
         player.experience = Experience::default();
         let (edge, entity, chunk) = (player.edge, player.entity_id, player.chunk());
         self.journal.players.insert(id);
@@ -231,9 +233,19 @@ impl Region {
         if !self.players.get(&id).is_some_and(|player| player.dead) {
             return false;
         }
-        if matches!(input, PlayerInput::PerformRespawn) {
-            self.end_body(id, output);
-            self.asked_input(id, input);
+        match input {
+            PlayerInput::PerformRespawn => {
+                self.end_body(id, output);
+                self.asked_input(id, input);
+            }
+            // `handleContainerClick` of a dead player sends the window whole (the V3
+            // review's finding 18), which here is always window 0: a death closes any
+            // other.
+            PlayerInput::ContainerClick {
+                serial: super::inventory_menu::SERIAL,
+                ..
+            } => self.report_inventory_whole(id, output),
+            _ => {}
         }
         true
     }

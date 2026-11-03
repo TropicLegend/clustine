@@ -272,5 +272,6 @@ pub(super) fn waiting_place(transfer: &PlayerTransfer) -> Place {
         travel: transfer.travel,
         seen_credits: transfer.seen_credits,
         portal_cooldown: transfer.portal.cooldown,
+        crafting: transfer.crafting.kept(),
     }
 }

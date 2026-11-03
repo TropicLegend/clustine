@@ -128,6 +128,11 @@ pub struct Place {
     /// Whether they are dead, shown the respawn screen, and are to enter through the
     /// respawn.
     pub dead: bool,
+    /// Their inventory screen's grid, result and cursor, which a join enters with
+    /// (`docs/groundwork/v-plan.md`, section 4.7, and the V3 review's finding 1): the game
+    /// drops them at the feet when a player leaves. A drag under way is not kept; a
+    /// client that joins has none.
+    pub crafting: crate::state::Crafting,
 }
 
 /// A player asleep in a bed: its head, and the game time of their region they lay down
@@ -523,6 +528,9 @@ pub struct PlayerTransfer {
     /// Their dig and the count it is of, which go on in the next region
     /// (`docs/groundwork/v-plan.md`, section 4.5).
     pub digging: crate::state::Digging,
+    /// Their inventory screen's own state, which crosses with them: the game never
+    /// closes it (`docs/groundwork/v-plan.md`, section 4.7).
+    pub crafting: crate::state::Crafting,
 }
 
 /// The number of spawning categories counted: `MobCategory` but `MISC`, in its order.
