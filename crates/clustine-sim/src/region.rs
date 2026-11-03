@@ -2191,7 +2191,12 @@ impl Region {
             last_hurt_mob: None,
             using: transfer.using,
             // Counted on from the region's ticks, as the cooldowns are.
-            effects: crate::mobs::body::effects::from_instances(&transfer.effects, self.tick),
+            effects: {
+                let mut effects =
+                    crate::mobs::body::effects::from_instances(&transfer.effects, self.tick);
+                effects.absorption = transfer.vitals.absorption;
+                effects
+            },
             rested: self
                 .tick
                 .saturating_sub(u64::from(transfer.time_since_rest)),
@@ -2495,7 +2500,13 @@ impl Region {
             last_hurt_mob: None,
             using: None,
             cooldowns: Vec::new(),
-            effects: crate::mobs::body::effects::from_instances(&effects, self.tick),
+            // The absorption first, as `readAdditionalSaveData` sets it before the effects,
+            // so that Absorption's effect stays while it is above 0.
+            effects: {
+                let mut effects = crate::mobs::body::effects::from_instances(&effects, self.tick);
+                effects.absorption = placed_vitals.absorption;
+                effects
+            },
             rested: self.tick.saturating_sub(u64::from(time_since_rest)),
             raid_omen_position,
             portal: clustine_world::PortalState {

@@ -6,7 +6,9 @@
 //! instant effects; and at the end of the tick `SetHealth` on the game's rule of change
 //! (`doTick @145-264`) and the player's own entity data where it changed.
 //!
-//! Named: peaceful's regeneration (`ServerPlayer.tickRegeneration`) waits for a
+//! Named: a newcomer whose health and food are a new player's is not told them at the
+//! join, where the game's first `doTick` sends them (`resetSentInfo`): their client shows
+//! the same already. Peaceful's regeneration (`ServerPlayer.tickRegeneration`) waits for a
 //! difficulty other than easy (`Difficulty::WORLD`); the food's timer counts the ticks a
 //! player's body is not run (`food.rs`).
 

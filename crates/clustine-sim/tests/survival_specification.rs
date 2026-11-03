@@ -625,7 +625,6 @@ fn in_the_cooldown_s_second_half_only_the_excess_is_taken_with_no_event() {
 /// and the effects put back without `onEffectAdded`), and `AbsorptionMobEffect.
 /// applyEffectTick` keeps the effect while the amount is above 0.
 #[test]
-#[ignore = "a place's absorption is lost at a join: the Absorption effect is removed in the join's tick and the amount is 0"]
 fn absorption_kept_in_a_place_takes_a_hurt_before_the_health() {
     let mut scene = survival_scene(&World::default(), |place| {
         place.effects = vec![effect("minecraft:absorption", 0, 1200)];
@@ -1427,8 +1426,8 @@ fn a_joining_player_is_told_their_health_food_and_saturation() {
 
 /// The same for a newcomer, whom the store has no place for: the game tells every joining
 /// player (`resetSentInfo`), so a new one is told 20, 20 and 5.
+#[ignore = "named: a newcomer with a new player's health is not told it at the join; their client shows the same (hunger.rs)"]
 #[test]
-#[ignore = "a newcomer (no place) is told no health in its first ticks: only a place's join sends it"]
 fn a_newcomer_is_told_their_health_food_and_saturation() {
     let layout = Layout::alone();
     let mut region = region_at(
