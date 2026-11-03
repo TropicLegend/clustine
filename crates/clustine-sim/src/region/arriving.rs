@@ -658,6 +658,7 @@ impl Region {
                             saturation: player.vitals.food.saturation,
                         },
                     ));
+                    self.told_health(id);
                     // And their experience (`PlayerList.respawn` 1014–1023), which the
                     // client's new player otherwise shows as none.
                     output

@@ -255,14 +255,6 @@ impl Context {
 pub(crate) struct Steps {
     moved: f32,
     next: f32,
-    fall: f64,
-}
-
-impl Steps {
-    /// `fallDistance` as the player's moves left it, which a critical hit reads.
-    pub(crate) fn fall(&self) -> f64 {
-        self.fall
-    }
 }
 
 impl Default for Steps {
@@ -270,7 +262,6 @@ impl Default for Steps {
         Steps {
             moved: 0.0,
             next: 1.0,
-            fall: 0.0,
         }
     }
 }
@@ -526,7 +517,13 @@ impl Region {
     /// player `id` that their client reported, `delta` from where they were, on the
     /// ground before it as `was_on_ground` says: a step each time their walk passes the
     /// next, and a landing at the end of a fall.
-    pub(crate) fn player_moved(&mut self, id: PlayerId, delta: [f64; 3], was_on_ground: bool) {
+    pub(crate) fn player_moved(
+        &mut self,
+        id: PlayerId,
+        delta: [f64; 3],
+        was_on_ground: bool,
+        output: &mut TickOutput,
+    ) {
         let Some(player) = self.players.get(&id) else {
             return;
         };
@@ -543,6 +540,11 @@ impl Region {
             dampens: false,
         };
         let mut steps = player.steps;
+        // `fallDistance`, which the body keeps (V4).
+        let mut fall = player.vitals.fall_distance;
+        let sprinting = player.keys.sprint;
+        let swimming = player.posture.swimming;
+        let eyes_in_water = player.eyes.in_water();
         // `Entity.move`: a vertical move is not on the ground unless the region's
         // collision stopped it, which it does not run; a level one keeps the ground of
         // the move before.
@@ -588,24 +590,53 @@ impl Region {
         }
         // `doCheckFallDamage` with the client's ground, then `checkFallDamage`.
         if in_water {
-            steps.fall = 0.0;
+            fall = 0.0;
         } else if delta[1] < 0.0 {
-            steps.fall -= f64::from(delta[1] as f32);
+            fall -= f64::from(delta[1] as f32);
         }
+        let mut landed_from = None;
         if landed {
-            if steps.fall > 0.0 {
+            if fall > 0.0 {
+                // The block's `fallOn` (V4), then the hit of the ground.
+                landed_from = Some(fall);
                 let context = Context::of(Some(source), Some(legacy_state));
                 self.vibrate(Vibration::HIT_GROUND, feet, context);
             }
-            steps.fall = 0.0;
+            fall = 0.0;
         }
         // Rising, or flying (`Player.aiStep`, in the player's tick after the move), ends
         // a fall.
         if delta[1] > 0.0 || flying {
-            steps.fall = 0.0;
+            fall = 0.0;
         }
         if let Some(player) = self.players.get_mut(&id) {
             player.steps = steps;
+            player.vitals.fall_distance = fall;
+        }
+        if let Some(distance) = landed_from {
+            self.player_fell_on(id, distance, legacy_state, output);
+        }
+        // `ServerPlayer.checkMovementStatistics` and `jumpFromGround`'s exhaustion (V4):
+        // a jump is the ground left upward (`handlePlayerPositionChange @487-511`).
+        let facts = crate::food::MoveFacts {
+            passenger: false,
+            swimming,
+            eyes_in_water,
+            in_water,
+            on_climbable: climbable(legacy_state),
+            on_ground: landed,
+            sprinting,
+        };
+        let mut exhaustion = crate::food::movement_exhaustion(delta[0], delta[1], delta[2], &facts);
+        if was_on_ground && !landed && delta[1] > 0.0 {
+            exhaustion += crate::food::jump_exhaustion(sprinting);
+        }
+        if exhaustion > 0.0
+            && let Some(player) = self.players.get_mut(&id)
+        {
+            let invulnerable = player.mode.current.abilities().invulnerable;
+            crate::food::cause_exhaustion(&mut player.vitals.food, exhaustion, invulnerable);
+            self.journal.players.insert(id);
         }
     }
 

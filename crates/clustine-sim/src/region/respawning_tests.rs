@@ -414,6 +414,9 @@ fn fallen_into_the_void() -> (Region, PlayerId, EntityId) {
 #[test]
 fn the_void_hurts_a_player_by_four_every_ten_ticks_and_the_fifth_hit_kills() {
     let (mut end, id, entity) = fallen_into_the_void();
+    // Food below 18 heals nothing between the hits (`FoodData.tick`), so that the void's
+    // rhythm alone shows (V4).
+    end.players.get_mut(&id).expect("in").vitals.food.food = 17;
     let mut told = Vec::new();
     let mut death = None;
     for tick in 0..60 {

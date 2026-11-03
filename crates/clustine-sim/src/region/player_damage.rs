@@ -61,6 +61,115 @@ impl Region {
         hurt.took
     }
 
+    /// The block `on`'s `fallOn` of the region's player `id` landing after `distance`
+    /// (`Block.fallOn` and the blocks that have their own): a bed halves the distance
+    /// (`fallDistanceReduction` 0.5), hay and honey take a fifth of the hurt (honey with
+    /// its slide's sound and event 54), slime none unless the player sneaks, powder snow
+    /// none but its sound, a stalagmite's tip `2.5` more and twice over by `stalagmite`;
+    /// then `causeFallDamage`. Named: farmland's trampling and the block's own fall sound
+    /// (`playBlockFallSound`).
+    pub(crate) fn player_fell_on(
+        &mut self,
+        id: PlayerId,
+        distance: f64,
+        on: clustine_data::BlockState,
+        output: &mut TickOutput,
+    ) {
+        use clustine_data::BlockClass;
+        let is = |class| clustine_blocks::data::is_class(on, class);
+        let Some(sneaking) = self.players.get(&id).map(|player| player.keys.sneak) else {
+            return;
+        };
+        let fall = crate::mobs::body::hurt::DamageType::FALL;
+        let (distance, multiplier, kind) = if is(BlockClass::AbstractBedBlock) {
+            (distance * f64::from(1.0_f32 - 0.5), 1.0, fall)
+        } else if is(BlockClass::HayBlock) {
+            (distance, 0.2, fall)
+        } else if is(BlockClass::HoneyBlock) {
+            self.sound_at_feet(id, clustine_data::sounds::BLOCK_HONEY_BLOCK_SLIDE, output);
+            if let Some(player) = self.players.get(&id) {
+                output.events.push(RegionEvent::EntityEvent {
+                    entity: player.entity_id,
+                    chunk: player.chunk(),
+                    event: 54,
+                });
+            }
+            (distance, 0.2, fall)
+        } else if is(BlockClass::SlimeBlock) && !sneaking {
+            (distance, 0.0, fall)
+        } else if is(BlockClass::PowderSnowBlock) {
+            if distance >= 4.0 {
+                let sound = if distance < 7.0 {
+                    clustine_data::sounds::ENTITY_PLAYER_SMALL_FALL
+                } else {
+                    clustine_data::sounds::ENTITY_PLAYER_BIG_FALL
+                };
+                self.sound_at_feet(id, sound, output);
+            }
+            return;
+        } else if is(BlockClass::PointedDripstoneBlock)
+            && on.property("vertical_direction") == Some("up")
+            && on.property("thickness") == Some("tip")
+        {
+            (
+                distance + 2.5,
+                2.0,
+                crate::mobs::body::hurt::DamageType::STALAGMITE,
+            )
+        } else {
+            (distance, 1.0, fall)
+        };
+        self.cause_fall_damage(id, distance, multiplier, kind, output);
+    }
+
+    /// `Player.causeFallDamage` and `LivingEntity.causeFallDamage` of the region's player
+    /// `id`: nothing for one who may fly; else `floor((distance + 1e-6 − safe fall
+    /// distance) · multiplier · fall damage multiplier)`, and where that is above 0 the
+    /// fall's sound (small to 4, big beyond) to everyone but the player, and the hurt.
+    fn cause_fall_damage(
+        &mut self,
+        id: PlayerId,
+        distance: f64,
+        multiplier: f32,
+        kind: crate::mobs::body::hurt::DamageType,
+        output: &mut TickOutput,
+    ) {
+        let Some(may_fly) = self
+            .players
+            .get(&id)
+            .map(|player| player.mode.current.abilities().may_fly)
+        else {
+            return;
+        };
+        if may_fly {
+            return;
+        }
+        let safe = self.player_attribute(id, attributes::SAFE_FALL_DISTANCE);
+        let scale = self.player_attribute(id, attributes::FALL_DAMAGE_MULTIPLIER);
+        let power = distance + 1.0e-6 - safe;
+        let damage = (power * f64::from(multiplier) * scale).floor() as i32;
+        if damage <= 0 {
+            return;
+        }
+        let sound = if damage > 4 {
+            clustine_data::sounds::ENTITY_PLAYER_BIG_FALL
+        } else {
+            clustine_data::sounds::ENTITY_PLAYER_SMALL_FALL
+        };
+        if let Some(position) = self.players.get(&id).map(|player| player.pose.position) {
+            self.sound_at(position, sound, Some(id), 1.0, output);
+        }
+        let source = DamageSource::of(kind);
+        self.hurt_player(id, &source, damage as f32, Hurting::default(), output);
+    }
+
+    /// `Entity.playSound` at the player's feet: to everyone near but them.
+    fn sound_at_feet(&mut self, id: PlayerId, sound: i32, output: &mut TickOutput) {
+        if let Some(position) = self.players.get(&id).map(|player| player.pose.position) {
+            self.sound_at(position, sound, Some(id), 1.0, output);
+        }
+    }
+
     /// A hurt that names the region's player `id` (`EntityUse::Hurt`: a mob's melee hit
     /// here or across a line, a projectile, a fang): taken as a mob takes it
     /// (`take_hurt`), with what comes with it if it took: a burning arrow's fire set

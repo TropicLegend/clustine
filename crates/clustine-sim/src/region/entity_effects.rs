@@ -125,6 +125,8 @@ impl Region {
             EntityUse::Hurt(hurt) => {
                 self.player_took_hurt(id, &hurt, output);
             }
+            // Another player's attack from across a line (V4).
+            by @ EntityUse::Attack { .. } => self.player_attacked(id, &by, output),
             _ => {}
         }
     }

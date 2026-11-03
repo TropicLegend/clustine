@@ -42,13 +42,6 @@ const CREATIVE_ENTITY_RANGE_MODIFIER: f64 = 2.0;
 pub(crate) const BLOCK_REACH_TOLERANCE: f64 = 1.0;
 pub(crate) const ENTITY_REACH_TOLERANCE: f64 = 3.0;
 
-/// `FoodData.needsFood()` of the player `id`: hunger is V4's
-/// (`docs/groundwork/v-plan.md`, section 4.4), and until then every player's food is
-/// full, so nobody needs food.
-pub(crate) const fn needs_food(_player: PlayerId) -> bool {
-    false
-}
-
 /// A player's `blockInteractionRange()`: the attribute, with creative's modifier where
 /// their mode is creative (the game's modifier is the mode's, not `instabuild`'s).
 pub(crate) fn block_interaction_range(mode: clustine_world::GameMode) -> f64 {

@@ -70,6 +70,27 @@ impl Region {
         output: &mut TickOutput,
     ) {
         let reach = user.reach_sqr();
+        // Another player (V4): the region's own, or one another region holds whose face
+        // the region keeps, who is sent the use.
+        if let EntityUse::Attack { .. } = by {
+            if let Some(target) = self.player_with_entity(key) {
+                let feet = self.players.get(&target).map(|player| player.pose.position);
+                if let Some(feet) = feet {
+                    let bounds = player_box([feet.x, feet.y, feet.z]);
+                    if distance_to_sqr(bounds, user.eyes()) < reach {
+                        self.player_attacked(target, &by, output);
+                    }
+                }
+                return;
+            }
+            if let Some((target, at, _)) = super::thrown::far_player_of(self, key) {
+                if distance_to_sqr(player_box(at), user.eyes()) < reach {
+                    let block = crate::physics::containing(at);
+                    self.send_on_player(target, key, block, by);
+                }
+                return;
+            }
+        }
         if let Some((_, entity)) = self.find_entity(key) {
             if distance_to_sqr(self.used_box(entity, &by), user.eyes()) < reach {
                 self.entity_used(key, by, output);
@@ -122,6 +143,14 @@ impl Region {
             Some((*position, entities[at].clone()))
         })
     }
+}
+
+/// A standing player's box at `feet` (0.6 wide, 1.8 tall).
+fn player_box(feet: [f64; 3]) -> Aabb {
+    Aabb::new(
+        [feet[0] - 0.3, feet[1], feet[2] - 0.3],
+        [feet[0] + 0.3, feet[1] + 1.8, feet[2] + 0.3],
+    )
 }
 
 /// The block an effect on `entity` of the chunk `chunk` is addressed to: its own, or for

@@ -25,9 +25,7 @@
 use clustine_world::{BlockPos, PlayerId, Way};
 
 use super::Region;
-use crate::api::{
-    Durable, Experience, Inventory, PlayerEvent, PlayerInput, RegionEvent, TickOutput,
-};
+use crate::api::{Durable, Experience, Inventory, PlayerInput, RegionEvent, TickOutput};
 use crate::mobs::body::hurt::DamageType;
 use crate::state::PLAYER_MAX_HEALTH;
 
@@ -88,22 +86,7 @@ impl Region {
     /// hurt of a player ([`Region::hurt_player`]), and their health told.
     fn hurt_by_the_void(&mut self, id: PlayerId, output: &mut TickOutput) {
         let source = crate::mobs::body::hurt::DamageSource::of(DamageType::OUT_OF_WORLD);
-        let before = self.players.get(&id).map(|player| player.health);
         self.hurt_player(id, &source, VOID_HURT, Default::default(), output);
-        let Some(player) = self.players.get(&id) else {
-            return;
-        };
-        if before != Some(player.health) {
-            let (health, food) = (player.health, player.vitals.food);
-            output.player_events.push((
-                id,
-                PlayerEvent::Health {
-                    health,
-                    food: food.food,
-                    saturation: food.saturation,
-                },
-            ));
-        }
     }
 
     /// `ServerPlayer.die` by the void: the death told to their edge, what they carried

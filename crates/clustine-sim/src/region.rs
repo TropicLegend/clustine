@@ -80,6 +80,7 @@ mod granted;
 mod hanging;
 pub(crate) mod hives;
 mod hoppers;
+mod hunger;
 mod ice;
 mod infested;
 mod instruments;
@@ -760,6 +761,9 @@ pub struct Region {
     /// What the region last reported of each player's window 0 (`inventory_menu.rs`),
     /// in memory only: a region that has not reported it reports every slot.
     reported_inventory: BTreeMap<PlayerId, inventory_menu::Reported>,
+    /// What the region last told each player of their body (`hunger.rs`), in memory
+    /// only: a region that has told them nothing tells them all of it.
+    told_vitals: BTreeMap<PlayerId, hunger::Told>,
     /// How far pistons have moved each entity along each axis in this tick
     /// (`Entity.pistonDeltas`, `pushed.rs`); empty between ticks, as the game resets
     /// them at the first push of a tick.
@@ -924,6 +928,7 @@ impl Region {
             blast_drops: BTreeMap::new(),
             reported: BTreeMap::new(),
             reported_inventory: BTreeMap::new(),
+            told_vitals: BTreeMap::new(),
             piston_deltas: BTreeMap::new(),
             block_streams: BTreeMap::new(),
             arrival_tickets: BTreeMap::new(),
@@ -1456,6 +1461,10 @@ impl Region {
         // events with their chunk (`docs/groundwork/n6-plan.md`, section 8 item 7).
         self.tick_menus(&mut output);
         self.tick_inventory_menus(&mut output);
+        // `ServerPlayer.doTick` after `Player.tick` and the menu's check: the food's tick,
+        // then what the player is told of their body (`hunger.rs`).
+        self.players_food_tick(&mut output);
+        self.report_vitals(&mut output);
         // What the tick changed of sculk sensors goes into their chunks' data
         // (`sculk.rs`).
         self.save_sensors(&mut output);
@@ -2817,7 +2826,7 @@ impl Region {
                     let delta = [to.x - from.x, to.y - from.y, to.z - from.z];
                     self.known_movements.insert(id, delta);
                     // The steps and the landing of the move (`vibrations.rs`).
-                    self.player_moved(id, delta, was_on_ground);
+                    self.player_moved(id, delta, was_on_ground, output);
                 }
             }
             PlayerInput::SelectSlot { slot } => {
@@ -2932,13 +2941,15 @@ impl Region {
                 // player's ticker is kept.
                 let attacker = player.entity_id;
                 let look = [Float(player.pose.yaw), Float(player.pose.pitch)];
+                let sprinting = player.keys.sprint;
+                let weapon = held.clone();
                 let damage = self.attack_of(id).map_or(1.0, |attack| attack.amount);
                 let by = EntityUse::Attack {
-                    weapon: None,
+                    weapon,
                     part: *part,
                     attacker,
                     creative: true,
-                    sprinting: false,
+                    sprinting,
                     damage: Float(damage),
                     from: user.from(),
                     look,

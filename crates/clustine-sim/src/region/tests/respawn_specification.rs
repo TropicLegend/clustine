@@ -534,6 +534,8 @@ fn the_void_hurts_below_sixty_four_under_the_level_and_not_at_that_height() {
 fn a_player_back_in_the_void_within_the_cooldown_waits_for_its_half_before_the_next_hurt() {
     let mut home = region(Land::whole(Dimension::Overworld), 0, nothing);
     let (id, entity) = standing(&mut home, 1, [3.5, -200.0, 3.5]);
+    // Food below 18 heals nothing between the hurts (`FoodData.tick`, V4).
+    home.players.get_mut(&id).expect("in").vitals.food.food = 17;
     let mut hurts = Vec::new();
     for tick in 0..14 {
         let inputs = match tick {

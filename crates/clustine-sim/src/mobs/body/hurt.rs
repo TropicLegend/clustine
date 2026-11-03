@@ -57,6 +57,8 @@ impl DamageType {
     pub(crate) const THROWN: Self = Self("minecraft:thrown");
     pub(crate) const THORNS: Self = Self("minecraft:thorns");
     pub(crate) const ENDER_PEARL: Self = Self("minecraft:ender_pearl");
+    pub(crate) const STALAGMITE: Self = Self("minecraft:stalagmite");
+    pub(crate) const STARVE: Self = Self("minecraft:starve");
 
     /// Its id in the registry the server sends, which a damage event names it by
     /// (Clustine's sorted order: the brief's finding 18).

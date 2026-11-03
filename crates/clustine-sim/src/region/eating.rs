@@ -98,9 +98,13 @@ impl Region {
         let contents = potion_of(&stack);
         let scale = duration_scale_of(&stack);
         for instance in all_effects(&contents) {
-            // Instant health, harming and saturation heal, hurt and feed a creative
-            // player not at all (`applyInstantaneousEffect`).
+            // Instant health, harming and saturation act at once
+            // (`applyInstantaneousEffect`, `hunger.rs`).
             if is_instantaneous(&instance.effect) {
+                if let Some(effect) = Effect::named(&instance.effect) {
+                    let amplifier = u8::try_from(instance.amplifier.clamp(0, 255)).unwrap_or(0);
+                    self.player_instant(id, effect, amplifier, output);
+                }
                 continue;
             }
             self.give_player(id, &scaled(instance, scale), output);
@@ -108,8 +112,10 @@ impl Region {
         for instance in consumables::listener_effects(&stack) {
             self.give_player(id, &instance, output);
         }
-        // `FoodProperties.onConsume`: the meal heard by everyone near, and the burp.
-        if consumables::food_of(&stack).is_some() {
+        // `FoodProperties.onConsume`: the food eaten (`FoodData.eat`), the meal heard by
+        // everyone near, and the burp.
+        if let Some(food) = consumables::food_of(&stack) {
+            self.feed_player(id, food.nutrition, food.saturation);
             let (eaten, burp) = consumables::food_pitches(&mut random, true);
             if let Some(sound) = consumables::sound_named(consumable.sound) {
                 self.sound_at_player(id, sound, SOUND_SOURCE_NEUTRAL, 1.0, eaten, output);

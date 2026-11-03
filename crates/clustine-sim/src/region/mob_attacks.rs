@@ -98,7 +98,7 @@ impl Region {
         let source = DamageSource::by(
             kind,
             Causer {
-                name: None,
+                name: Some(player.name.clone()),
                 key: player.entity_id,
                 kind: player_kind(),
                 position: feet,
@@ -116,7 +116,7 @@ impl Region {
         let at = physics::containing(feet);
         let state = self.block(at).unwrap_or(clustine_data::blocks::AIR);
         let crit = strong
-            && player.steps.fall() > 0.0
+            && player.vitals.fall_distance > 0.0
             && !player.pose.on_ground
             && !in_tag(state, "minecraft:climbable")
             && !has_water(state)
@@ -221,6 +221,101 @@ impl Region {
             };
             self.attack_sound(sound, attack.feet, output);
         }
+    }
+
+    /// `Player.attack` of another player on the region's player `target`, as the use `by`
+    /// carries it (V4): from the attacker's region when they are this one's, else as it
+    /// came across a line. The hurt (`player_attack`, which `pvp` off refuses); where it
+    /// took, the attack's push along the attacker's look, the target's client told its
+    /// motion at once and the motion the server keeps put back as it was before the
+    /// attack (`causeExtraKnockback @124-166`). Named: across a line the attacker's
+    /// strength is taken as full (its push is the sprint's where they sprint) and their
+    /// weapon's wear, the sweep and the hit's sounds are not made; within the region the
+    /// sweep passes over players.
+    pub(crate) fn player_attacked(
+        &mut self,
+        target: PlayerId,
+        by: &clustine_world::EntityUse,
+        output: &mut TickOutput,
+    ) {
+        let clustine_world::EntityUse::Attack {
+            attacker,
+            sprinting,
+            damage,
+            from,
+            look: [yaw, _],
+            player,
+            ref weapon,
+            ..
+        } = *by
+        else {
+            return;
+        };
+        let own = player
+            .map(PlayerId)
+            .filter(|id| self.players.contains_key(id));
+        let attack = own.and_then(|id| self.attack_of(id));
+        let name = player.and_then(|uuid| self.player_name(PlayerId(uuid)));
+        let source = attack.as_ref().map_or_else(
+            || {
+                DamageSource::by(
+                    DamageType::PLAYER_ATTACK,
+                    Causer {
+                        name,
+                        key: attacker,
+                        kind: player_kind(),
+                        position: from.map(|value| value.0),
+                        player: player.map(|uuid| uuid.as_u128()),
+                        living: true,
+                    },
+                )
+            },
+            |attack| attack.source.clone(),
+        );
+        let amount = attack.as_ref().map_or(damage.0, |attack| attack.amount);
+        let knockback = attack.as_ref().map_or_else(
+            || {
+                let push = held_value(0.0, ids::ATTACK_KNOCKBACK, weapon.as_ref()) as f32;
+                push / 2.0 + if sprinting { 0.5 } else { 0.0 }
+            },
+            |attack| attack.knockback,
+        );
+        let yaw = attack.as_ref().map_or(yaw.0, |attack| attack.yaw);
+        if let Some(id) = own {
+            self.reset_attack_strength(id);
+        }
+        let before = self.players.get(&target).map(|player| player.vitals.motion);
+        let hurting = crate::player_hurt::Hurting {
+            weapon: weapon.as_ref(),
+            pierce_level: 0,
+        };
+        if !self.hurt_player(target, &source, amount, hurting, output) {
+            return;
+        }
+        let target_entity = self
+            .players
+            .get(&target)
+            .map_or(attacker, |player| player.entity_id);
+        let now = self.clock.game_time;
+        if let Some(id) = own
+            && let Some(held) = self.players.get_mut(&id)
+        {
+            held.last_hurt_mob = Some((target_entity, now));
+        }
+        if knockback > 0.0 {
+            let (sin, cos) = look(yaw);
+            self.knock_player(target, f64::from(knockback), sin, -cos, output);
+        }
+        // `causeExtraKnockback`: the motion told, and the server's put back.
+        if let (Some(before), Some(player)) = (before, self.players.get_mut(&target)) {
+            player.vitals.motion = before;
+        }
+    }
+
+    /// The name of the region's player `id`, for a death message; none for one it does
+    /// not have (named: a face carries no name).
+    fn player_name(&self, id: PlayerId) -> Option<String> {
+        self.players.get(&id).map(|player| player.name.clone())
     }
 
     /// `doSweepAttack(target, base, source, strength)`: its sound, then each living

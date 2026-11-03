@@ -129,16 +129,14 @@ impl Region {
         };
         // `Consumable.canConsume`: food only where `Player.canEat(canAlwaysEat)` (n7
         // Player.canEat @0-29): an invulnerable player, food that is always eaten, or a
-        // player who needs food. Hunger is V4's: until then every player's food is full,
-        // so a survival player eats only what is always eaten (`FAIL`, nothing else
-        // tried).
+        // player who needs food (`FAIL`, nothing else tried).
         if let Some(food) = crate::items::consumables::food_of(&stack)
             && ItemComponents::of(stack.item).consumable.is_some()
             && !food.can_always_eat
             && !self
                 .abilities_of(id)
                 .is_none_or(|abilities| abilities.invulnerable)
-            && !super::materials::needs_food(id)
+            && !self.needs_food(id)
         {
             return true;
         }
