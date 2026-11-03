@@ -1,8 +1,9 @@
 # V: survival mode, planned
 
-Draft of 2026-11-02, revised the same day after an independent review (section 12 lists
-each finding and what changed for it), for a second reading and then the owner's answers
-before anything is built. It is the first item of the parity matrix's "In short", the
+**Agreed by the owner on 2026-11-03**, with every recommendation of section 11 but one:
+formats rise at each step that needs it, not once in V1 (question 8; section 7 says
+how). Drafted on 2026-11-02 and revised the same day after an independent review and a
+second reading (section 12 lists each finding and what changed for it). It is the first item of the parity matrix's "In short", the
 largest gap a player meets, and the roadmap's next plan after phase P ("survival with the
 rest of parity by the matrix's tiers, written and agreed with the owner before it is
 built"). Its steps are V1 to V13; the names are new (`n10-brief.md`'s V1 to V3 were
@@ -29,10 +30,10 @@ What a world keeps that V changes: a player's place grows (game mode, food, air,
 fall, absorption, the enchanting seed, the crafting grid and the cursor), each player gets
 a book (recipe book, advancements, statistics), stacks keep the components a broken
 container copies into its item, and furnaces, brewing stands and campfires keep their
-contents in their chunks. **Proposed: every one of these fields is defined in V1, so that
-`FORMAT_VERSION` (23) and the worker's `STATE_FORMAT` (30) rise once for the whole of V**,
-each field at its default and unused until its step (section 7, question 8). A world made
-before V1 is refused once, as at every raise; worlds made after V1 survive the rest of V.
+contents in their chunks. **As the owner chose (question 8): each step defines the fields
+it needs and raises `FORMAT_VERSION` (23) and the worker's `STATE_FORMAT` (31) itself**,
+as every phase before did; a world made before a raise is refused, three or four times
+in all over V (section 7).
 
 ---------------------------------------------------------------------------------------
 
@@ -1143,8 +1144,10 @@ touch `region.rs`'s input handling and `updates.rs`; they are not run side by si
 
 ## 7. Formats that change
 
-**Proposed: one raise, in V1** (question 8), with every field V needs defined then, at its
-default and read by nothing until its step:
+**A raise at each step that needs one** (the owner's answer to question 8, 2026-11-03;
+the plan had proposed one raise in V1): each step defines the fields below that it uses,
+raises the version with its known-answer tests, and refuses older worlds. Where the
+fields go, in the order the steps come to them:
 
 - `FORMAT_VERSION` (23): the place's new fields (4.2), its pending entries (4.6) and window 0's grid and cursor; a new
   `LoggedBook` and the commit's `BookChange` (absolute values); stacks' copied components
@@ -1158,11 +1161,14 @@ default and read by nothing until its step:
   furnaces (the game's six fields and `RecipesUsed`), brewing stands (its four and the
   speed) and campfires (the two arrays). Each with its known-answer tests, as
   `lib.rs:40-71` records each raise.
-- `STATE_FORMAT` (30): `PlayerState` (the dig, the counters, the book) and
+- `STATE_FORMAT` (31): `PlayerState` (the dig, the counters, the book) and
   `PlayerTransfer`, the remote steps' taken stacks and `RemoteDone`'s result, and the
   block entities in the region's state.
-- If a later step finds a field missing, it raises again and says so; the plan's aim is
-  that none does.
+- The steps that raise: V1 (the game mode in the place and `meta`, the effects' flags),
+  V2 (the dig in the state; the pending entries of 4.6), V3 (window 0's grid and
+  cursor), V4 (the place's counters), V5 (the furnaces' block entities), V8 and V12 (the
+  book), V9 (brewing stands); a step may find it needs none, and says so. The
+  worker's `STATE_FORMAT` is 31 since the poses of 2026-11-02.
 - The generated data grows: block hardness and tool requirement, the item components
   `tool`, `cooking_fuel`, `brewing_fuel`, `enchantable`, `equippable`'s damage on hurt,
   `blocks_attacks`, `repairable`, `provides_banner_patterns`, recipes, advancements,
@@ -1215,6 +1221,10 @@ ranges, `ServerPlayer.startSleepInBed`'s monster box. Read already in this revis
   players: merges and their pauses (V4).
 
 ## 11. Questions for the owner
+
+**Answered on 2026-11-03**: the owner agreed every recommendation below but question 8's,
+where they chose (b), a raise at each step that needs one, refusing their world each time.
+The questions stand as they were put.
 
 1. **How a player becomes survival.** (a) The server's default game mode, `--gamemode`, as
    the game's `server.properties` `gamemode`, kept in the world and given to new

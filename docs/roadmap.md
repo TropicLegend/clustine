@@ -634,8 +634,12 @@ what phase P left named (pearls kept with an owner who leaves, the dragon's resp
 four crystals, arrows on the dragon's parts, entities through a portal into another
 region's chunks), the gaps a survey of the repository found on 2026-11-02 (CI red
 since 2026-10-31 on tests of timing),
-then the plan of what follows the Nether and the End, survival with the rest of parity
-by the matrix's tiers, written and agreed with the owner before it is built.
+then survival: its plan ([v-plan.md](groundwork/v-plan.md), reviewed twice) was agreed
+by the owner on 2026-11-03, every recommendation but one (formats rise at each step that
+needs it, not once). It is built as two milestones: the core, V1 to V5 (game modes,
+breaking, crafting, health with hunger and death, furnaces, after which survival is the
+default), with the owner's trial after it; then V6 to V13 (enchantments' effects, the
+work blocks, the recipe book, brewing, the beacon, advancements, statistics).
 
 **What to try with a real client** (the End, since 2026-10-31): start a new world
 (`cargo run --release -p clustine`; a world made before is refused), find a stronghold
