@@ -762,6 +762,14 @@ impl EdgeLink {
             if matches!(event, RegionEvent::BlockEntityChanged { seen: false, .. }) {
                 continue;
             }
+            // What a player near the edge's watched chunk did to a block across a line:
+            // the edge's clients have the block from the region that holds it.
+            if let RegionEvent::Near { chunk, event } = event {
+                if self.watches(*chunk) {
+                    visible.push((**event).clone());
+                }
+                continue;
+            }
             let [current, previous] = event.chunks();
             let visible_now = self.watches(current);
             let visible_before = self.watches(previous);

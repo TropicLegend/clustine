@@ -243,7 +243,6 @@ async fn a_survival_player_digs_stone_across_the_line_and_gets_its_drop_and_its_
 /// `ServerLevel.destroyBlockProgress` sends the cracks of a dig to every player within
 /// 32 blocks but the breaker, whichever side of a line the block is on.
 #[tokio::test]
-#[ignore = "the cracks of a dig across a line reach nobody: the player's region reports them at a chunk it does not hold, which no edge watches there"]
 async fn another_player_sees_the_cracks_of_a_dig_across_the_line() {
     if !pinned() {
         return;

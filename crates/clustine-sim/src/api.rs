@@ -2268,6 +2268,14 @@ pub enum RegionEvent {
         player: PlayerId,
         mode: u8,
     },
+    /// `event`, whose place is a block another region holds, filed under `chunk`, the
+    /// chunk of the player whose act it shows: the edges that watch that chunk here are
+    /// the ones whose players are near enough to see it (a dig's cracks and level events
+    /// at a block across a line). The worker passes on `event` alone.
+    Near {
+        chunk: ChunkPos,
+        event: Box<RegionEvent>,
+    },
 }
 
 /// One attribute of an entity as clients are sent it: its id in the game's registry,
@@ -2336,7 +2344,8 @@ impl RegionEvent {
             | Self::Animated { chunk, .. }
             | Self::PlayerData { chunk, .. }
             | Self::PlayerGameMode { chunk, .. }
-            | Self::Sleeping { chunk, .. } => [*chunk; 2],
+            | Self::Sleeping { chunk, .. }
+            | Self::Near { chunk, .. } => [*chunk; 2],
             Self::BlockChanged { position, .. }
             | Self::BlockEntityChanged { position, .. }
             | Self::BlockEvent { position, .. }

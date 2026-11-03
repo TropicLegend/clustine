@@ -4377,6 +4377,8 @@ impl Fanout {
             }
             // A region's changes after it are taken where its tick's are.
             RegionEvent::BlockEventsBegin => {}
+            // The worker unwraps it; should one come, it is its event.
+            RegionEvent::Near { event, .. } => Box::pin(self.handle_event(from, *event)).await,
             RegionEvent::BlockDestroyed {
                 position,
                 state,

@@ -665,11 +665,25 @@ impl Region {
         output: &mut TickOutput,
     ) {
         if let Some(player) = self.players.get(&id) {
-            output.events.push(RegionEvent::BlockDestruction {
+            let event = RegionEvent::BlockDestruction {
                 breaker: player.entity_id,
                 position,
                 stage,
-            });
+            };
+            output.events.push(self.seen_near(id, position, event));
+        }
+    }
+
+    /// `event` of the player `id`'s dig at `position`: as it is where the region holds
+    /// the block, else filed under the player's chunk, since the edges watch the block's
+    /// chunk at the region that holds it and would not hear of it from here.
+    fn seen_near(&self, id: PlayerId, position: BlockPos, event: RegionEvent) -> RegionEvent {
+        match self.players.get(&id) {
+            Some(player) if !self.land.holds(position.chunk()) => RegionEvent::Near {
+                chunk: player.chunk(),
+                event: Box::new(event),
+            },
+            _ => event,
         }
     }
 
@@ -727,11 +741,14 @@ impl Region {
                     DIG
                 };
                 self.increment_destroy_progress(id, state, dig.destroy_pos, ticks, output);
-                output.events.push(RegionEvent::LevelEvent {
+                let event = RegionEvent::LevelEvent {
                     kind,
                     position: dig.destroy_pos,
                     data: ordinal(dig.direction),
-                });
+                };
+                output
+                    .events
+                    .push(self.seen_near(id, dig.destroy_pos, event));
             }
         }
     }

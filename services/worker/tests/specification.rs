@@ -963,7 +963,8 @@ impl Witness {
                         | RegionEvent::PlayerGameMode { .. }
                         | RegionEvent::Sleeping { .. }
                         | RegionEvent::BlockDestruction { .. }
-                        | RegionEvent::BlockEventsBegin => {}
+                        | RegionEvent::BlockEventsBegin
+                        | RegionEvent::Near { .. } => {}
                         RegionEvent::EntityGone { entity, .. } => {
                             self.entities.remove(entity);
                         }
