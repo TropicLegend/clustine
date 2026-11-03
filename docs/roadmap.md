@@ -646,8 +646,11 @@ their place (`--gamemode`, `--force-gamemode`; creative stays the default until 
 survival client's creative slots and flying are refused by the edge and the region; the
 client's `player_loaded` keeps a player unhurt until it is sent or 60 ticks pass; and
 what a survival player uses is used up and worn as the game's, with reach from the
-attributes. Left of V1: changing a mode in play. V2 (breaking) has its data (hardness,
-the items' `tool` component) and loot that reads the tool; the digging itself is next.
+attributes; an operator changes a player's mode and gives them items
+(`clustine gamemode`, `clustine give`, or the same lines typed into the single binary).
+V2 (breaking) has its data (hardness, the items' `tool` component), loot that reads the
+tool, and the attributes a player's equipment gives (Efficiency, Aqua Affinity, armour)
+told to the client; the digging itself is next.
 
 **What to try with a real client** (the End, since 2026-10-31): start a new world
 (`cargo run --release -p clustine`; a world made before is refused), find a stronghold
