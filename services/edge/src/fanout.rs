@@ -10503,6 +10503,7 @@ mod scenarios {
     use crate::Relinks;
 
     mod block_destroyed;
+    mod break_across_spec;
     mod crossing_specification;
     mod dragon;
     mod end_mobs_specification;

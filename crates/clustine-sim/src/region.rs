@@ -4579,6 +4579,7 @@ mod tests {
     mod boats;
     mod bone_meal;
     mod brain_locals;
+    mod break_across_spec;
     mod clock;
     mod composting_n10;
     mod containers;
