@@ -23,6 +23,7 @@
 
 pub mod api;
 pub mod crafting;
+pub mod food;
 pub mod generation;
 mod items;
 mod living;
