@@ -67,7 +67,7 @@ use clustine_world::{EntityData, PlayerId};
 
 use super::Region;
 use super::items::View;
-use crate::api::{OwnData, PlayerEvent, RegionEvent, TickOutput};
+use crate::api::{RegionEvent, TickOutput};
 use crate::living::{Kind, Living, MAX_AIR, slots};
 use crate::mobs::body::effects::Effect;
 use crate::mobs::body::hurt::{DamageSource, DamageType};
@@ -164,16 +164,15 @@ impl Region {
             self.player_drew(id, random, start);
         }
         let drowned = std::mem::take(&mut living.drowned);
-        let on_fire = living.on_fire_flag;
         self.take_player_hurts(id, &mut living, drowned, sleeping, output);
         if self.player_dead(id) {
-            self.keep_body(id, &living, before, on_fire, output);
+            self.keep_body(id, &living, before);
             return;
         }
         // `tickEffects`.
         self.player_effect_ticks(id, output);
         if self.player_dead(id) {
-            self.keep_body(id, &living, before, on_fire, output);
+            self.keep_body(id, &living, before);
             return;
         }
         // `aiStep`.
@@ -194,7 +193,7 @@ impl Region {
         self.player_sounds(&mut living, output);
         self.freeze_player(id, &living, output);
         self.cram_player(id, &living, output);
-        self.keep_body(id, &living, before, on_fire, output);
+        self.keep_body(id, &living, before);
     }
 
     /// Whether the player `id` is dead (or gone).
@@ -503,16 +502,9 @@ impl Region {
 
     /// The body's air, fire, frozen ticks and fall distance kept in the player's vitals
     /// (a player whose abilities are invulnerable burns for a tick at most,
-    /// `Player.setRemainingFireTicks @0-20`), with their absorption; what changed of
-    /// their own entity told to their client, and their health where it changed.
-    fn keep_body(
-        &mut self,
-        id: PlayerId,
-        living: &Living,
-        before: Own,
-        on_fire: bool,
-        output: &mut TickOutput,
-    ) {
+    /// `Player.setRemainingFireTicks @0-20`), with their absorption; their client is told
+    /// at the end of the tick (`hunger.rs`).
+    fn keep_body(&mut self, id: PlayerId, living: &Living, before: Own) {
         let Some(player) = self.players.get_mut(&id) else {
             return;
         };
@@ -535,39 +527,10 @@ impl Region {
             absorption: vitals.absorption,
             health: player.health,
         };
-        let (food, arrows) = (vitals.food, vitals.arrows);
         if after != before {
             self.journal.players.insert(id);
         }
-        // The flag of the base tick, or none where the tick put the fire out. The fire
-        // ticks above 0 at either end of the tick are where the flag may have changed.
-        let on_fire = on_fire && after.fire > 0;
-        let own_changed = after.air != before.air
-            || after.frozen != before.frozen
-            || after.absorption.to_bits() != before.absorption.to_bits()
-            || before.fire > 0
-            || after.fire > 0;
-        if own_changed {
-            output.player_events.push((
-                id,
-                PlayerEvent::OwnData(OwnData {
-                    air: after.air,
-                    absorption: after.absorption,
-                    on_fire,
-                    frozen: after.frozen,
-                    arrows,
-                }),
-            ));
-        }
-        if after.health.to_bits() != before.health.to_bits() {
-            output.player_events.push((
-                id,
-                PlayerEvent::Health {
-                    health: after.health,
-                    food: food.food,
-                    saturation: food.saturation,
-                },
-            ));
-        }
+        // What their client is told of it is said at the end of the tick
+        // (`hunger.rs`'s `report_vitals`).
     }
 }

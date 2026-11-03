@@ -72,23 +72,6 @@ impl Region {
         }
     }
 
-    /// `LivingEntity.heal(amount)` of the region's player `id`: more health, to their
-    /// most, for a living one.
-    pub(crate) fn heal_player(&mut self, id: PlayerId, amount: f32) {
-        let max_health = self.player_attribute(id, clustine_data::attributes::MAX_HEALTH) as f32;
-        let Some(player) = self.players.get_mut(&id) else {
-            return;
-        };
-        if player.dead || player.health <= 0.0 {
-            return;
-        }
-        let health = (player.health + amount).min(max_health);
-        if health != player.health {
-            player.health = health;
-            self.journal.players.insert(id);
-        }
-    }
-
     /// `FoodData.needsFood()` of the region's player `id`: their food below 20.
     pub(crate) fn needs_food(&self, id: PlayerId) -> bool {
         self.players

@@ -7544,7 +7544,12 @@ mod tests {
                         kept: Vec::new(),
                         raid_omen_position: None,
                         crafting: Default::default(),
-                        vitals: Default::default(),
+                        vitals: crate::state::Vitals {
+                            // A player who has ticked rests at −20 out of fire
+                            // (`Player.getFireImmuneTicks`).
+                            fire: -20,
+                            ..Default::default()
+                        },
                     }
                 ),
             ]
@@ -7770,6 +7775,12 @@ mod tests {
             digging: crate::state::Digging {
                 game_ticks: transfer.digging.game_ticks + 5,
                 ..transfer.digging
+            },
+            // A player who has ticked rests at −20 out of fire
+            // (`Player.getFireImmuneTicks`).
+            vitals: crate::state::Vitals {
+                fire: -20,
+                ..transfer.vitals.clone()
             },
             ..transfer
         };
