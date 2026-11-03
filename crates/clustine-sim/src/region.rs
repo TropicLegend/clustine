@@ -1366,7 +1366,6 @@ impl Region {
         self.watch_worn(&mut output);
         // `ServerPlayerGameMode.tick`, with the player's other parts (`digging.rs`).
         self.dig_tick(&mut output);
-        self.tick_player_effects(&mut output);
         self.tick_cooldowns(&mut output);
         self.tick_uses(&mut output);
         // The level's sleep check, before the blocks and entities, which see a morning it
@@ -1426,7 +1425,6 @@ impl Region {
         // step on blocks (`pressed.rs`), and the others tick in ascending key
         // (`entities.rs`); then the block entities tick (`docs/adr/0026-redstone.md`,
         // sections 3 and 5). Then the chunks keep the events still queued.
-        self.void_tick(&mut output);
         self.players_portal_tick(&mut output);
         self.players_touch_blocks(&mut output);
         self.run_entities(&mut output);
@@ -1437,6 +1435,12 @@ impl Region {
         self.run_block_entities(&mut output);
         // The hives let their bees out after the other block entities (`hives.rs`).
         self.run_hives(&mut output);
+        // Each player's own tick (`ServerPlayer.doTick`), after the level's entities and
+        // block entities as the game's connections tick after its levels (the V4 design,
+        // section 7, M1): `Entity.baseTick`'s void, then `LivingEntity.baseTick`'s
+        // effects. A mob's hit in the entities comes before them, as in the game.
+        self.void_tick(&mut output);
+        self.tick_player_effects(&mut output);
         // The players push the carts they stand in and pick up what lies around them,
         // as the game's connections tick after its levels, block entities and all
         // (`minecarts.rs`, `items.rs`): `LivingEntity.aiStep` pushes before the
