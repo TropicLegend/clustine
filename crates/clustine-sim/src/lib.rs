@@ -33,6 +33,11 @@ mod mobs;
 pub mod path_harness;
 mod physics;
 pub mod placement;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the region applies a player's hurt (V4a)")
+)]
+mod player_hurt;
 mod region;
 pub mod shown;
 mod spawning;
