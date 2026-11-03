@@ -2,6 +2,7 @@
 
 pub mod block_classes;
 pub mod attributes;
+pub mod block_breaking;
 pub mod block_physics;
 pub mod block_properties;
 pub mod blocks;

@@ -6,6 +6,7 @@ The files, of which the packed tables (*.bin) can carry no such line themselves:
 
   attributes.rs
   biome_parameters.bin
+  block_breaking.rs
   block_classes.rs
   block_physics.rs
   block_properties.rs

@@ -15,7 +15,7 @@ use anyhow::{Context, Result, bail, ensure};
 use crate::density;
 use crate::item_defaults;
 use crate::jar::SERVER_JAR;
-use crate::model::{GameData, ItemComponents, Property};
+use crate::model::{GameData, ItemComponents, Property, ToolBlocksReport};
 use crate::worldgen::{NoiseParameters, NoiseSettings};
 use crate::{carver, feature, material, packed, router, structure, sums, tables};
 
@@ -147,6 +147,7 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
         modules(&[
             "block_classes",
             "attributes",
+            "block_breaking",
             "block_physics",
             "block_properties",
             "blocks",
@@ -176,6 +177,7 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
     add(DATA_DIR, "attributes.rs", attributes(data)?);
     add(DATA_DIR, "path_types.rs", path_types(data)?);
     add(DATA_DIR, "block_physics.rs", block_physics(data)?);
+    add(DATA_DIR, "block_breaking.rs", block_breaking(data)?);
     add(DATA_DIR, "item_components.rs", item_components(data)?);
     add(DATA_DIR, "loot_tables.rs", loot_tables(data)?);
     add(DATA_DIR, "sound_events.rs", sound_events(data)?);
@@ -1159,6 +1161,70 @@ fn points(points: &[[u64; 3]]) -> String {
         .join(", ")
 }
 
+/// `block_breaking.rs`: how a block breaks (`docs/groundwork/v-plan.md`, step V2), as
+/// the distinct rows and each block's row.
+fn block_breaking(data: &GameData) -> Result<String> {
+    let dumped = &data.extract.block_breaking;
+    ensure!(
+        dumped.len() == data.blocks.len(),
+        "the extract program wrote how {} blocks break, the report has {}",
+        dumped.len(),
+        data.blocks.len()
+    );
+    let mut rows: Vec<String> = Vec::new();
+    let mut numbers: BTreeMap<String, usize> = BTreeMap::new();
+    let mut of_blocks = Vec::new();
+    for (block, dumped) in data.blocks.iter().zip(dumped) {
+        ensure!(
+            block.name == dumped.name,
+            "the extract program has {} where the report has {}",
+            dumped.name,
+            block.name
+        );
+        let row = format!(
+            "BlockBreaking {{ hardness: f32::from_bits({:#010x}), requires_correct_tool: {} }}",
+            dumped.hardness, dumped.requires_correct_tool,
+        );
+        let number = match numbers.get(&row) {
+            Some(&number) => number,
+            None => {
+                numbers.insert(row.clone(), rows.len());
+                rows.push(row);
+                rows.len() - 1
+            }
+        };
+        ensure!(
+            number <= usize::from(u8::MAX),
+            "more distinct ways to break than a byte numbers"
+        );
+        of_blocks.push(number);
+    }
+    let mut out = String::new();
+    writeln!(out, "use crate::BlockBreaking;\n")?;
+    writeln!(
+        out,
+        "/// The distinct rows, in the order the blocks first have them."
+    )?;
+    writeln!(
+        out,
+        "pub static BREAKING: [BlockBreaking; {}] = [",
+        rows.len()
+    )?;
+    for (number, row) in rows.iter().enumerate() {
+        writeln!(out, "    {row}, // {number}")?;
+    }
+    writeln!(out, "];\n")?;
+    writeln!(out, "/// The row of each block in `BREAKING`, by block id.")?;
+    writeln!(
+        out,
+        "pub static BLOCK_BREAKING: [u8; {}] = [",
+        of_blocks.len()
+    )?;
+    out.push_str(&wrapped(&of_blocks, "    "));
+    writeln!(out, "];")?;
+    Ok(out)
+}
+
 /// `block_physics.rs`: what an entity meets on a block (`docs/groundwork/n4-brief.md`,
 /// section 1.8), as the distinct rows and each block's row.
 fn block_physics(data: &GameData) -> Result<String> {
@@ -1249,8 +1315,10 @@ fn item_components(data: &GameData) -> Result<String> {
         .iter()
         .map(|attribute| attribute.name.clone())
         .collect();
+    let block_names: Vec<String> = data.blocks.iter().map(|block| block.name.clone()).collect();
     let names = ItemTableNames {
         items: &item_names,
+        blocks: &block_names,
         entity_types: &data.entity_types,
         attributes: &attributes,
         sound_events: &data.sound_events,
@@ -1262,6 +1330,7 @@ fn item_components(data: &GameData) -> Result<String> {
 /// The registries the table of items' components names things by.
 struct ItemTableNames<'a> {
     items: &'a [String],
+    blocks: &'a [String],
     entity_types: &'a [String],
     attributes: &'a [String],
     sound_events: &'a [String],
@@ -1314,6 +1383,9 @@ fn item_components_table(components: &[ItemComponents], names: &ItemTableNames) 
         "Equippable",
         "ItemModifier",
         "Swing",
+        "Tool",
+        "ToolBlocks",
+        "ToolRule",
         "Weapon",
     ]
     .into_iter()
@@ -1426,6 +1498,51 @@ fn item_fields(
             )
         }
     };
+    let tool = match &components.tool {
+        None => "None".to_owned(),
+        Some(tool) => {
+            let rules: Vec<String> = tool
+                .rules
+                .iter()
+                .map(|rule| {
+                    let blocks = match &rule.blocks {
+                        ToolBlocksReport::Tag(tag) => format!("ToolBlocks::Tag({tag:?})"),
+                        ToolBlocksReport::Blocks(list) => {
+                            let ids: Vec<String> = list
+                                .iter()
+                                .map(|name| {
+                                    names
+                                        .blocks
+                                        .iter()
+                                        .position(|known| known == name)
+                                        .map(|id| id.to_string())
+                                        .with_context(|| {
+                                            format!("a tool's rule names {name}, no block")
+                                        })
+                                })
+                                .collect::<Result<_>>()?;
+                            format!("ToolBlocks::Blocks(&[{}])", ids.join(", "))
+                        }
+                    };
+                    let speed = match rule.speed {
+                        None => "None".to_owned(),
+                        Some(bits) => format!("Some(f32::from_bits({bits:#010x}))"),
+                    };
+                    Ok(format!(
+                        "ToolRule {{ blocks: {blocks}, speed: {speed}, correct_for_drops: {:?} }}",
+                        rule.correct_for_drops
+                    ))
+                })
+                .collect::<Result<_>>()?;
+            format!(
+                "Some(Tool {{ rules: &[{}], default_mining_speed: f32::from_bits({:#010x}), damage_per_block: {}, can_destroy_blocks_in_creative: {} }})",
+                rules.join(", "),
+                tool.default_mining_speed,
+                tool.damage_per_block,
+                tool.can_destroy_blocks_in_creative
+            )
+        }
+    };
     let mut fields = vec![
         ("max_stack_size", components.max_stack_size.to_string()),
         ("max_damage", max_damage),
@@ -1438,6 +1555,7 @@ fn item_fields(
         ("damage_type", damage_type),
         ("minimum_attack_charge", charge),
         ("attack_range", range),
+        ("tool", tool),
     ];
     let registries = item_defaults::Registries {
         items: names.items,
@@ -1900,6 +2018,7 @@ mod tests {
         let effects = named(&["minecraft:poison"]);
         let names = ItemTableNames {
             items: &items,
+            blocks: &[],
             entity_types: &[],
             attributes: &[],
             sound_events: &sounds,
@@ -1915,7 +2034,7 @@ mod tests {
         let expected = "use crate::{Consumable, ConsumeEffect, EffectSet, Food, ItemComponents, Swing, UseAnimation, UseCooldown, UseRemainder};
 
 /// An item with a stack of 64 and none of the other components.
-const PLAIN: ItemComponents = ItemComponents { max_stack_size: 64, max_damage: None, damage_resistant: None, equippable: None, attack_animation: Swing::DEFAULT, entity: None, modifiers: &[], weapon: None, damage_type: None, minimum_attack_charge: None, attack_range: None, potion_contents: None, potion_duration_scale: None, damage: None, use_cooldown: None, fireworks_flight_duration: None, charged_projectiles: false, chicken_variant: None, consumable: None, food: None, use_remainder: None, ominous_bottle_amplifier: None };
+const PLAIN: ItemComponents = ItemComponents { max_stack_size: 64, max_damage: None, damage_resistant: None, equippable: None, attack_animation: Swing::DEFAULT, entity: None, modifiers: &[], weapon: None, damage_type: None, minimum_attack_charge: None, attack_range: None, tool: None, potion_contents: None, potion_duration_scale: None, damage: None, use_cooldown: None, fireworks_flight_duration: None, charged_projectiles: false, chicken_variant: None, consumable: None, food: None, use_remainder: None, ominous_bottle_amplifier: None };
 
 /// By item id.
 pub static ITEM_COMPONENTS: [ItemComponents; 4] = [

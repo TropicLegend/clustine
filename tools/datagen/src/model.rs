@@ -134,6 +134,8 @@ pub struct ItemComponents {
     /// creative player, the margin added to a target's box, and the factor for a mob
     /// that wields it, each as the float's bits.
     pub attack_range: Option<[u32; 6]>,
+    /// `minecraft:tool`: how fast it breaks which blocks and which it makes drop.
+    pub tool: Option<ToolReport>,
     /// What of the defaults N9 reads: a potion's, a projectile's, a cooldown, a food's.
     pub defaults: item_defaults::Defaults,
 }
@@ -154,6 +156,7 @@ impl ItemComponents {
             damage_type: None,
             minimum_attack_charge: None,
             attack_range: None,
+            tool: None,
             defaults: item_defaults::Defaults::default(),
         }
     }
@@ -197,6 +200,120 @@ const EQUIPMENT_SLOTS: [&str; 8] = [
 /// The sound `Equippable`'s codec gives an item whose component names none
 /// (**Inferred**: `Equippable` is not in the dump; the reports leave the sound out for
 /// heads, pumpkins and the shield, as a codec with a default does).
+/// `minecraft:tool` as the report gives it, its floats as their bits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolReport {
+    /// In the item's order: the first that holds a block decides.
+    pub rules: Vec<ToolRuleReport>,
+    pub default_mining_speed: u32,
+    pub damage_per_block: u32,
+    pub can_destroy_blocks_in_creative: bool,
+}
+
+/// One rule of a tool.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolRuleReport {
+    pub blocks: ToolBlocksReport,
+    pub speed: Option<u32>,
+    pub correct_for_drops: Option<bool>,
+}
+
+/// The blocks a rule holds: a block tag, without its `#`, or blocks by name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToolBlocksReport {
+    Tag(String),
+    Blocks(Vec<String>),
+}
+
+/// Reads `minecraft:tool` with the codec's defaults: a speed of 1, a durability of 1 a
+/// block, and breaking in creative.
+fn tool(value: &Value) -> Result<ToolReport> {
+    let fields = value.as_object().context("a tool that is not an object")?;
+    for key in fields.keys() {
+        ensure!(
+            [
+                "rules",
+                "default_mining_speed",
+                "damage_per_block",
+                "can_destroy_blocks_in_creative"
+            ]
+            .contains(&key.as_str()),
+            "a tool with {key}, which is not read"
+        );
+    }
+    let float = |value: &Value, what: &str| -> Result<u32> {
+        Ok((value
+            .as_f64()
+            .with_context(|| format!("{what} that is not a number"))? as f32)
+            .to_bits())
+    };
+    let mut rules = Vec::new();
+    for rule in fields
+        .get("rules")
+        .and_then(Value::as_array)
+        .context("a tool without its rules")?
+    {
+        let rule = rule.as_object().context("a tool's rule is not an object")?;
+        for key in rule.keys() {
+            ensure!(
+                ["blocks", "speed", "correct_for_drops"].contains(&key.as_str()),
+                "a tool's rule with {key}, which is not read"
+            );
+        }
+        let name = |value: &Value| -> Result<String> {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .context("a tool's rule names a block by no name")
+        };
+        let blocks = match rule.get("blocks").context("a tool's rule without blocks")? {
+            Value::String(text) => match text.strip_prefix('#') {
+                Some(tag) => ToolBlocksReport::Tag(tag.to_owned()),
+                None => ToolBlocksReport::Blocks(vec![text.clone()]),
+            },
+            Value::Array(list) => {
+                ToolBlocksReport::Blocks(list.iter().map(name).collect::<Result<_>>()?)
+            }
+            _ => bail!("a tool's rule whose blocks are neither a name nor a list"),
+        };
+        rules.push(ToolRuleReport {
+            blocks,
+            speed: rule
+                .get("speed")
+                .map(|value| float(value, "a rule's speed"))
+                .transpose()?,
+            correct_for_drops: rule
+                .get("correct_for_drops")
+                .map(|value| {
+                    value
+                        .as_bool()
+                        .context("a rule's drops that is not a boolean")
+                })
+                .transpose()?,
+        });
+    }
+    Ok(ToolReport {
+        rules,
+        default_mining_speed: match fields.get("default_mining_speed") {
+            None => 1.0_f32.to_bits(),
+            Some(value) => float(value, "a tool's speed")?,
+        },
+        damage_per_block: match fields.get("damage_per_block") {
+            None => 1,
+            Some(value) => value
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .context("a tool's damage per block")?,
+        },
+        can_destroy_blocks_in_creative: match fields.get("can_destroy_blocks_in_creative") {
+            None => true,
+            Some(value) => value
+                .as_bool()
+                .context("a tool's creative breaking that is not a boolean")?,
+        },
+    })
+}
+
 const DEFAULT_EQUIP_SOUND: &str = "minecraft:item.armor.equip_generic";
 
 /// Reads the default components of an item from the report of its components.
@@ -420,6 +537,7 @@ pub fn item_components_of(report: &Value) -> Result<ItemComponents> {
         damage_type,
         minimum_attack_charge,
         attack_range,
+        tool: components.get("minecraft:tool").map(tool).transpose()?,
         defaults: item_defaults::read(components)?,
     })
 }

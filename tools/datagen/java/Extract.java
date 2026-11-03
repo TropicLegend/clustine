@@ -180,6 +180,7 @@ public final class Extract {
         write(out, "blocks.txt", blocks());
         write(out, "items.txt", items());
         write(out, "block_physics.txt", blockPhysics());
+        write(out, "block_breaking.txt", blockBreaking());
         Collisions collisions = collisions();
         write(out, "voxel_shapes.txt", collisions.shapes.toString());
         write(out, "state_collisions.txt", collisions.states.toString());
@@ -708,6 +709,33 @@ public final class Extract {
             field(text, floatBits(block.getExplosionResistance()));
             field(text, block.getLootTable()
                 .map(key -> key.identifier().toString()).orElse("-"));
+            text.append('\n');
+        }
+        return text.toString();
+    }
+
+    /// One line a block, in id order: id, name, its hardness (`defaultDestroyTime`, the
+    /// `destroySpeed` of each of its states) as float bits, and whether only the right
+    /// tool makes it drop (`requiresCorrectToolForDrops`), `true` or `false`
+    /// (docs/groundwork/v-plan.md, step V2). Both are the block's properties, the same
+    /// in every state, which this checks.
+    private static String blockBreaking() {
+        StringBuilder text = new StringBuilder();
+        for (int id = 0; id < BuiltInRegistries.BLOCK.size(); id++) {
+            Block block = BuiltInRegistries.BLOCK.byId(id);
+            BlockState first = block.defaultBlockState();
+            for (BlockState state : block.getStateDefinition().getPossibleStates()) {
+                if (state.getDestroySpeed(null, null) != block.defaultDestroyTime()
+                    || state.requiresCorrectToolForDrops() != first.requiresCorrectToolForDrops()) {
+                    throw new IllegalStateException(
+                        "the states of " + BuiltInRegistries.BLOCK.getKey(block)
+                            + " break differently");
+                }
+            }
+            text.append(Integer.toString(id));
+            field(text, BuiltInRegistries.BLOCK.getKey(block).toString());
+            field(text, floatBits(block.defaultDestroyTime()));
+            field(text, Boolean.toString(first.requiresCorrectToolForDrops()));
             text.append('\n');
         }
         return text.toString();

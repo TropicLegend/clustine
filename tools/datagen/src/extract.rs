@@ -39,6 +39,8 @@ pub struct Extract {
     pub feature_order: FeatureOrder,
     /// What an entity meets on each block, by block id.
     pub block_physics: Vec<BlockPhysicsDump>,
+    /// How each block breaks, by block id.
+    pub block_breaking: Vec<BlockBreakingDump>,
     /// The distinct collision shapes in the game's voxel form; a shape's index is its
     /// place here.
     pub voxel_shapes: Vec<VoxelShapeDump>,
@@ -96,6 +98,15 @@ pub struct PathTypeDump {
     pub land: bool,
     pub water: bool,
     pub air: bool,
+}
+
+/// How a block breaks: its hardness, as the float's bits, and whether only the right
+/// tool makes it drop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockBreakingDump {
+    pub name: String,
+    pub hardness: u32,
+    pub requires_correct_tool: bool,
 }
 
 /// What an entity meets on a block: the floats the block holds, as their bits.
@@ -347,6 +358,8 @@ impl Extract {
                 .context("reading feature_order.txt")?,
             block_physics: block_physics(&read("block_physics.txt")?)
                 .context("reading block_physics.txt")?,
+            block_breaking: block_breaking(&read("block_breaking.txt")?)
+                .context("reading block_breaking.txt")?,
             voxel_shapes: voxel_shapes(&read("voxel_shapes.txt")?)
                 .context("reading voxel_shapes.txt")?,
             state_collisions: state_collisions(&read("state_collisions.txt")?)
@@ -837,6 +850,24 @@ pub fn block_physics(text: &str) -> Result<Vec<BlockPhysicsDump>> {
             loot_table: match fields[11] {
                 "-" => None,
                 name => Some(name.to_owned()),
+            },
+        });
+    }
+    Ok(blocks)
+}
+
+/// The lines of `block_breaking.txt`.
+pub fn block_breaking(text: &str) -> Result<Vec<BlockBreakingDump>> {
+    let mut blocks = Vec::new();
+    for line in text.lines() {
+        let fields = numbered_fields(line, 4, blocks.len())?;
+        blocks.push(BlockBreakingDump {
+            name: fields[1].to_owned(),
+            hardness: float_bits(fields[2])?,
+            requires_correct_tool: match fields[3] {
+                "true" => true,
+                "false" => false,
+                other => bail!("{other:?} is no boolean"),
             },
         });
     }

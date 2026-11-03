@@ -11,6 +11,7 @@
 mod generated;
 
 pub mod biome_parameters;
+pub mod block_breaking;
 pub mod block_physics;
 pub mod block_states;
 pub mod collisions;
@@ -27,6 +28,7 @@ pub mod villagers;
 use serde::{Deserialize, Serialize};
 
 pub use biome_parameters::{BiomeParameterList, BiomeParameters};
+pub use block_breaking::{BlockBreaking, block_breaking};
 pub use block_physics::{BlockPhysics, OffsetType, block_physics};
 pub use block_states::{Face, FaceShape, FluidProps, PushReaction, Shape, StateProps, SupportType};
 pub use collisions::{Axis, EntityInsideShape, VoxelShape};
@@ -432,6 +434,9 @@ pub struct ItemComponents {
     pub minimum_attack_charge: Option<f32>,
     /// `minecraft:attack_range`: how far its attacks reach.
     pub attack_range: Option<AttackRange>,
+    /// `minecraft:tool`: what a pickaxe, an axe, a shovel, a hoe, shears and a sword
+    /// break faster, and which blocks they make drop.
+    pub tool: Option<Tool>,
     /// `minecraft:potion_contents`, where the default holds a potion, a colour, effects
     /// or a name. The potions and the tipped arrow have an empty one by default, which
     /// reads as none: a stack's own patch gives it its potion.
@@ -623,6 +628,76 @@ pub struct Weapon {
     pub item_damage_per_attack: u32,
     /// How long an attack with it disables a shield it meets.
     pub disable_blocking_for_seconds: f32,
+}
+
+/// An item's `minecraft:tool`: how fast it breaks which blocks, and which blocks it
+/// makes drop that need the right tool (`docs/groundwork/v-plan.md`, step V2).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tool {
+    /// In the item's order: the first rule that holds a block and says a speed (or
+    /// whether it drops) decides it.
+    pub rules: &'static [ToolRule],
+    /// The speed where no rule says one: 1, as a hand's.
+    pub default_mining_speed: f32,
+    /// The durability breaking a block with it costs (where the block's hardness is
+    /// not 0).
+    pub damage_per_block: u32,
+    /// False for a sword, a trident, a mace and a spear: a creative player does not
+    /// break blocks with it.
+    pub can_destroy_blocks_in_creative: bool,
+}
+
+/// A rule of a [`Tool`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ToolRule {
+    pub blocks: ToolBlocks,
+    pub speed: Option<f32>,
+    pub correct_for_drops: Option<bool>,
+}
+
+/// The blocks a [`ToolRule`] holds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ToolBlocks {
+    /// A block tag, such as `minecraft:mineable/pickaxe`.
+    Tag(&'static str),
+    /// Blocks by id, such as the cobweb.
+    Blocks(&'static [u16]),
+}
+
+impl ToolBlocks {
+    /// Whether the block of `state` is one of these. A tag the data has not got holds
+    /// nothing.
+    pub fn holds(&self, state: BlockState) -> bool {
+        let Some(id) = state.block_id() else {
+            return false;
+        };
+        match self {
+            ToolBlocks::Tag(name) => enchanting::tag("minecraft:block", name)
+                .is_some_and(|tag| tag.entries.contains(&(id as i32))),
+            ToolBlocks::Blocks(ids) => ids.iter().any(|known| usize::from(*known) == id),
+        }
+    }
+}
+
+impl Tool {
+    /// How fast it breaks `state` (`Tool.getMiningSpeed`): the speed of the first rule
+    /// that holds the block and says one, or the default.
+    pub fn mining_speed(&self, state: BlockState) -> f32 {
+        self.rules
+            .iter()
+            .find_map(|rule| rule.speed.filter(|_| rule.blocks.holds(state)))
+            .unwrap_or(self.default_mining_speed)
+    }
+
+    /// Whether it makes `state` drop where the block needs the right tool
+    /// (`Tool.isCorrectForDrops`): what the first rule that holds the block and says so
+    /// says, or not.
+    pub fn is_correct_for_drops(&self, state: BlockState) -> bool {
+        self.rules
+            .iter()
+            .find_map(|rule| rule.correct_for_drops.filter(|_| rule.blocks.holds(state)))
+            .unwrap_or(false)
+    }
 }
 
 /// An item's `minecraft:attack_range`.
@@ -1100,6 +1175,46 @@ mod tests {
                 "minecraft:item.ominous_bottle.dispose"
             )]
         );
+    }
+
+    #[test]
+    fn every_block_tag_a_tool_names_is_known() {
+        for rule in ITEM_COMPONENTS
+            .iter()
+            .filter_map(|item| item.tool)
+            .flat_map(|tool| tool.rules)
+        {
+            if let ToolBlocks::Tag(name) = rule.blocks {
+                assert!(
+                    enchanting::tag("minecraft:block", name).is_some(),
+                    "no block tag {name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tools_break_and_make_drop_what_the_game_s_do() {
+        let tool = |item: i32| ItemComponents::of(item).tool.expect("a tool");
+        let stone = blocks::STONE;
+        let obsidian = BlockState::parse("minecraft:obsidian").unwrap();
+        let cobweb = BlockState::parse("minecraft:cobweb").unwrap();
+        let wooden = tool(items::WOODEN_PICKAXE);
+        assert_eq!(wooden.mining_speed(stone), 2.0);
+        assert!(wooden.is_correct_for_drops(stone));
+        assert!(!wooden.is_correct_for_drops(obsidian));
+        assert!(tool(items::DIAMOND_PICKAXE).is_correct_for_drops(obsidian));
+        assert_eq!(tool(items::IRON_PICKAXE).mining_speed(stone), 6.0);
+        assert_eq!(tool(items::DIAMOND_SHOVEL).mining_speed(stone), 1.0);
+        assert!(!tool(items::DIAMOND_SHOVEL).is_correct_for_drops(stone));
+        assert_eq!(tool(items::SHEARS).mining_speed(cobweb), 15.0);
+        let sword = tool(items::DIAMOND_SWORD);
+        assert!(sword.is_correct_for_drops(cobweb));
+        assert!(!sword.can_destroy_blocks_in_creative);
+        assert_eq!(sword.damage_per_block, 2);
+        assert!(wooden.can_destroy_blocks_in_creative);
+        assert_eq!(wooden.damage_per_block, 1);
+        assert_eq!(ItemComponents::of(items::STICK).tool, None);
     }
 
     #[test]

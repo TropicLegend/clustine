@@ -117,7 +117,7 @@ pub fn enchantability(item: i32) -> Option<i32> {
 }
 
 /// The tag `name` (with or without its `#`) of the registry `registry`.
-fn tag(registry: &str, name: &str) -> Option<&'static Tag> {
+pub(crate) fn tag(registry: &str, name: &str) -> Option<&'static Tag> {
     let name = name.strip_prefix('#').unwrap_or(name);
     TAGS.iter()
         .find(|tags| tags.registry == registry)?
