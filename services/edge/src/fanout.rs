@@ -6644,14 +6644,32 @@ impl Fanout {
     /// changed the block again. So it is shown as the edge has it, which is what every
     /// client of the chunk is told, and as the region read it only where the edge does
     /// not have the chunk.
+    ///
+    /// But a block whose change waits to go out with the next tick's (one made after the
+    /// tick's block events began: an entity's, as a mob's press of the plate it was let
+    /// out onto by the egg of this very click) is shown as the region read it: the game
+    /// sends this update before its entities tick, and the change after it, a tick later
+    /// (`ServerGamePacketListenerImpl.handleUseItemOn`, then `ChunkHolder.broadcastChanges`
+    /// in the next tick). Shown as the edge has it, the client would be told the change
+    /// twice and a tick early.
     fn shown_block(&self, dimension: Dimension, position: BlockPos, state: BlockState) -> Bytes {
         let (x, z) = position.in_chunk();
-        let state = self
-            .replica
-            .get(&LevelChunk::new(dimension, position.chunk()))
-            .and_then(|entry| entry.chunk.as_ref())
-            .and_then(|chunk| chunk.get(x, position.y, z))
-            .unwrap_or(state);
+        let chunk = LevelChunk::new(dimension, position.chunk());
+        let section = (chunk, position.y.div_euclid(16));
+        let waiting = self.carried.values().any(|changed| {
+            changed
+                .get(&section)
+                .is_some_and(|blocks| blocks.contains_key(&position))
+        });
+        let state = if waiting {
+            state
+        } else {
+            self.replica
+                .get(&chunk)
+                .and_then(|entry| entry.chunk.as_ref())
+                .and_then(|chunk| chunk.get(x, position.y, z))
+                .unwrap_or(state)
+        };
         encoded(&BlockUpdate {
             position: Position {
                 x: position.x,

@@ -273,22 +273,50 @@ async fn a_pig_and_a_zombie_keep_their_plates_down_and_the_lamps_lit_while_they_
         } else {
             sounds::BLOCK_WOODEN_PRESSURE_PLATE_CLICK_ON
         };
-        // The plate down, the lamp lit and the plate's click, and nothing more of them
-        // however many times the plate looked again: no click off, no plate up.
+        // As the official server sends it: in the tick of the egg's use, the plate as it
+        // was (the use's update of the block above the one clicked, which
+        // `handleUseItemOn` sends before the mob ticks) and the click of the mob's press;
+        // in the next, the plate down and the lamp lit, with the changes of that tick
+        // (`ChunkHolder.broadcastChanges`). Then nothing more of them however many times
+        // the plate looked again: no click off, no plate up, nothing sent twice.
+        let tick_of = |wanted: &Thing| {
+            timeline
+                .iter()
+                .find(|(_, thing)| thing == wanted)
+                .map(|(tick, _)| *tick)
+        };
+        let up = Thing::Plate(named(state(&format!(
+            "minecraft:{}[powered=false]",
+            case.name
+        ))));
+        let down = Thing::Plate(named(state(&format!(
+            "minecraft:{}[powered=true]",
+            case.name
+        ))));
         let mut things: Vec<Thing> = timeline.iter().map(|(_, thing)| thing.clone()).collect();
         things.sort_by_key(|thing| format!("{thing:?}"));
-        // A state may be sent again as it is; what counts is that nothing else is.
-        things.dedup();
         let mut expected = vec![
-            Thing::Plate(named(state(&format!(
-                "minecraft:{}[powered=true]",
-                case.name
-            )))),
-            Thing::Lamp(true),
+            up.clone(),
             Thing::Click(on),
+            down.clone(),
+            Thing::Lamp(true),
         ];
         expected.sort_by_key(|thing| format!("{thing:?}"));
         assert_eq!(things, expected, "{}: {timeline:?}", case.name);
+        assert_eq!(tick_of(&up), Some(0), "{}: {timeline:?}", case.name);
+        assert_eq!(
+            tick_of(&Thing::Click(on)),
+            Some(0),
+            "{}: {timeline:?}",
+            case.name
+        );
+        assert_eq!(tick_of(&down), Some(1), "{}: {timeline:?}", case.name);
+        assert_eq!(
+            tick_of(&Thing::Lamp(true)),
+            Some(1),
+            "{}: {timeline:?}",
+            case.name
+        );
     }
 }
 
@@ -313,8 +341,12 @@ async fn mobs_on_plates_are_sent_as_on_the_official_server() {
                 case.name
             ));
         }
-        // Within a tick the two servers may send a block's change and a sound in
-        // either order, so each timeline is matched by its things, each within a tick.
+        // Named: within a tick the order is not compared. The official server sends the
+        // use's update of the plate while it handles the click, before the mob ticks and
+        // clicks the plate; Clustine's edge hears the region's reading of the clicked
+        // blocks after the tick's events, so the click comes first there. Both are in
+        // the same tick, and the client shows the same. Each timeline is matched by its
+        // things, each within a tick.
         let sorted = |timeline: &Timeline| {
             let mut sorted = timeline.clone();
             sorted.sort_by_key(|(tick, thing)| (format!("{thing:?}"), *tick));
