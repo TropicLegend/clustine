@@ -847,10 +847,7 @@ impl Region {
             positions.swap(left - 1, chosen);
             left -= 1;
         }
-        let broken = Broken {
-            this_entity: entity,
-            explosion_radius: explosion.decay.then_some(explosion.radius),
-        };
+        let broken = Broken::by_explosion(entity, explosion.decay.then_some(explosion.radius));
         let mut collectors: Vec<(BlockPos, ItemStack)> = Vec::new();
         for &pos in &positions {
             let Some(state) = self.block(pos) else {
@@ -999,10 +996,7 @@ impl Region {
         if !tnt {
             // `spawnAfterBreak(level, pos, EMPTY, false)`, before the loot.
             self.infested_broken(at, state, output);
-            let broken = Broken {
-                this_entity: blast.direct,
-                explosion_radius: blast.decay.then_some(blast.radius.0),
-            };
+            let broken = Broken::by_explosion(blast.direct, blast.decay.then_some(blast.radius.0));
             let stacks = block_drops_as(state, at, broken, &mut Loot(&mut random), &mut |pos| {
                 self.block(pos).unwrap_or(blocks::AIR)
             });

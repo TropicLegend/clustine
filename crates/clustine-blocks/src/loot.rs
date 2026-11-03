@@ -1,10 +1,9 @@
-//! What a block broken by a rule drops: its loot table evaluated as the game's
-//! `Block.getDrops(state, level, pos, blockEntity)` evaluates it, with no tool, no
-//! entity and no explosion (`docs/groundwork/n4-brief.md`, section 8.3). Read from the
-//! 26.3 jar's classes: `LootTable.getRandomItemsRaw` and `createStackSplitter`,
-//! `LootPool.addRandomItems` and `addRandomItem`, `LootPoolEntryContainer.expand`,
-//! `AlternativesEntry.compose`, `LootItem`, the conditions and item functions the block
-//! tables use, and the integer number providers.
+//! What a broken block drops: its loot table evaluated as the game's `Block.getDrops`
+//! evaluates it (`docs/groundwork/n4-brief.md`, section 8.3; `docs/groundwork/v-plan.md`,
+//! sections 2.6 and 4.5). Read from the 26.3 jar's classes: `LootTable.getRandomItemsRaw`
+//! and `createStackSplitter`, `LootPool.addRandomItems` and `addRandomItem`,
+//! `LootPoolEntryContainer.expand`, `AlternativesEntry.compose`, `LootItem`, the
+//! conditions and item functions the block tables use, and the integer number providers.
 //!
 //! The evaluator draws from a [`LootDraws`] the caller gives, in the order the game
 //! draws from the table's random sequence, and reads nothing else of the world but the
@@ -13,16 +12,20 @@
 //! the game's list has them, since `Block.popResource` draws an empty stack's position
 //! before it finds it empty. Placing them (`popResource`) is the caller's.
 //!
-//! Where a table needs what a block broken by a rule does not have, the game's answer
-//! without it is taken: `match_tool` fails without a tool (silk touch and shears never
-//! apply), `table_bonus` and `apply_bonus` see an enchantment level of 0,
+//! How the block was broken is a [`Broken`]. The game always gives the table a tool
+//! (`LootContextParams.TOOL`): `ItemStack.EMPTY` where a rule or an explosion breaks it
+//! (`n6:Block.getDrops(state, level, pos, blockEntity) @18-24`), the player's main hand
+//! where a player does (`getDrops(..., entity, tool) @18-23`, with the player as
+//! `this_entity` @26-31). With the empty tool `match_tool` fails (silk touch and shears
+//! never apply) and `table_bonus` and `apply_bonus` see an enchantment level of 0; with a
+//! player's they read its item and its `minecraft:enchantments`. Without an explosion
 //! `survives_explosion` holds and `explosion_decay` keeps every item, and
 //! `entity_properties` fails without an entity (a chorus flower and a snow layer broken
-//! by a rule drop nothing, in the game too). A block broken by an explosion
-//! (`BlockBehaviour.onExplosionHit`) is evaluated with what that gives the table
-//! ([`Broken`]): the exploding entity as `this_entity`, and the explosion's radius where
-//! its drops decay. Where a table needs what Clustine does not
-//! keep, the evaluator gives less than the game, and these are named differences:
+//! by a rule drop nothing, in the game too, and broken by a player drop). A block broken
+//! by an explosion (`BlockBehaviour.onExplosionHit`) is evaluated with what that gives
+//! the table: the exploding entity as `this_entity`, and the explosion's radius where its
+//! drops decay. Where a table needs what Clustine does not keep, the evaluator gives less
+//! than the game, and these are named differences:
 //!
 //! - `copy_components` (containers, banners, heads, shulker boxes, beehives, the
 //!   decorated pot, the copper golem statues): a stack here is an item and a count, so
@@ -59,23 +62,50 @@ pub trait LootDraws {
 }
 
 /// What the loot of a broken block is given beside the block and its place: by a rule
-/// nothing ([`Broken::BY_A_RULE`]); by an explosion its direct source, which the table
-/// sees as `this_entity`, and, where its drops decay (`DESTROY_WITH_DECAY`), its radius
-/// (`EXPLOSION_RADIUS`).
+/// nothing but the empty tool ([`Broken::BY_A_RULE`]); by an explosion its direct
+/// source, which the table sees as `this_entity`, and, where its drops decay
+/// (`DESTROY_WITH_DECAY`), its radius (`EXPLOSION_RADIUS`); by a player the player as
+/// `this_entity` and the tool in their main hand ([`Broken::by_player`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Broken {
-    /// Whether there is a `this_entity`: the entity that exploded.
+pub struct Broken<'a> {
+    /// Whether there is a `this_entity`: the entity that exploded, or the player.
     pub this_entity: bool,
     /// The explosion's radius, given only where its drops decay.
     pub explosion_radius: Option<f32>,
+    /// The tool, `None` for the game's `ItemStack.EMPTY` (a rule's break, an
+    /// explosion's, a player's bare hand). An empty stack given here reads as `None`.
+    pub tool: Option<&'a ItemStack>,
 }
 
-impl Broken {
-    /// A block broken by a rule, with no entity and no explosion.
-    pub const BY_A_RULE: Self = Self {
+impl<'a> Broken<'a> {
+    /// A block broken by a rule, with no entity, no explosion and the empty tool.
+    pub const BY_A_RULE: Broken<'static> = Broken {
         this_entity: false,
         explosion_radius: None,
+        tool: None,
     };
+
+    /// A block broken by an explosion of `this_entity` (whether it has a source the
+    /// table sees), with its radius where its drops decay, and the empty tool
+    /// (`BlockBehaviour.onExplosionHit` gives `ItemStack.EMPTY`).
+    pub const fn by_explosion(this_entity: bool, explosion_radius: Option<f32>) -> Self {
+        Broken {
+            this_entity,
+            explosion_radius,
+            tool: None,
+        }
+    }
+
+    /// A block broken by a player holding `tool` in their main hand (an empty stack for
+    /// a bare hand): `Block.getDrops(state, level, pos, blockEntity, player, tool)`,
+    /// with the player as `this_entity`.
+    pub const fn by_player(tool: &'a ItemStack) -> Self {
+        Broken {
+            this_entity: true,
+            explosion_radius: None,
+            tool: Some(tool),
+        }
+    }
 }
 
 /// What the block `state` at `at` drops, broken by a rule: by its own table or the
@@ -98,7 +128,7 @@ pub fn block_drops(
 pub fn block_drops_as(
     state: BlockState,
     at: BlockPos,
-    broken: Broken,
+    broken: Broken<'_>,
     draws: &mut impl LootDraws,
     block_at: &mut impl FnMut(BlockPos) -> BlockState,
 ) -> Vec<ItemStack> {
@@ -126,7 +156,7 @@ pub fn table_drops_as(
     table: &'static LootTable,
     state: BlockState,
     at: BlockPos,
-    broken: Broken,
+    broken: Broken<'_>,
     draws: &mut impl LootDraws,
     block_at: &mut impl FnMut(BlockPos) -> BlockState,
 ) -> Vec<ItemStack> {
@@ -174,13 +204,28 @@ impl Stack {
 struct Context<'a, D, W> {
     state: BlockState,
     at: BlockPos,
-    broken: Broken,
+    broken: Broken<'a>,
     draws: &'a mut D,
     block_at: &'a mut W,
     drops: Vec<ItemStack>,
 }
 
 impl<D: LootDraws, W: FnMut(BlockPos) -> BlockState> Context<'_, D, W> {
+    /// The tool, `None` where it is the empty stack (`ItemStack.isEmpty`: air, or a
+    /// count of nought or less).
+    fn tool(&self) -> Option<&ItemStack> {
+        self.broken
+            .tool
+            .filter(|tool| tool.count > 0 && tool.item != clustine_data::items::AIR)
+    }
+
+    /// `EnchantmentHelper.getItemEnchantmentLevel` of the tool: 0 for the empty one,
+    /// whose components are none.
+    fn level(&self, enchantment: &str) -> i32 {
+        self.tool()
+            .map_or(0, |tool| tool.components.enchantment_level(enchantment))
+    }
+
     /// `LootPool.addRandomItem`: every entry expanded in order (their conditions drawn
     /// as they are tested), the choices of no weight left out, then one stack of the
     /// one choice, without a draw, or of one chosen by weight among several (a draw the
@@ -317,18 +362,42 @@ impl<D: LootDraws, W: FnMut(BlockPos) -> BlockState> Context<'_, D, W> {
                 let base = if *add { stack.count() } else { 0 };
                 stack.count = base.wrapping_add(self.int(*count));
             }
-            // `ApplyBonusCount.run` with the empty tool of a rule's break: the formula
-            // at level 0, which draws for two of the three.
-            LootModifier::ApplyBonus { formula, .. } => {
+            // `ApplyBonusCount.run @0-49`: the formula at the tool's level of the
+            // enchantment (0 for the empty tool, which the game always gives a block's
+            // table, so the formula runs at level 0 rather than not at all). The
+            // formulas are `ApplyBonusCount$OreDrops`, `$UniformBonusCount` and
+            // `$BinomialWithBonusCount.calculateNewCount`, which are not in the dumps:
+            // **Inferred** from the game's source as published and SteelMC's 26.3 port,
+            // save that the uniform bonus draws at level 0 too, as the game's has no
+            // test of the level there (SteelMC's skips the draw).
+            LootModifier::ApplyBonus {
+                enchantment,
+                formula,
+                ..
+            } => {
+                let level = self.level(enchantment);
                 let count = stack.count();
                 stack.count = match *formula {
-                    BonusFormula::OreDrops => count,
-                    BonusFormula::UniformBonusCount { .. } => {
-                        count.wrapping_add(self.draws.next_int(1))
+                    // `count · (max(nextInt(level + 2) − 1, 0) + 1)`, drawn only above
+                    // level 0.
+                    BonusFormula::OreDrops => {
+                        if level > 0 {
+                            let bonus = self.draws.next_int(level.wrapping_add(2)) - 1;
+                            count.wrapping_mul(bonus.max(0) + 1)
+                        } else {
+                            count
+                        }
                     }
+                    // `count + nextInt(bonusMultiplier · level + 1)`.
+                    BonusFormula::UniformBonusCount { bonus_multiplier } => {
+                        let bound = bonus_multiplier.wrapping_mul(level).wrapping_add(1);
+                        count.wrapping_add(self.draws.next_int(bound))
+                    }
+                    // One float a round, `level + extraRounds` rounds, each below the
+                    // probability adding one.
                     BonusFormula::BinomialWithBonusCount { extra, probability } => {
                         let mut count = count;
-                        for _ in 0..extra {
+                        for _ in 0..level.wrapping_add(extra) {
                             if self.draws.next_float() < probability {
                                 count = count.wrapping_add(1);
                             }
@@ -408,8 +477,7 @@ impl<D: LootDraws, W: FnMut(BlockPos) -> BlockState> Context<'_, D, W> {
         }
     }
 
-    /// `LootItemCondition.test` of the conditions the block tables use, as they answer
-    /// for a block broken by a rule.
+    /// `LootItemCondition.test` of the conditions the block tables use.
     fn test(&mut self, number: u16) -> bool {
         match condition(number) {
             // `ExplosionCondition.test`: without a radius true without a draw, with one a
@@ -447,9 +515,17 @@ impl<D: LootDraws, W: FnMut(BlockPos) -> BlockState> Context<'_, D, W> {
                 true
             }
             LootCondition::Inverted(term) => !self.test(*term),
-            // `BonusLevelTableCondition`: the empty tool has level 0.
-            LootCondition::TableBonus { chances, .. } => {
-                let chance = *chances.first().expect("a table bonus lists its chances");
+            // `BonusLevelTableCondition.test @0-80`: the chance at the tool's level,
+            // the last for a level beyond the list, and a draw below it.
+            LootCondition::TableBonus {
+                enchantment,
+                chances,
+            } => {
+                let level = usize::try_from(self.level(enchantment)).unwrap_or(0);
+                let last = chances.len().saturating_sub(1);
+                let chance = *chances
+                    .get(level.min(last))
+                    .expect("a table bonus lists its chances");
                 self.draws.next_float() < chance
             }
             LootCondition::RandomChance { chance } => self.draws.next_float() < *chance,
@@ -458,9 +534,25 @@ impl<D: LootDraws, W: FnMut(BlockPos) -> BlockState> Context<'_, D, W> {
             LootCondition::EntityProperties { entity } => {
                 *entity == "this" && self.broken.this_entity
             }
-            // The empty tool is no item and has no enchantment.
-            LootCondition::MatchToolItems { .. } | LootCondition::MatchToolEnchantment { .. } => {
-                false
+            // `MatchTool.test @0-47`: `ItemPredicate.test` of the tool. The block
+            // tables' predicates name only items, an item or a tag of them, and the
+            // empty tool is air, which none names.
+            LootCondition::MatchToolItems { items } => {
+                self.tool().is_some_and(|tool| tool_is(tool.item, items))
+            }
+            // An `ItemPredicate` with only `minecraft:enchantments`
+            // (`ItemEnchantmentsPredicate.Enchantments`): the tool's level of the
+            // enchantment, read from `ENCHANTMENTS` alone, within `levels`, which the
+            // block tables give as a minimum. A level of 0 is no enchantment and fails.
+            // `ItemPredicate` and `EnchantmentPredicate` are not in the dumps: their
+            // tests (the items, then the sub-predicates; a level of 0 failing before
+            // `levels` is asked) are **Inferred** from the game's source as published.
+            LootCondition::MatchToolEnchantment {
+                enchantment,
+                min_level,
+            } => {
+                let level = self.level(enchantment);
+                level > 0 && level >= *min_level
             }
             // No player kills a block, and no block's table asks what an entity is or
             // what damaged it.
@@ -472,6 +564,16 @@ impl<D: LootDraws, W: FnMut(BlockPos) -> BlockState> Context<'_, D, W> {
                 self.draws.next_float() < *unenchanted
             }
         }
+    }
+}
+
+/// Whether the item `item` is `items`: an item by name, or in an item tag with `#`
+/// (`ItemPredicate`'s `items`, a `HolderSet`). A name the data has not got holds
+/// nothing.
+fn tool_is(item: i32, items: &str) -> bool {
+    match items.strip_prefix('#') {
+        Some(tag) => crate::data::item_in_tag(item, tag),
+        None => clustine_data::item_id_by_name(items) == Some(item),
     }
 }
 

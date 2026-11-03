@@ -300,6 +300,21 @@ impl Components {
             .is_some_and(|patch| patch.removed.contains(&kind))
     }
 
+    /// The level of the enchantment `name` (`minecraft:fortune`, say) in the stack's
+    /// `minecraft:enchantments`, 0 where it has none: `EnchantmentHelper.
+    /// getItemEnchantmentLevel @0-21` reads that component only (`getOrDefault` of
+    /// `ENCHANTMENTS`), so an enchanted book's `stored_enchantments` count for nothing. No
+    /// item's defaults hold enchantments, so only the patch is read.
+    pub fn enchantment_level(&self, name: &str) -> i32 {
+        match self.get(Kind::Enchantments) {
+            Some(Component::Enchantments(levels)) => levels
+                .iter()
+                .find(|(enchantment, _)| enchantment == name)
+                .map_or(0, |(_, level)| *level),
+            _ => 0,
+        }
+    }
+
     /// Sets `component`, in place of one of its kind or of its kind's removal.
     pub fn set(&mut self, component: Component) {
         let patch = self.0.get_or_insert_with(Box::default);
@@ -367,6 +382,24 @@ mod tests {
         components.set(Component::IntangibleProjectile);
         components.reset(Kind::IntangibleProjectile);
         assert!(components.is_empty());
+    }
+
+    #[test]
+    fn the_level_of_an_enchantment_is_read_from_enchantments_and_not_from_stored_ones() {
+        let mut pickaxe = Components::NONE;
+        assert_eq!(pickaxe.enchantment_level("minecraft:fortune"), 0);
+        pickaxe.set(Component::Enchantments(vec![
+            ("minecraft:efficiency".to_owned(), 4),
+            ("minecraft:fortune".to_owned(), 3),
+        ]));
+        assert_eq!(pickaxe.enchantment_level("minecraft:fortune"), 3);
+        assert_eq!(pickaxe.enchantment_level("minecraft:silk_touch"), 0);
+        let mut book = Components::NONE;
+        book.set(Component::StoredEnchantments(vec![(
+            "minecraft:silk_touch".to_owned(),
+            1,
+        )]));
+        assert_eq!(book.enchantment_level("minecraft:silk_touch"), 0);
     }
 
     #[test]
