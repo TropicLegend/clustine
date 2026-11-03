@@ -4742,6 +4742,7 @@ mod tests {
     mod pigs;
     mod pistons;
     mod player_effects;
+    mod player_projectiles;
     mod player_sources;
     mod pois;
     #[path = "../portals_specification.rs"]

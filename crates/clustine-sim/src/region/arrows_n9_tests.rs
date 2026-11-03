@@ -3,9 +3,10 @@
 //! ProjectileDeflection and ButtonBlock): an arrow's flight worked out by hand tick by
 //! tick, in air and in water; its stick in a block, its rest there, its fall when the
 //! block goes, its despawn and a tipped arrow's fading; its hits on a cow of the region,
-//! piercing, across a line, and its turn back from a creative player and a face; a
-//! burning arrow and TNT; a wooden button; pick-up; a trident's return; and every draw
-//! from the arrow's own stream in the game's order.
+//! piercing, across a line, its turn back from a creative player and its hurt sent to
+//! another region's player at their face; a burning arrow and TNT; a wooden button;
+//! pick-up; a trident's return; and every draw from the arrow's own stream in the
+//! game's order.
 //!
 //! The worlds are those of the tests of TNT (`tnt/tests.rs`): a stone floor at y = -61,
 //! the blocks at -60. An arrow's own stream in its tick is `Random::of_entity(seed, key,
@@ -714,8 +715,10 @@ fn an_arrow_sticking_in_a_wall_is_sent_at_once_and_one_in_flight_is_not() {
     assert_eq!(synced(&output, key), Some(true));
 }
 
+/// An arrow at another region's player's face is gone, as at a mob of a copy, and its
+/// hurt is sent to the player's region, addressed to them (V4a).
 #[test]
-fn an_arrow_turns_back_from_another_region_s_player_s_face() {
+fn an_arrow_at_another_region_s_player_s_face_is_gone_and_sends_them_its_hurt() {
     let mut region = world(SEED, nothing);
     let pose = crate::api::Pose::at(clustine_world::Vec3::new(3.5, -60.0, 0.5));
     let face = crate::api::PlayerFace::of(
@@ -738,10 +741,21 @@ fn an_arrow_turns_back_from_another_region_s_player_s_face() {
         2.0,
         record(NOBODY),
     );
-    let shot = the(&region, key);
     let output = idle(&mut region);
-    turned_back(&region, &shot);
-    assert!(output.effects.is_empty(), "nothing is sent for a face");
+    assert!(region.find_entity(key).is_none(), "the arrow is gone");
+    let sent: Vec<_> = output
+        .effects
+        .iter()
+        .filter_map(|effect| match &effect.what {
+            Effected::OnPlayer {
+                player: to,
+                entity,
+                by: EntityUse::Hurt(hurt),
+            } if *to == player && *entity == EntityId(424_242) => Some(hurt.damage_type.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sent, ["minecraft:arrow"], "{:?}", output.effects);
 }
 
 #[test]

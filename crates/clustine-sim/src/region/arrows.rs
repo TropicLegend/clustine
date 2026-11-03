@@ -23,10 +23,12 @@
 //! **Hits** (n9 AbstractArrow 938–1110): every entity along the step, sorted by the
 //! distance to its position, each in turn until the arrow is gone; a piercing arrow
 //! looks again from where it is. An entity the region holds is hurt here
-//! (`entity_effects.rs`' `take_hurt`); the region's own players and other regions'
-//! faces are creative and refuse every hurt, and the arrow turns back from them; an
-//! entity seen in a copy is hurt by its holder (`EntityUse::Hurt`) and the arrow is gone,
-//! but at an enderman that rides nothing, which refuses and leaves it flying on.
+//! (`entity_effects.rs`' `take_hurt`), and the region's own player likewise
+//! (`player_damage.rs`' `player_took_hurt`): the arrow is gone where the hurt took and
+//! turns back where it was refused (a creative player, PvP off). An entity seen in a
+//! copy is hurt by its holder (`EntityUse::Hurt`), and another region's player by their
+//! region (`send_on_player`), and the arrow is gone, but at an enderman that rides
+//! nothing, which refuses and leaves it flying on.
 //!
 //! **Pick-up** is the players' (`Player.touch` → `playerTouch`): the region's own players
 //! take arrows of its own chunks in their reach, in the order of their ids
@@ -37,6 +39,13 @@
 //!   yet (the lead's in N9f), and [`Region::count_arrow`] does nothing until one does.
 //! - Punch's push of a target across a line is not carried: the hurt has no field for
 //!   a push (`HurtBy.knockback` is a knockback's).
+//! - A hit on another region's player cannot know whether it took: the arrow is gone,
+//!   as at a mob of a copy, where the game's turns back from a player who refused it (a
+//!   creative one, or with PvP off).
+//! - The shooter is not told of an arrow's hit on another player
+//!   (`ClientboundGameEventPacket.PLAY_ARROW_HIT_SOUND`, AbstractArrow.onHitEntity
+//!   377–428): no player event carries a game event's packet yet, so the shooter's
+//!   client plays no "ding".
 //! - An arrow's own hurt by fire or burning (`Projectile.hurtServer`, which only marks it
 //!   hurt) and its splash into water (`doWaterSplashEffect`, its sound's draws) are left
 //!   out; so are the enchantments' block hits and post-attack effects, which no
@@ -1082,10 +1091,79 @@ impl Region {
                     flight.removed = true;
                 }
             }
-            // A creative player refuses every hurt: the fire set before it is taken back,
-            // and the arrow turns back.
-            TargetKind::Player | TargetKind::Face => self.arrow_refused(flight, output),
+            // The region's own player takes it as a mob here does (`player_took_hurt`:
+            // the fire before it, taken back where refused, the effects and the arrow
+            // counted where it took).
+            TargetKind::Player => {
+                let Some(id) = self.player_with_entity(target.key) else {
+                    return;
+                };
+                if burning {
+                    hurt.fire_before = 100;
+                }
+                if self.player_took_hurt(id, &hurt, output) {
+                    if let Some(weapon) = &flight.arrow.weapon {
+                        let level = enchantments::level(weapon, "minecraft:punch");
+                        self.punch_player(id, flight.motion, level, output);
+                    }
+                    let pitch = maths::hit_pitch(flight.own.next_float());
+                    let sound = sound_id(&flight.arrow.hit_sound);
+                    self.arrow_sound(flight, sound, 1.0, pitch, output);
+                    if pierce == 0 {
+                        flight.removed = true;
+                    }
+                } else {
+                    self.arrow_refused(flight, output);
+                }
+            }
+            // Another region's player is hurt by their region, as a mob of a copy is by
+            // its holder: the arrow cannot know whether it took, and is gone (a player
+            // is never an enderman that lets it fly on); where their region refuses the
+            // hurt (a creative player), the game's arrow would turn back instead.
+            TargetKind::Face => {
+                let Some((player, at, _)) = super::thrown::far_player_of(self, target.key) else {
+                    return;
+                };
+                if burning {
+                    hurt.fire_before = 100;
+                }
+                let pitch = maths::hit_pitch(flight.own.next_float());
+                let sound = sound_id(&flight.arrow.hit_sound);
+                hurt.sound = Some((sound, Float(1.0), Float(pitch)));
+                let at = physics::containing(at);
+                self.send_on_player(player, target.key, at, EntityUse::Hurt(Box::new(hurt)));
+                flight.removed = true;
+            }
         }
+    }
+
+    /// `doKnockback` of the region's player `id` by an arrow moving by `motion` from a
+    /// bow of Punch `level`, as [`Region::punch`] pushes a mob; the motion their client
+    /// is sent at the end of the tick (`hurtMarked`, which the hurt set) carries it.
+    fn punch_player(
+        &mut self,
+        id: clustine_world::PlayerId,
+        motion: Vec3,
+        level: i32,
+        output: &mut TickOutput,
+    ) {
+        let knockback = maths::punch_knockback(level);
+        if knockback <= 0.0 {
+            return;
+        }
+        let resistance = self.player_attribute(id, clustine_data::attributes::KNOCKBACK_RESISTANCE);
+        let Some(push) = maths::punch_push(motion, knockback, resistance) else {
+            return;
+        };
+        let Some(player) = self.players.get_mut(&id) else {
+            return;
+        };
+        player.vitals.motion = physics::add(player.vitals.motion, [push[0], 0.1, push[2]]);
+        let motion = player.vitals.motion;
+        self.journal.players.insert(id);
+        output
+            .player_events
+            .push((id, crate::api::PlayerEvent::Knocked { motion }));
     }
 
     /// The hurt `hurt` of the region's entity `record` by an arrow or a trident: an armour
@@ -1180,6 +1258,7 @@ impl Region {
             TargetKind::Copy => self
                 .copied_entity(target.key)
                 .map(|(_, record)| record.kind),
+            // No player is `#sensitive_to_impaling`.
             TargetKind::Player | TargetKind::Face => None,
         };
         let sensitive = kind
@@ -1207,7 +1286,21 @@ impl Region {
                 self.send_on_entity(target.key, EntityUse::Hurt(Box::new(hurt)));
                 !(enderman && !rides)
             }
-            TargetKind::Player | TargetKind::Face => true,
+            // A player is never an enderman: the bounce follows whether or not the hurt
+            // took, here or (sent to their region) across a line.
+            TargetKind::Player => {
+                if let Some(id) = self.player_with_entity(target.key) {
+                    self.player_took_hurt(id, &hurt, output);
+                }
+                true
+            }
+            TargetKind::Face => {
+                if let Some((player, at, _)) = super::thrown::far_player_of(self, target.key) {
+                    let at = physics::containing(at);
+                    self.send_on_player(player, target.key, at, EntityUse::Hurt(Box::new(hurt)));
+                }
+                true
+            }
         };
         if side_effects {
             self.arrow_sound(flight, sounds::ITEM_TRIDENT_HIT, 1.0, 1.0, output);

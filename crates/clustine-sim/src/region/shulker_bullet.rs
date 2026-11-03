@@ -30,7 +30,8 @@
 //! **Its hit** (`onHit`, `onHitEntity`, `onHitBlock`): an entity is hurt by
 //! `mob_projectile` 4 caused by its owner, and where the hurt took a living thing
 //! levitates for 200 ticks (a creative player takes no hurt, so never levitates: the
-//! plan's 19.5 item 14); a block takes the hit (`onProjectileHit`), two `explosion`
+//! plan's 19.5 item 14), the region's own player and another region's alike (their
+//! region gives it with the hurt); a block takes the hit (`onProjectileHit`), two `explosion`
 //! particles and the hit sound are sent where the bullet is; `projectile_land` is heard;
 //! and it is destroyed (`destroy`: gone, with `entity_damage` where it is).
 //!
@@ -62,7 +63,6 @@ use clustine_world::{
 use super::Region;
 use super::entities::insecure_uuid;
 use super::items::{CartMemory, Memory, View};
-use super::projectiles::TargetKind;
 use super::thrown::{Flying, Struck, far_player_of};
 use super::vibrations::{Context, Source, Vibration};
 use crate::api::{RegionEvent, TickOutput};
@@ -541,11 +541,8 @@ impl Region {
         let key = after.key;
         match struck {
             Struck::Entity { target, kind, at } => {
-                // A face is another region's player, creative: it takes no hurt.
-                if kind != TargetKind::Face {
-                    let hurt = self.bullet_hurt(after, bullet);
-                    self.hurt_target(target, kind, hurt, output);
-                }
+                let hurt = self.bullet_hurt(after, bullet);
+                self.hurt_target(target, kind, hurt, output);
                 self.vibrate(
                     Vibration::PROJECTILE_LAND,
                     at,

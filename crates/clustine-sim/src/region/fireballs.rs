@@ -77,7 +77,7 @@ use uuid::Uuid;
 use super::entities::insecure_uuid;
 use super::explosions::Explosion;
 use super::items::{CartMemory, Memory, View, tracked};
-use super::projectiles::{TargetKind, UUID_DRAWS};
+use super::projectiles::UUID_DRAWS;
 use super::thrown::{Flying, Hit, Struck};
 use super::updates::{RegionView, UPDATE_ALL, UPDATE_LIMIT};
 use super::vibrations::{Context, Source, Vibration};
@@ -343,15 +343,14 @@ impl Region {
             Struck::Entity { target, kind, at } => {
                 // `onRedirectProjectile` of a large fireball hit and its `onHitEntity`
                 // are both the hurt: a fireball takes it as a redirect
-                // (`fireball_hit`), and a face refuses every hurt.
-                if kind != TargetKind::Face {
-                    let hurt = if large {
-                        self.fireball_hurt(fireball, &data, LARGE_DAMAGE, 0)
-                    } else {
-                        self.fireball_hurt(fireball, &data, SMALL_DAMAGE, SMALL_FIRE_TICKS)
-                    };
-                    self.hurt_target(target, kind, hurt, output);
-                }
+                // (`fireball_hit`); a player, here or in another region, as the game's
+                // player does (the small one's fire taken back where it is refused).
+                let hurt = if large {
+                    self.fireball_hurt(fireball, &data, LARGE_DAMAGE, 0)
+                } else {
+                    self.fireball_hurt(fireball, &data, SMALL_DAMAGE, SMALL_FIRE_TICKS)
+                };
+                self.hurt_target(target, kind, hurt, output);
                 self.vibrate(
                     Vibration::PROJECTILE_LAND,
                     at,

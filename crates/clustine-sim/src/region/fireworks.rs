@@ -20,12 +20,11 @@
 //! Nothing is ever attached to it (nobody glides), so nothing takes the whole.
 //!
 //! Named differences: the block a rocket hits does not run `entityInside`, as no
-//! projectile's blocks are (`applyEffectsFromBlocks`, both left out); a player, the
-//! region's or another's, is creative and refuses the hurt; an armour stand is not hurt
-//! (the hurt of a stand by an explosion of fireworks is not built); the horizontal
-//! collision the next tick reads is kept in the region's memory of it
-//! (`Memory::vertical_collision`'s place, the memory having no field of its own), which a
-//! take-in forgets, as the game's load does.
+//! projectile's blocks are (`applyEffectsFromBlocks`, both left out); an armour stand
+//! is not hurt (the hurt of a stand by an explosion of fireworks is not built); the
+//! horizontal collision the next tick reads is kept in the region's memory of it
+//! (`Memory::vertical_collision`'s place, the memory having no field of its own), which
+//! a take-in forgets, as the game's load does.
 
 use clustine_data::{EntityTypeInfo, ItemComponents, entity_types, sounds};
 use clustine_world::components::{Component, Kind};

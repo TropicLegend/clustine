@@ -12,14 +12,13 @@
 //!
 //! Named differences: the blocks of its box are those from the floor of its least
 //! corner to the floor of its greatest (`Level.findBlocksIn` is not dumped:
-//! **Inferred**); a player is creative and refuses its hurt.
+//! **Inferred**).
 
 use clustine_data::{EntityTypeInfo, entity_types};
 use clustine_world::{ChunkPos, Double, Entity, EntityData, Float, HurtBy, projectiles::Spit};
 
 use super::Region;
 use super::items::View;
-use super::projectiles::TargetKind;
 use super::thrown::{Flying, Struck};
 use super::vibrations::{Context, Source, Vibration};
 use crate::api::TickOutput;
@@ -121,9 +120,7 @@ impl Region {
         };
         match struck {
             Struck::Entity { target, kind, at } => {
-                if let Some(owner) = owner.and_then(|owner| self.causer_of(owner))
-                    && kind != TargetKind::Face
-                {
+                if let Some(owner) = owner.and_then(|owner| self.causer_of(owner)) {
                     let hurt = HurtBy {
                         weapon: None,
                         damage_type: "minecraft:spit".to_owned(),

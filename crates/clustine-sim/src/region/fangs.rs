@@ -13,10 +13,10 @@
 //! `getOwner()` is null for one its level has not loaded (its bite is then `magic`); an
 //! ally is an illager's friend (`#illager_friends`) of an illager owner, as
 //! `AbstractIllager.isAlliedTo` is taken to be (**Inferred**: not dumped; there are no
-//! teams); no mob is `Invulnerable` (the flag of commands); a player is creative and
-//! refuses the bite, an armour stand is not bitten (the hurt of a stand by magic is
-//! not built); the entity event of rising is sent at that tick only, so fangs taken in
-//! after it do not send it again as the game's would after a load.
+//! teams); no mob or player is `Invulnerable` (the flag of commands); an armour stand
+//! is not bitten (the hurt of a stand by magic is not built); the entity event of
+//! rising is sent at that tick only, so fangs taken in after it do not send it again as
+//! the game's would after a load.
 
 use clustine_blocks::data::entity_in_tag;
 use clustine_data::{EntityTypeInfo, entity_types};

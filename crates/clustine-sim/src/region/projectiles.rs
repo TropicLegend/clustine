@@ -13,10 +13,12 @@
 //!
 //! **The targets** are the entities of the region's loaded and copied chunks, then its
 //! own players, then the faces of other regions' players it keeps in land it holds or
-//! copies: a face is a standing box (1.5 tall crouching) that can be hit and refuses
-//! every hurt, as a creative player does, so that a projectile aimed past a player
-//! across a line turns back from them as it would in one region. A face is told apart
-//! by [`TargetKind::Face`], whose hit no projectile sends anywhere.
+//! copies: a face is a standing box (1.5 tall crouching) that can be hit, told apart by
+//! [`TargetKind::Face`]. A hit on the region's own player is taken here as the game's
+//! player takes it (`player_damage.rs`' `player_took_hurt`); one on a face is sent to the
+//! player's region by their stay (`send_on_player`), as one on an entity of a copy is
+//! sent to its holder, and the projectile goes on as it does after a hit on a copy: it
+//! cannot know whether the hurt took.
 
 use clustine_data::entity_types;
 use clustine_world::{
@@ -75,7 +77,8 @@ pub(crate) struct Making {
 
 /// Who works a hit on a target out: the region where it holds the entity, the holder
 /// through an effect where the region sees it in a copy, the region for its own player,
-/// and nobody for another region's player, whose face refuses every hurt.
+/// and the player's region, through an effect addressed to them, for another region's
+/// player seen by their face.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TargetKind {
     Here,

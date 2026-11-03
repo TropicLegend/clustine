@@ -26,7 +26,10 @@
 //! The hit test reads the blocks and entities of the region's loaded and copied chunks,
 //! the region's players and the faces of other regions' players (`projectiles.rs`'
 //! `targets`). An entity the region shows only in a copy is hit by its holder, through
-//! an effect on it, as a mob's hit is; a face refuses every hurt; the projectile is gone
+//! an effect on it, as a mob's hit is; the region's own player takes the hurt as the
+//! game's player does (`player_took_hurt`, which refuses a hurt of nothing: a snowball,
+//! an egg or a pearl hurts no player, and so knocks none, `Player.hurtServer` 108–115),
+//! and another region's player is sent it (`send_on_player`); the projectile is gone
 //! in its own region. A projectile that crosses a line goes as any entity does
 //! (`riding.rs`' `relocate`) and flies on there. Effects go to the region's own entity
 //! and player, to a copied entity's holder (`EntityUse::Effects`) and to another
@@ -45,10 +48,11 @@
 //!   chunks, or for a pearl a player of another region by their face or the world's
 //!   players; one it does not have is none, as the game's `getOwner()` is null for an
 //!   owner its level does not have loaded.
-//! - Only mobs are the living entities a splash or a cloud reaches: an armour stand is
-//!   never affected by potions anyway. Water put out on a burning entity of a copy is
-//!   not (`EntityUse::Effects` carries no fire); axolotls are not rehydrated (none dries
-//!   out in Clustine).
+//! - Only mobs and players are the living entities a splash or a cloud reaches: an
+//!   armour stand is never affected by potions anyway. Water put out on a burning entity
+//!   of a copy is not (`EntityUse::Effects` carries no fire), nor is another region's
+//!   player; axolotls are not rehydrated (none dries out in Clustine); the sound of a
+//!   fire put out (`playEntityOnFireExtinguishedSound`) is not played.
 //! - A splash's proximity crosses a line as a float (`GivenEffects`' `instant_factor`),
 //!   the game's being a double.
 //! - A pearl thrown by a mob teleports nobody (no mob throws one); an endermite is
@@ -174,6 +178,44 @@ impl Hit {
             motion: self.motion.map(Double),
             damage: Float(self.damage),
             owner: self.owner,
+        }
+    }
+
+    /// The hit as a hurt (`thrown(projectile, owner)` of its damage, pushing along its
+    /// motion), which is how a player, here or in another region, takes it.
+    fn as_hurt(self) -> clustine_world::HurtBy {
+        let direct = clustine_world::Causer {
+            name: None,
+            key: self.projectile,
+            kind: self.kind,
+            position: self.at.map(Double),
+            player: None,
+            living: false,
+        };
+        let cause = self.owner.map(|owner| clustine_world::Causer {
+            name: None,
+            key: owner.key,
+            kind: owner.kind,
+            position: owner.from,
+            player: owner.player,
+            living: true,
+        });
+        clustine_world::HurtBy {
+            weapon: None,
+            damage_type: "minecraft:thrown".to_owned(),
+            cause,
+            direct: Some(direct),
+            position: None,
+            projectile_motion: Some(self.motion.map(Double)),
+            amount: Float(self.damage),
+            knockback: None,
+            fire_before: 0,
+            fire_after: 0,
+            effects: Vec::new(),
+            arrow: false,
+            extras: Vec::new(),
+            sound: None,
+            hit: None,
         }
     }
 
@@ -660,9 +702,8 @@ impl Region {
                 at,
             } => {
                 // `onHitEntity`: the snowball's, the egg's and the pearl's hurt of
-                // nothing; a potion's and a bottle's do nothing. Another region's player,
-                // a face here, is creative and takes nothing (section 4.1).
-                if hurts && target_kind != TargetKind::Face {
+                // nothing; a potion's and a bottle's do nothing.
+                if hurts {
                     let hit = Hit {
                         projectile: key,
                         kind: after.kind,
@@ -671,7 +712,7 @@ impl Region {
                         damage: 0.0,
                         owner: owner.and_then(|owner| self.thrower(owner)),
                     };
-                    self.thrown_hit(target, hit, output);
+                    self.thrown_hit(target, target_kind, hit, output);
                 }
                 self.vibrate(
                     Vibration::PROJECTILE_LAND,
@@ -720,19 +761,35 @@ impl Region {
         }
     }
 
-    /// `onHitEntity` of a projectile's hit `hit` on the entity or player `target`: done
-    /// here where the region has the entity; a player is creative and takes nothing; an
-    /// entity the region sees only in a copy is hit by its holder.
-    fn thrown_hit(&mut self, target: EntityId, hit: Hit, output: &mut TickOutput) {
-        if self.find_entity(target).is_some() {
-            self.thrown_hit_here(target, hit, output);
-            return;
+    /// `onHitEntity` of a projectile's hit `hit` on the entity or player `target`, which
+    /// the hit test listed as `kind`: done here where the region has the entity; a
+    /// player, the region's own or another region's, takes it as a hurt
+    /// ([`Region::hurt_target`]); an entity the region sees only in a copy is hit by its
+    /// holder.
+    fn thrown_hit(
+        &mut self,
+        target: EntityId,
+        kind: TargetKind,
+        hit: Hit,
+        output: &mut TickOutput,
+    ) {
+        match kind {
+            TargetKind::Here => self.thrown_hit_here(target, hit, output),
+            // A hurt of nothing (only a blaze takes a snowball's 3), which every player
+            // refuses (`Player.hurtServer` 108–115): taken here as the game's player
+            // takes it, and not sent across a line for their region to refuse.
+            TargetKind::Player => {
+                self.hurt_target(target, kind, hit.as_hurt(), output);
+            }
+            TargetKind::Face => {
+                if hit.damage != 0.0 {
+                    self.hurt_target(target, kind, hit.as_hurt(), output);
+                }
+            }
+            TargetKind::Copy => {
+                self.send_on_entity(target, hit.as_use());
+            }
         }
-        if self.player_with_entity(target).is_some() {
-            // A creative player is invulnerable to everything that a snowball deals.
-            return;
-        }
-        self.send_on_entity(target, hit.as_use());
     }
 
     /// `target.hurt(thrown(projectile, owner), damage)` of the region's entity `target`,
@@ -823,7 +880,7 @@ impl Region {
                         target,
                         kind: None,
                         position: [at.x, at.y, at.z],
-                        burning: false,
+                        burning: player.vitals.fire > 0,
                     }
                 }
                 TargetKind::Face => {
@@ -877,8 +934,8 @@ impl Region {
     }
 
     /// The hurt `hurt` of the living entity `living`, where it is: taken here for the
-    /// region's own mob, sent to a copied mob's holder; a player, the region's or
-    /// another's, is creative and refuses it.
+    /// region's own mob or player, sent to a copied mob's holder and to another region's
+    /// player's region.
     pub(crate) fn give_hurt(
         &mut self,
         living: &Living,
@@ -889,26 +946,38 @@ impl Region {
     }
 
     /// The hurt `hurt` of the entity `key` the hit test listed as `kind`: taken here by
-    /// the region's own entity as its kind takes it (`entity_effects.rs`' `take_hurt`),
-    /// sent to the holder of one in a copy; a player is creative and refuses it.
+    /// the region's own entity as its kind takes it (`entity_effects.rs`' `take_hurt`)
+    /// and by its own player as the game's player does (`player_damage.rs`'
+    /// `player_took_hurt`); sent to the holder of an entity in a copy, and to the region
+    /// of another region's player by their stay (`send_on_player`). Whether it took
+    /// where it was worked out here; `None` where it was sent, or nothing was found.
     pub(crate) fn hurt_target(
         &mut self,
         key: EntityId,
         kind: TargetKind,
         hurt: clustine_world::HurtBy,
         output: &mut TickOutput,
-    ) {
+    ) -> Option<bool> {
         match kind {
             TargetKind::Here => {
-                if let Some((_, record)) = self.find_entity(key) {
-                    let record = record.clone();
-                    self.take_hurt(&record, &hurt, output);
-                }
+                let (_, record) = self.find_entity(key)?;
+                let record = record.clone();
+                Some(self.take_hurt(&record, &hurt, output))
             }
             TargetKind::Copy => {
                 self.send_on_entity(key, EntityUse::Hurt(Box::new(hurt)));
+                None
             }
-            TargetKind::Player | TargetKind::Face => {}
+            TargetKind::Player => {
+                let id = self.player_with_entity(key)?;
+                Some(self.player_took_hurt(id, &hurt, output))
+            }
+            TargetKind::Face => {
+                let (player, at, _) = far_player_of(self, key)?;
+                let at = physics::containing(at);
+                self.send_on_player(player, key, at, EntityUse::Hurt(Box::new(hurt)));
+                None
+            }
         }
     }
 
@@ -1045,9 +1114,11 @@ impl Region {
         }
     }
 
-    /// `affectEntitiesAround` of a potion of water: each mob within four blocks, centre
-    /// to centre, in its box grown by (4, 2, 4), hurt by `indirectMagic` 1 where water
-    /// hurts it (the holder's rule, `entity_effects.rs`) and put out where it burns.
+    /// `affectEntitiesAround` of a potion of water: each mob or player within four
+    /// blocks, centre to centre, in its box grown by (4, 2, 4), hurt by `indirectMagic` 1
+    /// where water hurts it (the holder's rule, `entity_effects.rs`; no player) and put
+    /// out where it burns (`extinguishFire`; its sound, drawn from the entity's own
+    /// stream, is left out for both, named).
     fn water_about(&mut self, potion: &Entity, owner: Option<EntityId>, output: &mut TickOutput) {
         let info = EntityTypeInfo::of(i32::from(potion.kind));
         let area =
@@ -1055,6 +1126,17 @@ impl Region {
         let source = Self::giver(potion.key, potion.kind, potion.position);
         let owner = owner.and_then(|owner| self.causer_of(owner));
         for living in self.living_in(&area, potion.key) {
+            // The region's own player is put out where they burn, as a mob is; another
+            // region's is not, as a mob of a copy is not (the module's note).
+            if living.target.kind == TargetKind::Player {
+                if living.burning
+                    && physics::distance_sqr(potion.position, living.position) < 16.0
+                    && let Some(id) = self.player_with_entity(living.target.key)
+                {
+                    self.set_player_fire(id, 0);
+                }
+                continue;
+            }
             let Some(kind) = living.kind else {
                 continue;
             };
