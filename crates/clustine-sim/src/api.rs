@@ -1135,6 +1135,12 @@ pub enum MenuKind {
     /// A merchant's trades (`MerchantMenu`, `docs/groundwork/n10-plan.md`, section 8.2):
     /// the two payments and the result. `entity` is the villager or the wandering trader.
     Merchant { entity: EntityId },
+    /// The player's own inventory screen (`InventoryMenu`, window 0), which is never
+    /// opened or shut by the server: the result (0) and the 2×2 grid (1-4) are its own
+    /// five, then the armour from the head down (5-8: inventory slots 39 to 36), the
+    /// main inventory (9-35), the hotbar (36-44) and the off hand (45: inventory slot
+    /// 40), 46 in all (V3, `docs/groundwork/v-plan.md`, section 4.7).
+    Inventory,
 }
 
 impl MenuKind {
@@ -1147,13 +1153,18 @@ impl MenuKind {
             Self::Hopper => 5,
             Self::Mount { columns, .. } => 2 + usize::from(columns) * 3,
             Self::Merchant { .. } => 3,
+            Self::Inventory => 5,
         }
     }
 
     /// All the menu's slots: the container's, then the main inventory's 27 and the
-    /// hotbar's 9, as every menu of N6 lays them out.
+    /// hotbar's 9, as every menu of N6 lays them out; the inventory screen's armour and
+    /// off hand besides.
     pub fn slots(self) -> usize {
-        self.container_slots() + 36
+        match self {
+            Self::Inventory => 46,
+            _ => self.container_slots() + 36,
+        }
     }
 }
 

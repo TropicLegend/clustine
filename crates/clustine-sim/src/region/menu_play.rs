@@ -1132,9 +1132,11 @@ fn title_of(of: MenuOf, kind: MenuKind, region: &Region) -> String {
                 MenuKind::Grid3x3 if is(BlockClass::DropperBlock) => "container.dropper",
                 MenuKind::Grid3x3 => "container.dispenser",
                 MenuKind::Rows3 if is(BlockClass::BarrelBlock) => "container.barrel",
-                MenuKind::Rows3 | MenuKind::Mount { .. } | MenuKind::Merchant { .. } => {
-                    "container.chest"
-                }
+                // The inventory screen is never opened by a block; no title is sent for it.
+                MenuKind::Rows3
+                | MenuKind::Mount { .. }
+                | MenuKind::Merchant { .. }
+                | MenuKind::Inventory => "container.chest",
             }
         }
     };

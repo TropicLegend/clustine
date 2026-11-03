@@ -480,6 +480,8 @@ fn menu_id(kind: MenuKind) -> i32 {
         // horse has no id is shown as three rows, which its slots fit no worse.
         MenuKind::Mount { .. } => menu::GENERIC_9X3,
         MenuKind::Merchant { .. } => menu::MERCHANT,
+        // Window 0 is the client's own and never opened by `open_screen`.
+        MenuKind::Inventory => menu::GENERIC_9X3,
     }
 }
 
