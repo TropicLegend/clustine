@@ -4631,6 +4631,7 @@ mod tests {
     mod villagers_n10;
     mod water;
     mod wild;
+    mod worn_spec;
     mod zombies;
 
     const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);
