@@ -370,10 +370,10 @@ impl Region {
     }
 
     /// `player.getInventory().add(stack)` of the region's player `id` (n6 Inventory.add
-    /// @9-101), the client told of every slot that changed: `None` where the game's
-    /// returns true, all of it gone in, or for a player with infinite materials what found
-    /// no room destroyed; else what found no room, which is the caller's (the game's add
-    /// returns false then, even where some of it went in).
+    /// @9-101), the client told of every slot that changed: `None` where all of it went
+    /// in, or where none of it did for a player with infinite materials, whose stack the
+    /// game then empties (@48-101: only when the count is what it was); else what found
+    /// no room, which is the caller's.
     pub(crate) fn add_to_player_inventory(
         &mut self,
         id: PlayerId,
@@ -397,7 +397,8 @@ impl Region {
                 .player_events
                 .push((id, PlayerEvent::InventorySlot { slot, stack: now }));
         }
-        (left > 0 && !infinite).then(|| stack.with_count(left))
+        let destroyed = infinite && left == stack.count;
+        (left > 0 && !destroyed).then(|| stack.with_count(left))
     }
 
     /// `Player.drop(stack, false)` of the region's player `id`: thrown from their eyes

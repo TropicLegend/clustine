@@ -141,11 +141,6 @@ impl Region {
     /// respawn; anything else is dropped (`handleMovePlayer` returns early while the
     /// game's player is in the credits). Whether the stay waits to be asked.
     pub(super) fn asked_input(&mut self, id: PlayerId, input: &PlayerInput) -> bool {
-        // An operator's order is kept with the stay's other inputs that have no place,
-        // and holds once it is placed (`orders.rs`).
-        if matches!(input, PlayerInput::Order(_)) {
-            return false;
-        }
         let Some(waiting) = self.waiting.get_mut(&id) else {
             return false;
         };

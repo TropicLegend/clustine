@@ -341,7 +341,6 @@ fn a_creative_player_s_full_inventory_loses_it() {
 /// some went in it returns true with the rest in the stack (@88-101), which is not empty,
 /// so `giveItem` drops the rest from the player (`player.drop`) and plays no sound.
 #[test]
-#[ignore = "finding: the region loses a creative player's rest where part of it was added"]
 fn a_creative_player_s_partly_full_inventory_drops_the_rest() {
     let mut region = as_player(GameMode::Creative, false);
     full_of_dirt(&mut region);
@@ -666,7 +665,6 @@ fn an_order_to_a_dead_player_holds_through_the_respawn() {
 /// As above, for a death away from the overworld's home: the ask lets the stay go to the
 /// home, which places it. The order the stay was given while it waited holds there.
 #[test]
-#[ignore = "finding: a waiting stay that is let go to another region forgets the orders it kept"]
 fn an_order_to_a_dead_player_away_from_the_home_holds_through_the_respawn() {
     let mut east = region(
         Land::east_of_the_line(Dimension::Overworld, OVERWORLD_HOME),
@@ -697,7 +695,6 @@ fn an_order_to_a_dead_player_away_from_the_home_holds_through_the_respawn() {
 /// kept with the stay (`asked_input` lets it by) and holds once the overworld's home
 /// places them.
 #[test]
-#[ignore = "finding: a waiting stay that is let go to another region forgets the orders it kept"]
 fn an_order_to_a_stay_waiting_in_the_credits_holds_once_it_is_placed() {
     let portal = at(2, HIGH_FLOOR + 1, 2);
     let mut end = region(Land::whole(Dimension::End), 0, move |pos| {
@@ -727,8 +724,8 @@ fn an_order_to_a_stay_waiting_in_the_credits_holds_once_it_is_placed() {
     assert_eq!(state.inventory.0[0], stacked(items::STONE, 3));
 }
 
-/// While the stay waits in the credits, an order is neither carried out (nobody is in
-/// the world to carry it out on) nor taken for the ask: it is kept with the stay.
+/// While the stay waits in the credits, an order is not taken for the ask, and is
+/// carried out on what the stay takes with it (the design's review, item 6).
 #[test]
 fn an_order_to_a_stay_in_the_credits_is_kept_until_the_ask() {
     let portal = at(2, HIGH_FLOOR + 1, 2);
@@ -738,12 +735,13 @@ fn an_order_to_a_stay_in_the_credits_is_kept_until_the_ask() {
     let (id, entity) = add_player(&mut end, 1, [2.5, f64::from(HIGH_FLOOR + 1), 2.5], false);
     assert!(won(&idle(&mut end), id), "in the credits");
     let order = Order::GameMode(GameMode::Survival);
-    let output = end.tick(&input(id, entity, PlayerInput::Order(order.clone())));
+    let output = end.tick(&input(id, entity, PlayerInput::Order(order)));
     assert!(
         mode_changes(&output, id).is_empty(),
         "nobody to apply it to yet"
     );
     let waiting = end.waiting_state(id).expect("waits to be asked");
     assert!(waiting.until_asked, "an order is no ask");
-    assert_eq!(waiting.kept, [PlayerInput::Order(order)]);
+    assert!(waiting.kept.is_empty(), "{:?}", waiting.kept);
+    assert_eq!(waiting.transfer.mode, survival_after_creative());
 }

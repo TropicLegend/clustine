@@ -17,13 +17,18 @@
 //! spectator); `updateSleepingPlayerList` has nothing to count until spectator exists; a
 //! gift that went in whole makes no fake item for a tick and so no swing of the arm;
 //! what is dropped has a throw's pick-up delay and no target (anyone may take it, where
-//! the game's has none and only the player may).
+//! the game's has none and only the player may). An order for a stay that waits (dead
+//! away from the home region, in the credits, between levels) is carried out on what
+//! the stay takes with it: a gift there makes no sound, and what finds no room in the
+//! inventory is lost, having nowhere to be dropped.
 
 use clustine_data::sounds;
 use clustine_world::{GameMode, PlayerId};
 
 use super::Region;
-use crate::api::{ItemStack, Order, PlayerEvent, RegionEvent, SOUND_SOURCE_PLAYERS, TickOutput};
+use crate::api::{
+    ItemStack, Order, PlayerEvent, PlayerTransfer, RegionEvent, SOUND_SOURCE_PLAYERS, TickOutput,
+};
 
 impl Region {
     /// Carries out the operator's `order` for the region's player `id`.
@@ -98,5 +103,38 @@ impl Region {
             pitch: ((a - b) * 0.7 + 1.0) * 2.0,
             except: None,
         });
+    }
+}
+
+/// The operator's `order` carried out on a waiting stay's `transfer`: its mode, or its
+/// inventory, which its client is told whole where it is placed.
+pub(super) fn obey_waiting(transfer: &mut PlayerTransfer, order: &Order) {
+    match *order {
+        Order::GameMode(mode) => {
+            if transfer.mode.current != mode {
+                transfer.mode = transfer.mode.changed_to(mode);
+                if !mode.abilities().may_fly {
+                    transfer.flying = false;
+                }
+            }
+        }
+        Order::Give { item, count } => {
+            let known = usize::try_from(item).is_ok_and(|at| at < clustine_data::ITEMS.len());
+            if item == 0 || !known {
+                return;
+            }
+            let largest = i32::from(clustine_data::ItemComponents::of(item).max_stack_size).max(1);
+            let selected = usize::from(transfer.selected_slot);
+            let mut left = count;
+            while left > 0 {
+                let this = left.min(largest);
+                left -= this;
+                super::items::add_to_inventory(
+                    &mut transfer.inventory,
+                    selected,
+                    &ItemStack::new(item, this),
+                );
+            }
+        }
     }
 }

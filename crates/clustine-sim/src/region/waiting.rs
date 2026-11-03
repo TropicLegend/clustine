@@ -133,6 +133,12 @@ impl Region {
         waiting.transfer.last_input = number;
         waiting.transfer.attempt = None;
         self.journal.waiting.insert(id);
+        // An operator's order is carried out on what the stay takes with it, which goes
+        // wherever it is let go (`orders.rs`).
+        if let PlayerInput::Order(order) = input {
+            super::orders::obey_waiting(&mut waiting.transfer, order);
+            return true;
+        }
         // A stay in the credits or dead takes only the ask for its respawn
         // (`respawning.rs`).
         if self.asked_input(id, input) {
