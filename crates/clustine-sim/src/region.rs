@@ -45,6 +45,7 @@ mod copper_golems;
 mod cushions;
 mod custom_spawners;
 mod daylight_detector;
+mod death;
 mod difficulty;
 mod digging;
 mod diodes;
@@ -4742,6 +4743,7 @@ mod tests {
     mod pigs;
     mod pistons;
     mod player_blasts;
+    mod player_body;
     mod player_effects;
     mod player_projectiles;
     mod player_sources;

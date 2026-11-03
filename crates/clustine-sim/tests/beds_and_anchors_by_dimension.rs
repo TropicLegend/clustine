@@ -367,7 +367,9 @@ fn a_bed_at_night_lays_its_user_down_in_the_overworld_and_explodes_elsewhere() {
         assert_eq!(*centre, [2.5, -59.5, 0.5], "at the head's centre");
         assert_eq!(*radius, 5.0);
         assert!(*broken > 0);
-        assert!(knockback.is_empty(), "nobody is pushed: {knockback:?}");
+        // A bed's explosion hurts and pushes as any (`bad_respawn_point`, V4): its user,
+        // standing beside it, is pushed.
+        assert_eq!(knockback.len(), 1, "the user is pushed: {knockback:?}");
         assert_eq!(scene.block(HEAD), blocks::AIR, "{dimension:?}");
         assert!(
             !is_of(scene.block(FOOT), blocks::RED_BED),
@@ -447,7 +449,9 @@ fn a_straw_bed_sleeps_in_the_overworld_and_elsewhere_breaks_without_exploding() 
 }
 
 #[test]
-fn a_bed_s_explosion_hurts_and_pushes_nobody() {
+/// A bed's explosion hurts what is near as any explosion does (`DamageSources.
+/// badRespawnPointExplosion`, V4): the stand beside it breaks.
+fn a_bed_s_explosion_hurts_what_is_near() {
     for dimension in [Dimension::Nether, Dimension::End] {
         let world = World::of(&[(HEAD, bed("head")), (FOOT, bed("foot"))])
             .with_entities(&[stand(1, [6.5, -60.0, 3.5]), dirt(2, [-2.5, -60.0, 3.5])]);
@@ -455,8 +459,10 @@ fn a_bed_s_explosion_hurts_and_pushes_nobody() {
         assert!(present(&scene.region, 1) && present(&scene.region, 2));
         let output = scene.click(HEAD, Face::Top);
         assert_eq!(explosions(&output).len(), 1);
-        assert!(present(&scene.region, 1), "the stand stands: {dimension:?}");
-        assert!(present(&scene.region, 2), "the dirt lies: {dimension:?}");
+        assert!(
+            !present(&scene.region, 1),
+            "the stand breaks: {dimension:?}"
+        );
     }
 }
 
@@ -596,7 +602,7 @@ fn a_charged_anchor_sets_the_spawn_in_the_nether_once_and_keeps_its_charge() {
 }
 
 #[test]
-fn a_charged_anchor_explodes_in_the_overworld_and_the_end_with_fire_and_hurting_nobody() {
+fn a_charged_anchor_explodes_in_the_overworld_and_the_end_with_fire_hurting_what_is_near() {
     for dimension in [Dimension::Overworld, Dimension::End] {
         let world = World::of(&[(ANCHOR, anchor(1))])
             .with_entities(&[stand(1, [6.5, -60.0, 3.5]), dirt(2, [-2.5, -60.0, 3.5])]);
@@ -608,7 +614,8 @@ fn a_charged_anchor_explodes_in_the_overworld_and_the_end_with_fire_and_hurting_
         assert_eq!(*centre, [2.5, -59.5, 0.5]);
         assert_eq!(*radius, 5.0);
         assert!(*broken > 0);
-        assert!(knockback.is_empty());
+        // Its user beside it is pushed, as by any explosion (V4).
+        assert_eq!(knockback.len(), 1, "{knockback:?}");
         assert_eq!(scene.block(ANCHOR), blocks::AIR, "{dimension:?}");
         assert_eq!(
             scene.block(BlockPos::new(2, -61, 0)),
@@ -617,7 +624,10 @@ fn a_charged_anchor_explodes_in_the_overworld_and_the_end_with_fire_and_hurting_
         );
         assert_eq!(respawn(&scene), None);
         assert!(fires(&scene.region) > 0, "{dimension:?}");
-        assert!(present(&scene.region, 1) && present(&scene.region, 2));
+        assert!(
+            !present(&scene.region, 1),
+            "the stand breaks: {dimension:?}"
+        );
     }
 }
 
@@ -681,7 +691,7 @@ fn water_beside_or_above_an_exploding_anchor_keeps_its_blast_from_breaking_anyth
 // Across a pinned line.
 
 #[test]
-fn a_bed_s_explosion_at_a_line_files_blocks_beyond_it_with_fire_hurting_nobody_and_no_entity() {
+fn a_bed_s_explosion_at_a_line_files_blocks_beyond_it_with_fire_and_hits_the_stand_there() {
     let head = BlockPos::new(14, -60, 4);
     let foot = BlockPos::new(14, -60, 5);
     let world = World::of(&[
@@ -714,7 +724,7 @@ fn a_bed_s_explosion_at_a_line_files_blocks_beyond_it_with_fire_hurting_nobody_a
     );
     for (at, blast) in &far {
         assert!(at.x >= 16);
-        assert!(blast.fire && !blast.hurts, "{blast:?}");
+        assert!(blast.fire && blast.hurts, "{blast:?}");
         assert!(!blast.direct, "no entity's loot");
         assert!(blast.decay, "a block explosion's drops decay");
         assert_eq!(blast.owner, None);
@@ -725,7 +735,8 @@ fn a_bed_s_explosion_at_a_line_files_blocks_beyond_it_with_fire_hurting_nobody_a
         .iter()
         .filter(|effect| matches!(effect.what, Effected::OnEntity { .. }))
         .count();
-    assert_eq!(hits, 0, "the stand beyond the line is not hit");
+    // The explosion hurts (V4): the stand beyond the line is hit, by its holder.
+    assert_eq!(hits, 1, "the stand beyond the line is hit");
 }
 
 /// `RespawnAnchorBlock.useWithoutItem` passes for an empty anchor, so a block in hand

@@ -159,13 +159,6 @@ pub(super) struct Hit {
     pub(super) push: [f64; 3],
 }
 
-/// Whether the owner `owner` is a creative player, as `attached.rs` and `thrown.rs` ask
-/// it of a hanging thing's breaker: every owner is taken as creative there. An
-/// explosion reads the owner's real mode ([`Region::owner_creative`]).
-pub(crate) fn owner_is_creative(owner: Option<Uuid>) -> bool {
-    owner.is_some()
-}
-
 /// `ExplosionDamageCalculator.getBlockExplosionResistance` of the plain calculator:
 /// nothing for air without a fluid, else the more of the block's and its fluid's.
 pub(crate) fn resistance(state: BlockState) -> Option<f32> {

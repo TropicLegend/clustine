@@ -1206,10 +1206,10 @@ fn bedroom(kind: &str, dimension: Dimension, day: u64, inventory: Inventory) -> 
 
 /// Brief 1.2 and plan 17.2 C, 14: in the Nether and the End a bed's rule is
 /// `destroy_on_use`: using it removes both halves and explodes at the head's centre
-/// with power 5 and fire, hurting nobody until survival (a cow beside it keeps its
-/// health), and sets no spawn (`can_set_spawn: never`).
+/// with power 5 and fire, hurting what is near (`bad_respawn_point`, V4: a cow beside it
+/// is hurt), and sets no spawn (`can_set_spawn: never`).
 #[test]
-fn a_bed_used_in_the_nether_or_the_end_is_removed_and_explodes_with_fire_hurting_nobody() {
+fn a_bed_used_in_the_nether_or_the_end_is_removed_and_explodes_with_fire_hurting_what_is_near() {
     for dimension in [Dimension::Nether, Dimension::End] {
         for day in [NOON, MIDNIGHT] {
             let mut scene = bedroom("red_bed", dimension, day, one(items::COW_SPAWN_EGG));
@@ -1230,8 +1230,8 @@ fn a_bed_used_in_the_nether_or_the_end_is_removed_and_explodes_with_fire_hurting
             );
             assert_eq!(scene.respawn(), None, "{dimension:?}: no spawn set");
             scene.idle();
-            let after = scene.record(cow).expect("the cow is not killed");
-            assert_eq!(health(&after), full, "{dimension:?}: nobody hurt");
+            let hurt = scene.record(cow).is_none_or(|after| health(&after) < full);
+            assert!(hurt, "{dimension:?}: the cow is hurt");
         }
     }
 }

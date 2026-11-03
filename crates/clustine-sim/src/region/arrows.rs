@@ -1102,6 +1102,19 @@ impl Region {
                     hurt.fire_before = 100;
                 }
                 if self.player_took_hurt(id, &hurt, output) {
+                    // The shooter's ding, where they are another player of the region
+                    // (named: a shooter of another region hears none).
+                    let shooter = hurt
+                        .cause
+                        .as_ref()
+                        .and_then(|cause| cause.player)
+                        .map(clustine_world::PlayerId)
+                        .filter(|shooter| *shooter != id && self.players.contains_key(shooter));
+                    if let Some(shooter) = shooter {
+                        output
+                            .player_events
+                            .push((shooter, crate::api::PlayerEvent::ArrowHitPlayer));
+                    }
                     if let Some(weapon) = &flight.arrow.weapon {
                         let level = enchantments::level(weapon, "minecraft:punch");
                         self.punch_player(id, flight.motion, level, output);
@@ -1440,6 +1453,13 @@ impl Region {
         let players: Vec<(clustine_world::PlayerId, EntityId, [f64; 3])> = self
             .players
             .iter()
+            // `Player.aiStep` touches what lies about only with health above 0 and not
+            // as a spectator.
+            .filter(|(_, player)| {
+                !player.dead
+                    && player.health > 0.0
+                    && player.mode.current != clustine_world::GameMode::Spectator
+            })
             .map(|(id, player)| {
                 let at = player.pose.position;
                 (*id, player.entity_id, [at.x, at.y, at.z])

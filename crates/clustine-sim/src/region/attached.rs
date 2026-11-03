@@ -31,13 +31,12 @@ pub(crate) enum Breaker {
 
 impl Breaker {
     /// Who breaks a block-attached entity by an explosion: its damage source's entity
-    /// (`DamageSource.getEntity`), the player who primed the TNT, creative as every
-    /// player is, where anyone did (`docs/groundwork/n6-brief.md`, finding 2.0 item 7).
-    pub(crate) fn of_owner(owner: Option<uuid::Uuid>) -> Self {
+    /// (`DamageSource.getEntity`), the player who primed the TNT or threw what hit it,
+    /// creative as `creative` says, where anyone did (`docs/groundwork/n6-brief.md`,
+    /// finding 2.0 item 7).
+    pub(crate) fn of_owner(owner: Option<uuid::Uuid>, creative: bool) -> Self {
         match owner {
-            Some(_) => Self::Player {
-                creative: super::explosions::owner_is_creative(owner),
-            },
+            Some(_) => Self::Player { creative },
             None => Self::Nothing,
         }
     }

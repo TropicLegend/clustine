@@ -25,7 +25,7 @@
 use clustine_world::{BlockPos, PlayerId, Way};
 
 use super::Region;
-use crate::api::{Durable, Experience, Inventory, PlayerInput, RegionEvent, TickOutput};
+use crate::api::{Durable, Experience, PlayerInput, RegionEvent, TickOutput};
 use crate::mobs::body::hurt::DamageType;
 use crate::state::PLAYER_MAX_HEALTH;
 
@@ -39,9 +39,6 @@ const VOID_BELOW: f64 = 64.0;
 /// begun in the death's own tick (`baseTick` runs `tickDeath` after the hurt), so the
 /// body goes 19 ticks after it.
 const BODY_TICKS: u64 = 19;
-
-/// The game's death message for the void.
-const OUT_OF_WORLD_MESSAGE: &str = "death.attack.outOfWorld";
 
 /// What the region keeps in memory of a player's death and loading; the hurt cooldown is
 /// in their body ([`crate::state::Vitals`]).
@@ -129,9 +126,18 @@ impl Region {
         );
         let died_in = (self.config.dimension, block);
         player.last_death = Some(died_in);
-        // `dropAllDeathLoot` where they died: below the world, where nothing stays.
-        player.inventory = Inventory::default();
-        // And window 0's grid, result and cursor with it.
+        // Fire and freezing are put out (`ServerPlayer.die`: `clearFire`, ticks frozen 0).
+        player.vitals.fire = 0;
+        player.vitals.frozen = 0;
+        let message = self.death_message(id);
+        // `dropAllDeathLoot`, unless a spectator: what they carried, then their
+        // experience (V4c, `death.rs`).
+        self.drop_all_death_loot(id, output);
+        let Some(player) = self.players.get_mut(&id) else {
+            return;
+        };
+        // Window 0's grid, result and cursor go with the inventory (named: the game's
+        // `removed` at the respawn).
         player.crafting = Default::default();
         player.experience = Experience::default();
         let (edge, entity, chunk) = (player.edge, player.entity_id, player.chunk());
@@ -144,7 +150,7 @@ impl Region {
         let died = Durable::Died {
             player: id,
             entity,
-            message: crate::api::DeathMessage::plain(OUT_OF_WORLD_MESSAGE),
+            message,
             at: died_in,
         };
         self.send(edge, died, output);
@@ -173,6 +179,9 @@ impl Region {
         transfer.health = PLAYER_MAX_HEALTH;
         transfer.dead = false;
         transfer.effects.clear();
+        // A new body (`ServerPlayer.restoreFrom` after a death): food 20 and 5, full air,
+        // nothing burning, nothing kept of the hurts.
+        transfer.vitals = Default::default();
         self.wait_to_be_asked(edge, id, transfer, travel);
     }
 

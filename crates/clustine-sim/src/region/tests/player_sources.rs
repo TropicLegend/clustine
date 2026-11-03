@@ -29,6 +29,8 @@ fn in_mode(mode: clustine_world::GameMode, blocks: &[(BlockPos, &str)]) -> Regio
     own.mode = clustine_world::PlayerMode::new(mode);
     own.inventory = Inventory::default();
     own.hurting.loading.mark_loaded();
+    // Food below 18 heals nothing (`FoodData.tick`), so that each source shows alone.
+    own.vitals.food.food = 17;
     region
 }
 

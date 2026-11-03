@@ -990,6 +990,7 @@ impl Witness {
                 | PlayerEvent::Health { .. }
                 | PlayerEvent::Knocked { .. }
                 | PlayerEvent::HurtAnimation { .. }
+                | PlayerEvent::ArrowHitPlayer
                 | PlayerEvent::OwnData(_)
                 | PlayerEvent::GlobalLevelEvent { .. }
                 | PlayerEvent::Experience(_)

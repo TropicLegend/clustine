@@ -356,7 +356,11 @@ impl Default for Vitals {
         Self {
             food: FoodData::default(),
             air: PLAYER_MAX_AIR,
-            fire: 0,
+            // Where every player's fire rests after their first tick out of fire
+            // (`applyEffectsFromBlocks @151-157`, `Player.getFireImmuneTicks`). Named:
+            // the game's new player has 0 for that first tick, and in fire at once would
+            // burn without the grace.
+            fire: -20,
             frozen: 0,
             fall_distance: 0.0,
             absorption: 0.0,

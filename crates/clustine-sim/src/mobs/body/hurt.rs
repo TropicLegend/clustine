@@ -73,39 +73,16 @@ impl DamageType {
     }
 
     /// Its data from the jar (V4), where the game has the type.
-    #[expect(dead_code, reason = "a player's hurt reads it (V4)")]
     pub(crate) fn data(self) -> Option<&'static clustine_data::DamageTypeData> {
         clustine_data::damage_type(self.0)
     }
 
-    /// The exhaustion a hurt by it costs (`DamageType.exhaustion`).
-    #[expect(dead_code, reason = "a player's hurt reads it (V4)")]
-    pub(crate) fn exhaustion(self) -> f32 {
-        self.data().map_or(0.0, |data| data.exhaustion)
-    }
-
-    /// How difficulty scales it (`DamageType.scaling`).
-    #[expect(dead_code, reason = "a player's hurt reads it (V4)")]
-    pub(crate) fn scaling(self) -> clustine_data::DamageScaling {
-        self.data()
-            .map_or(clustine_data::DamageScaling::Never, |data| data.scaling)
-    }
-
-    /// Which sound a hurt by it makes (`DamageType.effects`).
-    #[expect(dead_code, reason = "a player's hurt reads it (V4)")]
-    pub(crate) fn effects(self) -> clustine_data::DamageEffects {
-        self.data()
-            .map_or(clustine_data::DamageEffects::Hurt, |data| data.effects)
-    }
-
     /// The key its death message is built from (`DamageType.msgId`).
-    #[expect(dead_code, reason = "a player's hurt reads it (V4)")]
     pub(crate) fn message_id(self) -> &'static str {
         self.data().map_or("generic", |data| data.message_id)
     }
 
     /// How its death message reads (`DamageType.deathMessageType`).
-    #[expect(dead_code, reason = "a player's hurt reads it (V4)")]
     pub(crate) fn death_message_type(self) -> clustine_data::DeathMessageType {
         self.data()
             .map_or(clustine_data::DeathMessageType::Default, |data| {

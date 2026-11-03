@@ -816,7 +816,8 @@ impl Region {
             | EntityData::Cushion { .. }
             | EntityData::LeashKnot { .. } => {
                 let player = hit.owner.and_then(|owner| owner.player);
-                self.hurt_attached(target, Breaker::of_owner(player), output);
+                let creative = self.owner_creative(player);
+                self.hurt_attached(target, Breaker::of_owner(player, creative), output);
             }
             EntityData::Fireball(_) => self.fireball_hit(&record, hit, output),
             EntityData::EndCrystal(_) => self.end_crystal_hit(&record, hit, output),

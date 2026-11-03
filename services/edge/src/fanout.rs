@@ -2173,6 +2173,16 @@ impl Fanout {
             } => self.show_own_data(player, data).await,
             WorkerToEdge::ToPlayer {
                 player,
+                event: PlayerEvent::ArrowHitPlayer,
+            } => {
+                let packet = encoded(&GameEvent {
+                    event: game_event::PLAY_ARROW_HIT_SOUND,
+                    value: 0.0,
+                });
+                self.send_to_player(player, [packet]).await;
+            }
+            WorkerToEdge::ToPlayer {
+                player,
                 event: PlayerEvent::HurtAnimation { yaw },
             } => {
                 if let Some(entity) = self.players.get(&player).and_then(|view| view.entity) {

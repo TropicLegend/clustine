@@ -721,6 +721,13 @@ impl Region {
         let players: Vec<(PlayerId, EntityId, [f64; 3])> = self
             .players
             .iter()
+            // `Player.aiStep` touches what lies about only with health above 0 and not
+            // as a spectator.
+            .filter(|(_, player)| {
+                !player.dead
+                    && player.health > 0.0
+                    && player.mode.current != clustine_world::GameMode::Spectator
+            })
             .map(|(id, player)| {
                 let at = player.pose.position;
                 (*id, player.entity_id, [at.x, at.y, at.z])

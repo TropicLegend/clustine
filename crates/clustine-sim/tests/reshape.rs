@@ -5115,7 +5115,7 @@ fn place_of(state: &PlayerState) -> Place {
         time_since_rest: 0,
         raid_omen_position: None,
         crafting: Default::default(),
-        vitals: Default::default(),
+        vitals: Box::new(state.vitals.kept_in_place()),
     }
 }
 

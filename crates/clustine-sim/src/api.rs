@@ -1878,6 +1878,9 @@ pub enum PlayerEvent {
     /// (`ServerPlayer.indicateDamage`): their client shakes its view
     /// (`ClientboundHurtAnimationPacket`, to them alone).
     HurtAnimation { yaw: f32 },
+    /// The player's arrow hit another player (`AbstractArrow.onHitEntity` @377-428): their
+    /// client plays the hit's ding (`ClientboundGameEventPacket.PLAY_ARROW_HIT_SOUND`).
+    ArrowHitPlayer,
     /// What the player's own entity data says that only the server sets (V4): the edge
     /// sends it to the player's own client as `SetEntityData`, and again whole at a
     /// respawn (`ServerEntity.sendDirtyEntityData`, `getNonDefaultValues`). Reported on

@@ -427,6 +427,8 @@ pub mod game_event {
     pub const NO_RESPAWN_BLOCK_AVAILABLE: u8 = 0;
     /// The player's game mode changed to the one whose id is the value.
     pub const CHANGE_GAME_MODE: u8 = 3;
+    /// The player's arrow hit another player: the client plays the hit's ding.
+    pub const PLAY_ARROW_HIT_SOUND: u8 = 6;
     /// The client shows the End poem and the credits, then asks to respawn.
     pub const WIN_GAME: u8 = 4;
     /// The client skips the respawn screen (`doImmediateRespawn`); with value 0, it shows

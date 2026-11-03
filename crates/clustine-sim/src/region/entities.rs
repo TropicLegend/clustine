@@ -62,6 +62,14 @@ pub(crate) fn throw_motion(yaw: f32, pitch: f32, draws: [f32; THROW_DRAWS]) -> [
     ]
 }
 
+/// How a player's item comes to be dropped ([`Region::throw`] and the drops like it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dropped {
+    Thrown,
+    Crafted,
+    AtDeath,
+}
+
 /// A UUID of version 4 from two draws, as the game's `Mth.createInsecureUUID` makes one
 /// of two longs.
 pub(crate) fn insecure_uuid(most: u64, least: u64) -> Uuid {
@@ -555,7 +563,7 @@ impl Region {
     /// and nothing made, where its chunk ticks and is full ([`MAX_CHUNK_ENTITIES`]), or
     /// the region has no key left (ADR-0028, section 1).
     pub(crate) fn throw(&mut self, thrown: Thrown, output: &mut TickOutput) -> bool {
-        self.drop_item(thrown, true, output)
+        self.drop_item(thrown, Dropped::Thrown, output)
     }
 
     /// What a craft drops (`ResultSlot.onTake`'s remainders, the rest of a shift-click on
@@ -563,11 +571,20 @@ impl Region {
     /// with no thrower kept (`retainOwnership` false, `createItemStackToDrop`) and no
     /// swing (`LivingEntity.drop` @16-31 swings only where the client did not predict it).
     pub(crate) fn drop_crafted(&mut self, thrown: Thrown, output: &mut TickOutput) -> bool {
-        self.drop_item(thrown, false, output)
+        self.drop_item(thrown, Dropped::Crafted, output)
     }
 
-    /// [`Self::throw`], with the thrower kept and the arm swung only if `owned`.
-    fn drop_item(&mut self, thrown: Thrown, owned: bool, output: &mut TickOutput) -> bool {
+    /// What a death drops (`Inventory.dropAll`'s `player.drop(stack, true, false)`):
+    /// `createItemStackToDrop(stack, true, false)`, from the same place as a throw with
+    /// the same delay, but no thrower, no swing, and a random way: `f = r·0.5`, `a =
+    /// r·2π`, motion `(−sin a·f, 0.2, cos a·f)` by the game's table (V4).
+    pub(crate) fn drop_at_death(&mut self, thrown: Thrown, output: &mut TickOutput) -> bool {
+        self.drop_item(thrown, Dropped::AtDeath, output)
+    }
+
+    /// [`Self::throw`] and the drops like it, as `dropped` says.
+    fn drop_item(&mut self, thrown: Thrown, dropped: Dropped, output: &mut TickOutput) -> bool {
+        let owned = dropped == Dropped::Thrown;
         let Thrown {
             player,
             stack,
@@ -606,7 +623,21 @@ impl Region {
             return false;
         };
 
-        let motion = throw_motion(pose.yaw, pose.pitch, self.draw_floats(thrower_key));
+        let motion = match dropped {
+            Dropped::AtDeath => {
+                let [spread, turn] = self.draw_floats(thrower_key);
+                let f = spread * 0.5;
+                let a = f64::from(turn * 6.283_185_5);
+                [
+                    f64::from(-trig::sin(a) * f),
+                    f64::from(0.2_f32),
+                    f64::from(trig::cos(a) * f),
+                ]
+            }
+            Dropped::Thrown | Dropped::Crafted => {
+                throw_motion(pose.yaw, pose.pitch, self.draw_floats(thrower_key))
+            }
+        };
         // The item's own draws at its birth: its UUID (the game's two longs), the bob
         // of its model, which only clients show, and its yaw (`ItemEntity`'s
         // constructors).
