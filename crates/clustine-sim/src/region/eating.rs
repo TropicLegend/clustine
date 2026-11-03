@@ -225,7 +225,12 @@ impl Region {
     /// `addEffect` of `instance` on the player `id` (`player_effects.rs`), refused where
     /// the player is spared it, with bad omen's sound where it is new
     /// (`MobEffect.onEffectAdded`'s `soundOnAdded`, heard by everyone near).
-    fn give_player(&mut self, id: PlayerId, instance: &EffectInstance, output: &mut TickOutput) {
+    pub(super) fn give_player(
+        &mut self,
+        id: PlayerId,
+        instance: &EffectInstance,
+        output: &mut TickOutput,
+    ) {
         let Some(effect) = Effect::named(&instance.effect) else {
             return;
         };

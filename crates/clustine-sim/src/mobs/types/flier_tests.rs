@@ -866,6 +866,7 @@ fn an_allay_wants_only_what_its_hand_holds_while_its_slot_has_room_and_its_liked
         DamageSource::by(
             DamageType::PLAYER_ATTACK,
             Causer {
+                name: None,
                 key: EntityId(9),
                 kind: entity_types::PLAYER as u16,
                 position: [0.0; 3],

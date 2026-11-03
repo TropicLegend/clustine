@@ -98,6 +98,7 @@ impl Region {
         let source = DamageSource::by(
             kind,
             Causer {
+                name: None,
                 key: player.entity_id,
                 kind: player_kind(),
                 position: feet,

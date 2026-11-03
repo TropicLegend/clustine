@@ -269,6 +269,7 @@ fn crystal(key: EntityId, at: [f64; 3]) -> Entity {
 /// `at`, of the type `name`.
 fn by_player(key: EntityId, at: [f64; 3], name: &str) -> DamageSource {
     let player = Causer {
+        name: None,
         key,
         kind: kind(entity_types::PLAYER),
         position: at,
@@ -299,6 +300,7 @@ fn source(name: &str, cause: Option<Causer>, direct: Option<Causer>) -> DamageSo
 
 fn causer(key: EntityId, kind_id: i32, at: [f64; 3], living: bool) -> Causer {
     Causer {
+        name: None,
         key,
         kind: kind(kind_id),
         position: at,

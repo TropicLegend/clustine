@@ -522,6 +522,7 @@ fn source(kind: &'static str, direct: i32, player: Option<u128>) -> DamageSource
     DamageSource {
         kind: DamageType(kind),
         cause: Some(Causer {
+            name: None,
             key: EntityId(5),
             kind: if player.is_some() {
                 entity_types::PLAYER as u16
@@ -533,6 +534,7 @@ fn source(kind: &'static str, direct: i32, player: Option<u128>) -> DamageSource
             living: true,
         }),
         direct: Some(Causer {
+            name: None,
             key: EntityId(6),
             kind: direct as u16,
             position: [0.0; 3],

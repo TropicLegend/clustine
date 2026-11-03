@@ -989,6 +989,7 @@ impl Witness {
                 | PlayerEvent::HeldSlot { .. }
                 | PlayerEvent::Health { .. }
                 | PlayerEvent::Knocked { .. }
+                | PlayerEvent::HurtAnimation { .. }
                 | PlayerEvent::OwnData(_)
                 | PlayerEvent::GlobalLevelEvent { .. }
                 | PlayerEvent::Experience(_)

@@ -458,6 +458,7 @@ fn a_raider_of_another_region_s_raid_tells_its_death_to_the_raid_s_chunk() {
     let source = DamageSource::by(
         DamageType::named("minecraft:player_attack").unwrap(),
         Causer {
+            name: None,
             key: EntityId(1),
             kind: crate::region::mob_bodies::player_kind(),
             position: [4.5, -60.0, 6.5],

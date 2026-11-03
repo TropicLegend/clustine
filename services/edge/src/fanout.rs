@@ -2173,6 +2173,18 @@ impl Fanout {
             } => self.show_own_data(player, data).await,
             WorkerToEdge::ToPlayer {
                 player,
+                event: PlayerEvent::HurtAnimation { yaw },
+            } => {
+                if let Some(entity) = self.players.get(&player).and_then(|view| view.entity) {
+                    let packet = encoded(&clustine_protocol::packets::play::HurtAnimation {
+                        entity_id: self.wire.of(entity),
+                        yaw,
+                    });
+                    self.send_to_player(player, [packet]).await;
+                }
+            }
+            WorkerToEdge::ToPlayer {
+                player,
                 event: PlayerEvent::Message { key, args, overlay },
             } => {
                 let packet = encoded(&SystemChat::translated(&key, &args, overlay));

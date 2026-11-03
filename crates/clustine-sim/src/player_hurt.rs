@@ -1220,6 +1220,7 @@ mod tests {
 
     fn zombie_at(position: Vec3) -> Causer {
         Causer {
+            name: None,
             key: EntityId(7),
             kind: entity_types::ZOMBIE as u16,
             position,
@@ -1230,6 +1231,7 @@ mod tests {
 
     fn player_at(position: Vec3) -> Causer {
         Causer {
+            name: None,
             key: EntityId(8),
             kind: entity_types::PLAYER as u16,
             position,

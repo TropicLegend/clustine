@@ -368,6 +368,7 @@ impl Region {
                 let source = DamageSource::by(
                     DamageType::PLAYER_ATTACK,
                     Causer {
+                        name: None,
                         key: player,
                         kind: super::mob_bodies::player_kind(),
                         position: from,

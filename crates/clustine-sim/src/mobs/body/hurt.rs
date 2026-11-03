@@ -151,6 +151,8 @@ pub(crate) struct Causer {
     pub(crate) player: Option<u128>,
     /// Whether it is a `LivingEntity`.
     pub(crate) living: bool,
+    /// Its name as a death message gives it: a player's name, or a custom name (V4).
+    pub(crate) name: Option<String>,
 }
 
 /// A `DamageSource`: its type, what caused it and what dealt it, and the position it

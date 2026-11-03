@@ -1881,6 +1881,8 @@ impl Bot {
             // The bots craft nothing by the recipe book; what was sent is kept to be
             // compared.
             ClientboundPlay::UpdateRecipes(packet) => self.recipes = Some(packet),
+            // A shake of its own view at a hurt (V4), which a bot does not show.
+            ClientboundPlay::HurtAnimation(_) => {}
             ClientboundPlay::SynchronizePlayerPosition(packet) => {
                 if self.behaviour.confirm_teleports {
                     self.confirm_teleport(&packet).await?;

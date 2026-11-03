@@ -222,6 +222,7 @@ impl Region {
         let source = DamageSource::by(
             damage,
             Causer {
+                name: None,
                 key: attacker,
                 kind,
                 position: from,

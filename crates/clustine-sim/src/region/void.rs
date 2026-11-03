@@ -37,11 +37,6 @@ const VOID_HURT: f32 = 4.0;
 /// How far below a level's lowest y the void begins (`Entity.checkBelowWorld`).
 const VOID_BELOW: f64 = 64.0;
 
-/// The hurt cooldown's length, and the part of it within which only more than the last
-/// hurt is taken (`LivingEntity.invulnerableTime`, `hurtServer`).
-const HURT_COOLDOWN: u8 = 20;
-const HALF_COOLDOWN: u8 = 10;
-
 /// How long a dead player's body stays (`LivingEntity.tickDeath`): its count of 20 is
 /// begun in the death's own tick (`baseTick` runs `tickDeath` after the hurt), so the
 /// body goes 19 ticks after it.
@@ -50,13 +45,10 @@ const BODY_TICKS: u64 = 19;
 /// The game's death message for the void.
 const OUT_OF_WORLD_MESSAGE: &str = "death.attack.outOfWorld";
 
-/// What the region keeps in memory of a player's hurts and death.
+/// What the region keeps in memory of a player's death and loading; the hurt cooldown is
+/// in their body ([`crate::state::Vitals`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct Hurting {
-    /// `invulnerableTime`: the ticks left of the hurt cooldown.
-    cooldown: u8,
-    /// `lastHurt`: the last hurt taken within the cooldown.
-    last: f32,
     /// The tick the player died in, while their body stays.
     died_at: Option<u64>,
     /// Whether their client has loaded since their join, respawn or change of level,
@@ -75,8 +67,6 @@ impl Region {
             let Some(player) = self.players.get_mut(&id) else {
                 continue;
             };
-            // `baseTick`'s count down of the cooldown.
-            player.hurting.cooldown = player.hurting.cooldown.saturating_sub(1);
             if player.dead {
                 // A dead player restored from a commit has no tick of death in memory:
                 // their body stays its 20 ticks from now.
@@ -94,59 +84,32 @@ impl Region {
         }
     }
 
-    /// `hurtServer` of the void's 4 on player `id`.
+    /// `hurtServer` of the void's 4 on player `id` (`LivingEntity.onBelowWorld`), as any
+    /// hurt of a player ([`Region::hurt_player`]), and their health told.
     fn hurt_by_the_void(&mut self, id: PlayerId, output: &mut TickOutput) {
-        let Some(player) = self.players.get_mut(&id) else {
+        let source = crate::mobs::body::hurt::DamageSource::of(DamageType::OUT_OF_WORLD);
+        let before = self.players.get(&id).map(|player| player.health);
+        self.hurt_player(id, &source, VOID_HURT, Default::default(), output);
+        let Some(player) = self.players.get(&id) else {
             return;
         };
-        let hurting = &mut player.hurting;
-        let (taken, full) = if hurting.cooldown > HALF_COOLDOWN {
-            if VOID_HURT <= hurting.last {
-                return;
-            }
-            let taken = VOID_HURT - hurting.last;
-            hurting.last = VOID_HURT;
-            (taken, false)
-        } else {
-            hurting.last = VOID_HURT;
-            hurting.cooldown = HURT_COOLDOWN;
-            (VOID_HURT, true)
-        };
-        player.health = (player.health - taken).max(0.0);
-        let health = player.health;
-        let (entity, chunk) = (player.entity_id, player.chunk());
-        self.journal.players.insert(id);
-        if full {
-            output.events.push(RegionEvent::DamageEvent {
-                entity,
-                chunk,
-                damage_type: DamageType::OUT_OF_WORLD.id().unwrap_or(0),
-                cause: None,
-                direct: None,
-                position: None,
-            });
-        }
-        let food = self
-            .players
-            .get(&id)
-            .map_or_else(crate::state::FoodData::default, |player| player.vitals.food);
-        output.player_events.push((
-            id,
-            PlayerEvent::Health {
-                health,
-                food: food.food,
-                saturation: food.saturation,
-            },
-        ));
-        if health <= 0.0 {
-            self.die(id, output);
+        if before != Some(player.health) {
+            let (health, food) = (player.health, player.vitals.food);
+            output.player_events.push((
+                id,
+                PlayerEvent::Health {
+                    health,
+                    food: food.food,
+                    saturation: food.saturation,
+                },
+            ));
         }
     }
 
     /// `ServerPlayer.die` by the void: the death told to their edge, what they carried
     /// dropped into the void, the effects cleared, and the death shown to whoever
     /// watches.
-    fn die(&mut self, id: PlayerId, output: &mut TickOutput) {
+    pub(super) fn die(&mut self, id: PlayerId, output: &mut TickOutput) {
         if self
             .players
             .get(&id)

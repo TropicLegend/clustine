@@ -104,6 +104,7 @@ fn a_shulker_on_the_floor_looks_as_any_mob_and_one_on_a_wall_looks_in_the_wall_s
 
 fn source_of_kind(kind: i32) -> DamageSource {
     let arrow = Causer {
+        name: None,
         key: EntityId(9),
         kind: kind as u16,
         position: [0.0; 3],

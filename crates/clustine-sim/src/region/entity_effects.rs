@@ -42,6 +42,7 @@ const SENSITIVE_TO_WATER: [i32; 4] = [
 /// The cause or the deal of a hurt as the simulation's damage source names it.
 fn causer(of: &clustine_world::Causer) -> Causer {
     Causer {
+        name: of.name.clone(),
         key: of.key,
         kind: of.kind,
         position: of.position.map(|value| value.0),

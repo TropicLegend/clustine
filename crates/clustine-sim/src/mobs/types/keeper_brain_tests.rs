@@ -797,6 +797,7 @@ fn by(kind: u16, key: u64, position: Vec3, player: Option<u128>) -> DamageSource
             DamageType::MOB_ATTACK
         },
         Causer {
+            name: None,
             key: EntityId(key),
             kind,
             position,

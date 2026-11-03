@@ -339,6 +339,7 @@ fn by_a_cow(kind: DamageType) -> DamageSource {
     DamageSource::by(
         kind,
         Causer {
+            name: None,
             key: EntityId(77),
             kind: COW,
             position: [3.5, 0.0, 1.5],
@@ -391,6 +392,7 @@ fn no_spikes_while_it_moves_nor_against_thorns_magic_a_player_or_what_is_not_ali
             DamageSource::by(
                 DamageType::PLAYER_ATTACK,
                 Causer {
+                    name: None,
                     key: EntityId(5),
                     kind: entity_types::PLAYER as u16,
                     position: [3.5, 0.0, 1.5],

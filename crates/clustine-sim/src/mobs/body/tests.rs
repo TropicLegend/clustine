@@ -28,6 +28,7 @@ fn cow() -> Mob {
 /// The player entity 9, standing at `at`, as what caused and dealt a hit.
 fn player_at(at: [f64; 3]) -> Causer {
     Causer {
+        name: None,
         key: EntityId(9),
         kind: entity_types::PLAYER as u16,
         position: at,

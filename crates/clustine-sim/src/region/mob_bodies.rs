@@ -601,6 +601,7 @@ impl Region {
                     let source = DamageSource::by(
                         DamageType::PLAYER_ATTACK,
                         Causer {
+                            name: None,
                             key: attacker,
                             kind: player_kind(),
                             position: from.map(|value| value.0),

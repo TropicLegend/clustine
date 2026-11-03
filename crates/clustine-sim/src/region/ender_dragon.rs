@@ -261,6 +261,7 @@ impl Region {
             f64::from(pos.z) + 0.5,
         ];
         let direct = Causer {
+            name: None,
             key: crystal,
             kind: entity_types::END_CRYSTAL as u16,
             position: at,
@@ -268,6 +269,7 @@ impl Region {
             living: false,
         };
         let cause = player.map(|(key, uuid)| Causer {
+            name: None,
             key,
             kind: super::mob_bodies::player_kind(),
             position: at,

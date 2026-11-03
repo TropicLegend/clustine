@@ -434,6 +434,7 @@ impl Region {
         let source = DamageSource::by(
             DamageType("minecraft:sting"),
             Causer {
+                name: None,
                 key: bee,
                 kind,
                 position: from,

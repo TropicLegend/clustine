@@ -1874,6 +1874,10 @@ pub enum PlayerEvent {
     /// `causeExtraKnockback`): their client is told its motion as the server keeps it,
     /// `SetEntityMotion` with the player's own entity (V4).
     Knocked { motion: [f64; 3] },
+    /// The player was hurt from the direction `yaw`, relative to where they look
+    /// (`ServerPlayer.indicateDamage`): their client shakes its view
+    /// (`ClientboundHurtAnimationPacket`, to them alone).
+    HurtAnimation { yaw: f32 },
     /// What the player's own entity data says that only the server sets (V4): the edge
     /// sends it to the player's own client as `SetEntityData`, and again whole at a
     /// respawn (`ServerEntity.sendDirtyEntityData`, `getNonDefaultValues`). Reported on

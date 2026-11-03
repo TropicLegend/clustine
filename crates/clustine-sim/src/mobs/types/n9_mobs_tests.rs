@@ -786,6 +786,7 @@ mod enderman {
         world.floor = blocks::WATER;
         let mut run = run_at_seed(7);
         let arrow = Causer {
+            name: None,
             key: EntityId(77),
             kind: kind(entity_types::ARROW),
             position: [3.0, 1.0, 0.5],
@@ -841,6 +842,7 @@ mod enderman {
         // A living thing's hurt asks nothing.
         let mut run = run_at_seed(1);
         let zombie = Causer {
+            name: None,
             key: EntityId(5),
             kind: kind(entity_types::ZOMBIE),
             position: [1.5, 0.0, 0.5],
@@ -1195,6 +1197,7 @@ mod silverfish {
         let world = Field::new();
         let mut run = run_at_seed(1);
         let zombie = Causer {
+            name: None,
             key: EntityId(5),
             kind: kind(entity_types::ZOMBIE),
             position: [1.5, 0.0, 0.5],

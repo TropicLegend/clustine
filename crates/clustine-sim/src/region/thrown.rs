@@ -202,6 +202,7 @@ impl Hit {
     /// `damageSources().thrown(projectile, owner)`.
     fn source(&self) -> DamageSource {
         let direct = Causer {
+            name: None,
             key: self.projectile,
             kind: self.kind,
             position: self.at,
@@ -209,6 +210,7 @@ impl Hit {
             living: false,
         };
         let owner = self.owner.map(|owner| Causer {
+            name: None,
             key: owner.key,
             kind: owner.kind,
             position: owner.from.map(|value| value.0),

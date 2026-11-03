@@ -101,6 +101,7 @@ mod orders;
 mod picks;
 mod pistons;
 mod placing;
+mod player_damage;
 mod player_effects;
 pub(crate) mod pois;
 mod portal_spawns;

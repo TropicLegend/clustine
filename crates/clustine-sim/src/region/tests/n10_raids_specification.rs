@@ -222,6 +222,7 @@ fn by_player(hero: uuid::Uuid) -> DamageSource {
     DamageSource::by(
         DamageType::named("minecraft:player_attack").expect("a damage type"),
         Causer {
+            name: None,
             key: EntityId(1),
             kind: crate::region::mob_bodies::player_kind(),
             position: [4.5, -60.0, 6.5],
@@ -1746,6 +1747,7 @@ fn a_trader_s_llama_turns_on_what_hurt_its_trader() {
     let source = DamageSource::by(
         DamageType::named("minecraft:mob_attack").expect("a damage type"),
         Causer {
+            name: None,
             key: pig,
             kind,
             position: at,

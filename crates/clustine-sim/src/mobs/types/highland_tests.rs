@@ -268,6 +268,7 @@ fn by_player() -> DamageSource {
     DamageSource::by(
         DamageType::PLAYER_ATTACK,
         Causer {
+            name: None,
             key: EntityId(7),
             kind: entity_types::PLAYER as u16,
             position: [3.5, 0.0, 0.5],

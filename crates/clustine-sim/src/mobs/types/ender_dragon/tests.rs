@@ -20,6 +20,7 @@ fn by_player() -> DamageSource {
     DamageSource::by(
         DamageType::PLAYER_ATTACK,
         Causer {
+            name: None,
             key: EntityId(7),
             kind: entity_types::PLAYER as u16,
             position: [0.0; 3],
@@ -94,6 +95,7 @@ fn only_a_players_hurt_or_an_explosions_hurts_it_and_nothing_does_while_it_dies(
 #[test]
 fn a_sitting_dragon_takes_nothing_of_an_arrow_and_the_hover_takes_it() {
     let arrow = Causer {
+        name: None,
         key: EntityId(9),
         kind: entity_types::ARROW as u16,
         position: [0.0; 3],
@@ -101,6 +103,7 @@ fn a_sitting_dragon_takes_nothing_of_an_arrow_and_the_hover_takes_it() {
         living: false,
     };
     let shooter = Causer {
+        name: None,
         key: EntityId(7),
         kind: entity_types::PLAYER as u16,
         position: [0.0; 3],

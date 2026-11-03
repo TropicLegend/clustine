@@ -1802,6 +1802,35 @@ impl Decode for SetEntityMotion {
     }
 }
 
+/// Shakes a player's own view for a hurt from `yaw` (`ClientboundHurtAnimationPacket`,
+/// sent by `ServerPlayer.indicateDamage` to the hurt player alone): the entity, then
+/// the direction, a float.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HurtAnimation {
+    pub entity_id: i32,
+    pub yaw: f32,
+}
+
+impl Packet for HurtAnimation {
+    const ID: i32 = clientbound::HURT_ANIMATION;
+}
+
+impl Encode for HurtAnimation {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        w.put_f32(self.yaw);
+    }
+}
+
+impl Decode for HurtAnimation {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            entity_id: r.var_int()?,
+            yaw: r.f32()?,
+        })
+    }
+}
+
 /// Shows an item flying to whoever picked `count` of it up
 /// (`ClientboundTakeItemEntityPacket`); the client plays the sound itself.
 #[derive(Debug, Clone, PartialEq)]
@@ -4681,6 +4710,7 @@ packet_set! {
         MoveEntityPosRot,
         MoveEntityRot,
         SetEntityMotion,
+        HurtAnimation,
         TakeItemEntity,
         AddTransientBlock,
         EntityEvent,
