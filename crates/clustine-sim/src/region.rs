@@ -4585,6 +4585,7 @@ mod tests {
     mod conversions;
     mod daylight_detector;
     mod digging;
+    mod digging_spec;
     mod diodes;
     mod effects;
     mod end_mobs_specification;
