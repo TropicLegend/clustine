@@ -3912,6 +3912,11 @@ pub mod entity_data {
     pub const POSE: u8 = 6;
     /// `LivingEntity.DATA_HEALTH_ID`, a float.
     pub const HEALTH: u8 = 9;
+    /// `LivingEntity.DATA_ARROW_COUNT_ID`, the arrows stuck in it, an int.
+    pub const ARROW_COUNT: u8 = 12;
+    /// `Player.DATA_PLAYER_ABSORPTION_ID`, a player's absorption, a float (after
+    /// `Avatar`'s 15 and 16).
+    pub const PLAYER_ABSORPTION: u8 = 17;
     /// `LivingEntity.SLEEPING_POS_ID`, an optional block position: the head of the bed a
     /// player sleeps in.
     pub const SLEEPING_POSITION: u8 = 14;

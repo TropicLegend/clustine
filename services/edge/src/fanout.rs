@@ -672,6 +672,23 @@ fn wrap_degrees(degrees: f32) -> f32 {
 
 /// A player's name as `Player.getDisplayName` makes it, with no team: its click suggests
 /// a message to them, its hover shows them, and a shift-click inserts their name.
+/// How a death message names who killed the player (`Entity.getDisplayName`): by their
+/// name where they have one (a player's, or a custom name), else by their type's
+/// (`entity.minecraft.zombie`). Named: the game's name carries a hover of the entity and,
+/// for a player, the click of `display_name`; and a death message's weapon (`.item`)
+/// cannot arise, since no stack carries a custom name yet.
+fn killer_name(killer: &clustine_sim::api::Killer) -> Nbt {
+    if let Some(name) = &killer.name {
+        return Nbt::Compound(vec![("text".to_owned(), Nbt::String(name.clone()))]);
+    }
+    let kind = clustine_data::ENTITY_TYPES
+        .get(usize::from(killer.kind))
+        .copied()
+        .unwrap_or("minecraft:pig");
+    let key = format!("entity.{}", kind.replacen(':', ".", 1));
+    Nbt::Compound(vec![("translate".to_owned(), Nbt::String(key))])
+}
+
 fn display_name(name: &str, player: PlayerId) -> Nbt {
     let uuid = player.0.as_u128();
     // `UUIDUtil.uuidToIntArray`: the most significant 32 bits first.
@@ -2135,12 +2152,25 @@ impl Fanout {
                 });
                 self.send_to_player(player, [packet]).await;
             }
-            // The player's own knockback and entity data (V4), which no region reports
-            // yet: their packets are V4's edge step.
+            // A knock the player's region gave them (`markHurt`, or another player's hit):
+            // their client takes its motion only from the server's `SetEntityMotion` of
+            // its own entity (`ServerEntity.sendChanges @960-993`).
             WorkerToEdge::ToPlayer {
-                event: PlayerEvent::Knocked { .. } | PlayerEvent::OwnData(_),
-                ..
-            } => {}
+                player,
+                event: PlayerEvent::Knocked { motion },
+            } => {
+                if let Some(entity) = self.players.get(&player).and_then(|view| view.entity) {
+                    let packet = encoded(&clustine_protocol::packets::play::SetEntityMotion {
+                        entity_id: self.wire.of(entity),
+                        motion,
+                    });
+                    self.send_to_player(player, [packet]).await;
+                }
+            }
+            WorkerToEdge::ToPlayer {
+                player,
+                event: PlayerEvent::OwnData(data),
+            } => self.show_own_data(player, data).await,
             WorkerToEdge::ToPlayer {
                 player,
                 event: PlayerEvent::Message { key, args, overlay },
@@ -3915,7 +3945,11 @@ impl Fanout {
             message: Nbt::Compound(vec![
                 (
                     "with".to_owned(),
-                    Nbt::List(vec![display_name(&name, player)]),
+                    Nbt::List(
+                        std::iter::once(display_name(&name, player))
+                            .chain(message.killer.as_ref().map(killer_name))
+                            .collect(),
+                    ),
                 ),
                 ("translate".to_owned(), Nbt::String(message.key.clone())),
             ]),
@@ -5583,6 +5617,46 @@ impl Fanout {
             values,
         });
         self.show_to_watchers(entity, packet).await;
+    }
+
+    /// What the player's own entity data says that only the server sets (V4): their
+    /// air, absorption, burning, ticks frozen and arrows, sent to their own client
+    /// (`ServerEntity.sendDirtyEntityData` sends to the player too). The region reports
+    /// it when any of it changes and whole at an arrival, so all five go each time
+    /// (named: the game sends only the fields that changed; the client ends the same).
+    /// The burning flag goes in with the shared flags the player is shown with.
+    async fn show_own_data(&mut self, player: PlayerId, data: clustine_sim::api::OwnData) {
+        let Some(entity) = self.players.get(&player).and_then(|view| view.entity) else {
+            return;
+        };
+        let shown = self
+            .entities
+            .get(&entity)
+            .and_then(|shown| shown.living.data.get(&entity_data::SHARED_FLAGS))
+            .and_then(|value| match value {
+                EntityDataValue::Byte(flags) => Some(*flags),
+                _ => None,
+            })
+            .unwrap_or(0);
+        let flags = if data.on_fire {
+            shown | entity_data::ON_FIRE
+        } else {
+            shown & !entity_data::ON_FIRE
+        };
+        let packet = encoded(&SetEntityData {
+            entity_id: self.wire.of(entity),
+            values: vec![
+                (entity_data::SHARED_FLAGS, EntityDataValue::Byte(flags)),
+                (entity_data::AIR_SUPPLY, EntityDataValue::Int(data.air)),
+                (entity_data::TICKS_FROZEN, EntityDataValue::Int(data.frozen)),
+                (entity_data::ARROW_COUNT, EntityDataValue::Int(data.arrows)),
+                (
+                    entity_data::PLAYER_ABSORPTION,
+                    EntityDataValue::Float(data.absorption),
+                ),
+            ],
+        });
+        self.send_to_player(player, [packet]).await;
     }
 
     /// What a mob wears and holds changed: remembered, and sent to those who see it.
@@ -14316,6 +14390,115 @@ mod scenarios {
             .count();
         assert_eq!(sent, 1);
         edge.end().await;
+    }
+
+    /// V4: a knock the region reports is sent to the player's own client as the motion
+    /// of its own entity (`ServerEntity.sendChanges @960-993`), and their own entity data
+    /// with it: air, burning, ticks frozen, arrows and absorption
+    /// (`ServerEntity.sendDirtyEntityData @44`, to the player too).
+    #[tokio::test]
+    async fn a_knock_and_the_players_own_data_are_sent_to_their_own_entity() {
+        use clustine_protocol::packets::play::entity_data;
+        let regions = [WEST, EAST, NORTH, NETHER];
+        let mut edge = Harness::start_with(&regions, Duration::from_secs(1_000_000)).await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        edge.quiet().await;
+        edge.sync(&mut client).await;
+        let own = client.logins[0].entity_id;
+        edge.tell(
+            WEST,
+            WorkerToEdge::ToPlayer {
+                player: player(1),
+                event: PlayerEvent::Knocked {
+                    motion: [0.25, 0.4, -0.5],
+                },
+            },
+        );
+        edge.tell(
+            WEST,
+            WorkerToEdge::ToPlayer {
+                player: player(1),
+                event: PlayerEvent::OwnData(clustine_sim::api::OwnData {
+                    air: 120,
+                    absorption: 4.0,
+                    on_fire: true,
+                    frozen: 30,
+                    arrows: 2,
+                }),
+            },
+        );
+        edge.settle(WEST).await;
+        edge.sync(&mut client).await;
+        // The wire carries a motion to about 1/32768 (`LpVec3`).
+        let knocked = client.tracking.iter().any(|packet| {
+            matches!(
+                packet,
+                ClientboundPlay::SetEntityMotion(motion)
+                    if motion.entity_id == own
+                        && motion
+                            .motion
+                            .iter()
+                            .zip([0.25, 0.4, -0.5])
+                            .all(|(sent, meant)| (sent - meant).abs() < 1e-4)
+            )
+        });
+        assert!(knocked, "{:?}", client.tracking);
+        let data = client
+            .entity_data
+            .iter()
+            .rev()
+            .find(|data| data.entity_id == own)
+            .expect("the player's own data");
+        assert!(
+            data.values
+                .contains(&(entity_data::SHARED_FLAGS, EntityDataValue::Byte(1)))
+        );
+        assert!(
+            data.values
+                .contains(&(entity_data::AIR_SUPPLY, EntityDataValue::Int(120)))
+        );
+        assert!(
+            data.values
+                .contains(&(entity_data::TICKS_FROZEN, EntityDataValue::Int(30)))
+        );
+        assert!(
+            data.values
+                .contains(&(entity_data::ARROW_COUNT, EntityDataValue::Int(2)))
+        );
+        assert!(
+            data.values
+                .contains(&(entity_data::PLAYER_ABSORPTION, EntityDataValue::Float(4.0)))
+        );
+        edge.end().await;
+    }
+
+    /// A death message names its killer by their own name where they have one, else by
+    /// their type's translation (`Entity.getDisplayName`).
+    #[test]
+    fn a_killer_is_named_by_their_name_or_their_type() {
+        let zombie = clustine_sim::api::Killer {
+            entity: EntityId(9),
+            kind: u16::try_from(clustine_data::entity_types::ZOMBIE).unwrap(),
+            name: None,
+            player: false,
+            weapon: None,
+        };
+        assert_eq!(
+            killer_name(&zombie),
+            Nbt::Compound(vec![(
+                "translate".to_owned(),
+                Nbt::String("entity.minecraft.zombie".to_owned())
+            )])
+        );
+        let named = clustine_sim::api::Killer {
+            name: Some("Steve".to_owned()),
+            player: true,
+            ..zombie
+        };
+        assert_eq!(
+            killer_name(&named),
+            Nbt::Compound(vec![("text".to_owned(), Nbt::String("Steve".to_owned()))])
+        );
     }
 
     /// The recipe packet reads back as the game writes it: the property sets the
