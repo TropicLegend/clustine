@@ -9,6 +9,10 @@
 //! handed: the stacks a click throws out of the window are returned for the region to
 //! drop, in the order the game throws them.
 //!
+//! The two crafting grids (the inventory screen's 2×2 and the crafting table's 3×3) craft
+//! here too (V3c): their result slot is worked out from the grid by `crate::crafting`, and
+//! a take of it consumes the grid and leaves the recipe's remainders (`ResultSlot.onTake`).
+//!
 //! Every N6 container keeps the default 99 a slot as its most
 //! (`Container.getMaxStackSize`), so a slot holds a full stack of its item at most.
 
@@ -17,6 +21,7 @@ use clustine_data::{BlockClass, ITEMS, ItemComponents, items};
 use clustine_world::{ARMOUR_START, HOTBAR_SLOTS, MAIN_START, OFF_HAND};
 
 use crate::api::{ClickKind, Inventory, ItemStack, MenuKind};
+use crate::crafting;
 use crate::living::slots;
 use crate::physics::item::max_stack_size;
 use crate::state::{Drag, DragKind, Menu};
@@ -78,6 +83,16 @@ const INVENTORY_OFF_HAND: usize = 45;
 /// One past the inventory screen's last slot.
 const INVENTORY_END: usize = 46;
 
+/// The crafting table's menu (`CraftingMenu`, v3, whose bytecode inlines its constants:
+/// `RESULT_SLOT` 0, the grid from `CRAFT_SLOT_START` 1 to `CRAFT_SLOT_END` 10,
+/// `INV_SLOT_START` 10, `USE_ROW_SLOT_START` 37, `USE_ROW_SLOT_END` 46, quickMoveStack
+/// @58-162): the result, the 3×3 grid row by row, then the main inventory and the hotbar
+/// as every menu lays them out.
+const CRAFTING_RESULT: usize = 0;
+const CRAFTING_MAIN: usize = 10;
+const CRAFTING_HOTBAR: usize = 37;
+const CRAFTING_END: usize = 46;
+
 /// What the two equipment slots of a horse's menu (`HorseInventoryMenu`'s `ArmorSlot`s)
 /// ask of the horse: its type, which the item's allowed entities name, and whether it
 /// may use each slot now (`canUseSlot`: a saddle only grown and tamed).
@@ -98,6 +113,17 @@ pub(crate) struct Clicked {
     /// Stacks thrown out of the window, in the order the game throws them (a click
     /// outside, a `THROW`), for the region to drop as `Player.drop(stack, true)`.
     pub(crate) thrown: Vec<ItemStack>,
+    /// Stacks a craft drops at the player's feet, in the order the game drops them, for
+    /// the region to drop as `Player.drop(stack, false, PREDICTED)` (no throw upward): a
+    /// remainder that neither goes back into its grid slot nor into the inventory
+    /// (`ResultSlot.onTake` @245-258, v3), and what a shift-click on the result could not
+    /// move (`InventoryMenu.quickMoveStack` and `CraftingMenu.quickMoveStack` @220-234).
+    ///
+    /// Named difference: the game interleaves the two kinds as it goes (a `THROW` with
+    /// button 1 drops a craft's remainders, then throws its result, then crafts again);
+    /// here each list keeps its own order and the region spawns the two lists apart, so
+    /// only the order of the entities' ids can differ.
+    pub(crate) dropped: Vec<ItemStack>,
     /// Whether the click was refused as the game refuses it, changing nothing.
     pub(crate) refused: bool,
     /// The inventory screen's equipment slots (5-8 the armour, 45 the off hand) that the
@@ -136,6 +162,7 @@ pub(crate) fn click(
 ) -> Clicked {
     let refused = Clicked {
         thrown: Vec::new(),
+        dropped: Vec::new(),
         refused: true,
         equipped: Vec::new(),
     };
@@ -153,14 +180,34 @@ pub(crate) fn click(
         menu,
         creative,
         thrown: Vec::new(),
+        dropped: Vec::new(),
         equipped: Vec::new(),
+        grid_seen: None,
     };
+    clicker.grid_seen = clicker.grid().map(<[Option<ItemStack>]>::to_vec);
     match clicker.do_click(slot, i32::from(button), kind) {
-        Ok(()) => Clicked {
-            thrown: clicker.thrown,
-            refused: false,
-            equipped: clicker.equipped,
-        },
+        Ok(()) => {
+            // `slotChangedCraftingGrid` once at the end of a click that changed the grid
+            // by any way in (a pickup, a swap, a drag, a quick move, a throw, a gathering,
+            // a clone). The game works the result out again at every write to a grid
+            // slot (`TransientCraftingContainer.setItem` @10-15 and `removeItem` @17-22,
+            // v3); the result is a function of the grid alone, and nothing inside the
+            // click reads it but a take, which works it out itself, so once at the end
+            // leaves the same result. A stack grown in place calls no `slotsChanged` in
+            // the game (finding 2 of the V3c review); the counts never change a match.
+            if clicker
+                .grid()
+                .is_some_and(|grid| clicker.grid_seen.as_deref() != Some(grid))
+            {
+                clicker.recompute_result();
+            }
+            Clicked {
+                thrown: clicker.thrown,
+                dropped: clicker.dropped,
+                refused: false,
+                equipped: clicker.equipped,
+            }
+        }
         Err(Malformed) => refused,
     }
 }
@@ -265,8 +312,14 @@ struct Clicker<'s, 'a> {
     menu: &'s mut Menu,
     creative: bool,
     thrown: Vec<ItemStack>,
+    /// What the click's crafts drop so far ([`Clicked::dropped`]).
+    dropped: Vec<ItemStack>,
     /// The equipment slots set by the player so far ([`Clicked::equipped`]).
     equipped: Vec<usize>,
+    /// For a menu with a crafting grid, the grid as it was when its result was last
+    /// worked out (or when the click began), so that the end of the click works it out
+    /// again only where the grid changed since.
+    grid_seen: Option<Vec<Option<ItemStack>>>,
 }
 
 impl Clicker<'_, '_> {
@@ -495,7 +548,9 @@ impl Clicker<'_, '_> {
 
     /// `QUICK_MOVE` on a slot (665–736): the menu's `quickMoveStack` again while the slot
     /// still holds the item it moved, until nothing more moves. Each round that goes
-    /// on moved some of the slot's stack, so the loop ends.
+    /// on moved some of the slot's stack, so the loop ends; on a crafting result each
+    /// round crafts and so consumes at least one item of the grid, which ends it too
+    /// (and a full inventory moves nothing, which ends it sooner).
     fn quick_move(&mut self, slot: usize) {
         if !self.may_pickup(slot) {
             return;
@@ -523,6 +578,9 @@ impl Clicker<'_, '_> {
         }
         if self.slots.kind == MenuKind::Inventory {
             return self.quick_move_inventory(slot);
+        }
+        if self.slots.kind == MenuKind::Crafting {
+            return self.quick_move_crafting(slot);
         }
         let mut stack = self.get(slot)?;
         let copy = stack.clone();
@@ -627,8 +685,8 @@ impl Clicker<'_, '_> {
     /// (@277-306), and the off hand to both (@307-324). Then (@325-389) the slot is
     /// written back (`setByPlayer(EMPTY)` if emptied, which is an equipment slot's
     /// `onEquipItem`); an unchanged count answers nothing, which ends the click's loop;
-    /// the slot's `onTake` runs; and what the result could not move is thrown
-    /// (`player.drop(stack, false)`).
+    /// the slot's `onTake` runs; and what the result could not move is dropped
+    /// (`player.drop(stack, false)`, [`Clicked::dropped`]).
     fn quick_move_inventory(&mut self, slot: usize) -> Option<ItemStack> {
         let mut stack = self.get(slot)?;
         let copy = stack.clone();
@@ -666,12 +724,56 @@ impl Clicker<'_, '_> {
             // The game throws the very stack the result slot still holds, and its
             // `onTake` has by then put the grid's new result into the slot
             // (`slotChangedCraftingGrid`), so the rest leaves the slot. The slot is
-            // emptied first so that the result side (V3c) sees the take and refills it.
+            // emptied first so that the result side sees the take and refills it.
             if rest.is_some() {
                 self.set(slot, None);
             }
             self.result_taken();
-            self.thrown.extend(rest);
+            self.dropped.extend(rest);
+        }
+        Some(copy)
+    }
+
+    /// `CraftingMenu.quickMoveStack` (v3 CraftingMenu @0-236). The result (0): first
+    /// `Item.onCraftedBy` on its stack (@47-55: statistics and a map's or a crafter's
+    /// own ways, none of which Clustine keeps; named), then to the main inventory and the
+    /// hotbar, last first (@58-75: `moveItemStackTo(10, 46, true)`), nothing answered if
+    /// nothing moved. The grid (1-9) to them, first first (@154-171). The main inventory
+    /// and the hotbar (10-45) into the grid first (@99-109: `moveItemStackTo(1, 10,
+    /// false)`, where a merge of part of the stack counts as a move and the rest stays),
+    /// and only if nothing went there the main inventory to the hotbar (@112-129) and the
+    /// hotbar to the main inventory (@136-147). Then (@172-234) as the inventory screen:
+    /// the slot written back, nothing answered for an unchanged count, `onTake`, and what
+    /// the result could not move dropped (`player.drop(stack, false, PREDICTED)`).
+    fn quick_move_crafting(&mut self, slot: usize) -> Option<ItemStack> {
+        let mut stack = self.get(slot)?;
+        let copy = stack.clone();
+        let moved = if slot == CRAFTING_RESULT {
+            self.move_to(&mut stack, CRAFTING_MAIN, CRAFTING_END, true)
+        } else if slot < CRAFTING_MAIN {
+            self.move_to(&mut stack, CRAFTING_MAIN, CRAFTING_END, false)
+        } else if self.move_to(&mut stack, CRAFTING_RESULT + 1, CRAFTING_MAIN, false) {
+            true
+        } else if slot < CRAFTING_HOTBAR {
+            self.move_to(&mut stack, CRAFTING_HOTBAR, CRAFTING_END, false)
+        } else {
+            self.move_to(&mut stack, CRAFTING_MAIN, CRAFTING_HOTBAR, false)
+        };
+        if !moved {
+            return None;
+        }
+        let rest = present(Some(stack.clone()));
+        self.set(slot, rest.clone());
+        if stack.count == copy.count {
+            return None;
+        }
+        if slot == CRAFTING_RESULT {
+            // As the inventory screen's: the rest leaves the slot, which the take refills.
+            if rest.is_some() {
+                self.set(slot, None);
+            }
+            self.result_taken();
+            self.dropped.extend(rest);
         }
         Some(copy)
     }
@@ -682,14 +784,124 @@ impl Clicker<'_, '_> {
     }
 
     /// The menu's result slot, whose stack the menu makes and which takes nothing
-    /// placed: a merchant's trade (`MerchantResultSlot`) and the inventory screen's
-    /// craft (`ResultSlot`).
+    /// placed: a merchant's trade (`MerchantResultSlot`) and the craft of the inventory
+    /// screen and of the crafting table (`ResultSlot`, slot 0 of each). Every rule that
+    /// asks for "the result slot" asks this.
     fn result_slot(&self) -> Option<usize> {
         match self.slots.kind {
             MenuKind::Merchant { .. } => Some(MERCHANT_RESULT),
             MenuKind::Inventory => Some(INVENTORY_RESULT),
+            MenuKind::Crafting => Some(CRAFTING_RESULT),
             _ => None,
         }
+    }
+
+    /// The side of the menu's square crafting grid, if it has one: 2 for the inventory
+    /// screen (`InventoryMenu`'s `TransientCraftingContainer(this, 2, 2)`), 3 for the
+    /// crafting table (`CraftingMenu`'s, 3 by 3). The grid follows the result in the
+    /// container, row by row.
+    fn grid_side(&self) -> Option<usize> {
+        match self.slots.kind {
+            MenuKind::Inventory => Some(2),
+            MenuKind::Crafting => Some(3),
+            _ => None,
+        }
+    }
+
+    /// The menu's crafting grid, if it has one.
+    fn grid(&self) -> Option<&[Option<ItemStack>]> {
+        let side = self.grid_side()?;
+        self.slots.container.get(1..1 + side * side)
+    }
+
+    /// `CraftingMenu.slotChangedCraftingGrid` (v3 @0-147): the first recipe that matches
+    /// the grid, assembled, into the result (`ResultContainer.setItem(0, …)`), or nothing.
+    ///
+    /// Named: `ResultContainer.setRecipeUsed` (@67-76) refuses a recipe the player has
+    /// not unlocked only under the `doLimitedCrafting` rule, which Clustine does not have
+    /// (its default is off), and records the recipe for the recipe book (V9);
+    /// `isItemEnabled` (@90-99) holds for every item (no experimental features). The
+    /// packet the game sends straight away is the edge's (the region's diff, V3c).
+    fn recompute_result(&mut self) {
+        let Some(side) = self.grid_side() else {
+            return;
+        };
+        let Some(grid) = self.grid().map(<[Option<ItemStack>]>::to_vec) else {
+            return;
+        };
+        let result = crafting::craft(side, side, &grid).map(|(_, stack)| stack);
+        if let Some(place) = self.slots.container.get_mut(0) {
+            *place = result;
+        }
+        self.grid_seen = Some(grid);
+    }
+
+    /// `ResultSlot.onTake` (v3 @0-271) after the result has left its slot: the grid's
+    /// remainders as the grid stands (`getRemainingItems`, @5-43), then for each slot of
+    /// the grid in order one item taken (@128-160), and its remainder put into the slot
+    /// if that is now empty (@170-191), grown by the slot's stack and put back if it is
+    /// the same item with the same components (@194-227; the game grows it past a full
+    /// stack if need be, and so does this), else added to the inventory (`Inventory.add`,
+    /// @230-242), else dropped (`player.drop(rem, false, PREDICTED)`, @245-258). Then the
+    /// result worked out again from the grid (the game's `slotsChanged` at each write).
+    ///
+    /// The game's loop runs over the box of the grid's non-empty slots only; every slot
+    /// outside it is empty and has no remainder, so running over the whole grid is the
+    /// same.
+    ///
+    /// A take happens only on a result a recipe made: the result is worked out after
+    /// every change of the grid, inside a click at every take. Where no recipe matches,
+    /// `getRemainingItems` would copy the grid (`copyAllInputItems`) and the loop would
+    /// double it; that is never applied here, and the take only works the result out.
+    ///
+    /// Named: `checkTakeAchievements` (@0-2: `onCraftedBy` with the count taken, the
+    /// crafting statistics and the recipes it unlocks for the recipe book) is not run;
+    /// Clustine keeps no statistics, and the recipe book is V9. `removeCount` feeds only
+    /// that. `placingRecipe` is set only by the recipe book's placing, which is passed
+    /// over.
+    fn craft_taken(&mut self, side: usize) {
+        let Some(grid) = self.grid().map(<[Option<ItemStack>]>::to_vec) else {
+            return;
+        };
+        if crafting::craft(side, side, &grid).is_none() {
+            self.recompute_result();
+            return;
+        }
+        let remainders = crafting::remainders(side, side, &grid);
+        for (at, remainder) in remainders.into_iter().enumerate() {
+            let index = 1 + at;
+            let mut here = self.get(index);
+            if let Some(mut stack) = here.take() {
+                stack.count -= 1;
+                here = present(Some(stack));
+                self.set(index, here.clone());
+            }
+            let Some(mut remainder) = present(remainder) else {
+                continue;
+            };
+            match here {
+                None => self.set(index, Some(remainder)),
+                Some(here) if here.same_kind(&remainder) => {
+                    remainder.count += here.count;
+                    self.set(index, Some(remainder));
+                }
+                Some(_) => {
+                    let creative = self.creative;
+                    let selected = self.slots.selected;
+                    if !add(
+                        self.slots.inventory,
+                        selected,
+                        None,
+                        &mut remainder,
+                        creative,
+                    ) && let Some(rest) = present(Some(remainder))
+                    {
+                        self.dropped.push(rest);
+                    }
+                }
+            }
+        }
+        self.recompute_result();
     }
 
     /// Whether `index` is the menu's result slot.
@@ -719,10 +931,13 @@ impl Clicker<'_, '_> {
     }
 
     /// The result slot's `onTake`: for a merchant's window, the merchant's trade for the
-    /// result taken (`MerchantResultSlot.onTake`). The inventory screen's result is
-    /// inert until V3c (`ResultSlot.onTake`: the craft, its remainders and the grid's
-    /// new result); its result side belongs here, as the merchant's does.
+    /// result taken (`MerchantResultSlot.onTake`); for a crafting grid, the craft
+    /// (`ResultSlot.onTake`, [`Self::craft_taken`]).
     fn result_taken(&mut self) {
+        if let Some(side) = self.grid_side() {
+            self.craft_taken(side);
+            return;
+        }
         let MenuSlots {
             container,
             merchant,
@@ -850,7 +1065,9 @@ impl Clicker<'_, '_> {
 
     /// `THROW` of the slot's stack (1454–1612): one item with button 0, the whole
     /// stack with any other; with button 1 again while the slot gives more of the same,
-    /// which only a result slot does.
+    /// which only a result slot does. Nothing in the inventory bounds that loop on a
+    /// crafting result: each round crafts, consuming at least one item of the grid, and
+    /// the loop ends when the grid no longer makes the item (64 logs throw 64 crafts).
     fn throw(&mut self, slot: usize, button: i32) {
         let n = if button == 0 {
             1
@@ -903,11 +1120,10 @@ impl Clicker<'_, '_> {
                 let Some(here) = self.get(index) else {
                     continue;
                 };
-                // The inventory screen gathers nothing from its result
-                // (`InventoryMenu.canTakeItemForPickAll` @0-25).
-                if !self.quick_replace(index, &carried)
-                    || (self.slots.kind == MenuKind::Inventory && index == INVENTORY_RESULT)
-                {
+                // A crafting grid's result gives nothing to a gathering
+                // (`InventoryMenu.canTakeItemForPickAll` @0-25, `CraftingMenu.
+                // canTakeItemForPickAll` @0-25: the slot's container is not the result's).
+                if !self.quick_replace(index, &carried) || self.is_result(index) {
                     continue;
                 }
                 if pass == 0 && here.count == max_stack_size(&here) {
@@ -1346,6 +1562,18 @@ mod tests {
                 let slot = inventory_slot_of(self.kind, index).expect("an inventory slot");
                 self.inventory.set(slot, stack);
             }
+        }
+
+        /// Works the result of a crafting grid out from the grid, as the region keeps it
+        /// after every change.
+        fn settle(&mut self) {
+            let side = if self.kind == MenuKind::Crafting {
+                3
+            } else {
+                2
+            };
+            self.container[0] =
+                crafting::craft(side, side, &self.container[1..]).map(|(_, stack)| stack);
         }
 
         /// A snapshot of everything a click may change.
@@ -2379,24 +2607,24 @@ mod tests {
     #[test]
     fn nothing_is_placed_in_the_result_and_an_empty_result_gives_nothing() {
         let mut fixture = Fixture::new(MenuKind::Inventory);
-        fixture.menu.carried = stack(STONE, 10);
+        fixture.menu.carried = stack(DIRT, 10);
         for button in [0, 1] {
             let clicked = fixture.survival(0, button, ClickKind::Pickup);
             assert!(!clicked.refused);
         }
         assert_eq!(fixture.container[0], None);
-        assert_eq!(fixture.menu.carried, stack(STONE, 10));
+        assert_eq!(fixture.menu.carried, stack(DIRT, 10));
         // A drag passes over it.
         fixture.drag(0, &[0, 1, 2], false);
         assert_eq!(fixture.container[0], None);
-        assert_eq!(fixture.container[1], stack(STONE, 5));
-        assert_eq!(fixture.container[2], stack(STONE, 5));
+        assert_eq!(fixture.container[1], stack(DIRT, 5));
+        assert_eq!(fixture.container[2], stack(DIRT, 5));
         assert_eq!(fixture.menu.carried, None);
         // A swap from the hotbar puts nothing into it.
-        fixture.put(36, stack(STONE, 1));
+        fixture.put(36, stack(DIRT, 1));
         fixture.survival(0, 0, ClickKind::Swap);
         assert_eq!(fixture.container[0], None);
-        assert_eq!(fixture.at(36), stack(STONE, 1));
+        assert_eq!(fixture.at(36), stack(DIRT, 1));
         // Every way of taking from it while it is empty does nothing.
         let before = fixture.snapshot();
         for (button, kind) in [
@@ -2415,18 +2643,18 @@ mod tests {
     #[test]
     fn a_pickup_all_gathers_from_the_inventory_screen_but_never_its_result() {
         let mut fixture = Fixture::new(MenuKind::Inventory);
-        // A stack in the result as V3c will make one, which the double click passes over.
-        fixture.container[0] = stack(STONE, 4);
         fixture.container[3] = stack(STONE, 2);
+        fixture.settle();
         fixture.put(45, stack(STONE, 3));
         fixture.put(20, stack(STONE, 7));
         fixture.menu.carried = stack(STONE, 1);
         fixture.survival(10, 0, ClickKind::PickupAll);
         assert_eq!(fixture.menu.carried, stack(STONE, 13));
-        assert_eq!(fixture.container[0], stack(STONE, 4));
         assert_eq!(fixture.container[3], None);
         assert_eq!(fixture.at(45), None);
         assert_eq!(fixture.at(20), None);
+        // The grid emptied by the gathering makes nothing.
+        assert_eq!(fixture.container[0], None);
     }
 
     #[test]
@@ -2564,5 +2792,451 @@ mod tests {
         // The game's drag goes over a `HashSet`, whose order is not the client's.
         equipped.sort_unstable();
         assert_eq!(equipped, vec![5, 45]);
+    }
+
+    // The crafting grids (V3c): the inventory screen's 2×2 (result 0, grid 1-4) and the
+    // crafting table's 3×3 (result 0, grid 1-9, then main 10-36 and the hotbar 37-45).
+
+    const LOG: i32 = items::OAK_LOG;
+    const PLANKS: i32 = items::OAK_PLANKS;
+    const GRIDS: [MenuKind; 2] = [MenuKind::Inventory, MenuKind::Crafting];
+
+    /// The menu slot of the grid's cell in `row` and `column`.
+    fn cell(kind: MenuKind, row: usize, column: usize) -> usize {
+        let side = if kind == MenuKind::Crafting { 3 } else { 2 };
+        1 + row * side + column
+    }
+
+    /// The menu slot that shows the inventory slot `slot`.
+    fn shown(kind: MenuKind, slot: usize) -> usize {
+        menu_slot_of(kind, slot).expect("the menu shows the slot")
+    }
+
+    /// A grid menu of `kind` with `count` logs in its first cell, put there by a click.
+    fn logs(kind: MenuKind, count: i32) -> Fixture {
+        let mut fixture = Fixture::new(kind);
+        fixture.menu.carried = stack(LOG, count);
+        fixture.survival(1, 0, ClickKind::Pickup);
+        fixture
+    }
+
+    #[test]
+    fn the_crafting_table_lays_out_its_result_its_grid_then_the_main_inventory_and_the_hotbar() {
+        let kind = MenuKind::Crafting;
+        assert_eq!(kind.container_slots(), 10);
+        assert_eq!(kind.slots(), 46);
+        assert_eq!(inventory_slot_of(kind, 9), None);
+        assert_eq!(inventory_slot_of(kind, 10), Some(9));
+        assert_eq!(inventory_slot_of(kind, 36), Some(35));
+        assert_eq!(inventory_slot_of(kind, 37), Some(0));
+        assert_eq!(inventory_slot_of(kind, 45), Some(8));
+        for slot in 0..36 {
+            assert_eq!(inventory_slot_of(kind, shown(kind, slot)), Some(slot));
+        }
+        assert_eq!(menu_slot_of(kind, OFF_HAND), None);
+    }
+
+    #[test]
+    fn a_log_in_the_grid_makes_planks_and_a_take_consumes_one_log_and_makes_them_again() {
+        for kind in GRIDS {
+            let mut fixture = logs(kind, 3);
+            assert_eq!(fixture.container[0], stack(PLANKS, 4), "{kind:?}");
+            fixture.survival(0, 0, ClickKind::Pickup);
+            assert_eq!(fixture.menu.carried, stack(PLANKS, 4));
+            assert_eq!(fixture.container[1], stack(LOG, 2));
+            assert_eq!(fixture.container[0], stack(PLANKS, 4));
+            // Onto a cursor of planks with room for all of them.
+            fixture.survival(0, 0, ClickKind::Pickup);
+            assert_eq!(fixture.menu.carried, stack(PLANKS, 8));
+            assert_eq!(fixture.container[1], stack(LOG, 1));
+            let clicked = fixture.survival(0, 0, ClickKind::Pickup);
+            assert_eq!(fixture.menu.carried, stack(PLANKS, 12));
+            assert_eq!(fixture.container[1], None);
+            assert_eq!(fixture.container[0], None);
+            assert!(clicked.thrown.is_empty() && clicked.dropped.is_empty());
+            // An empty result gives nothing more.
+            fixture.survival(0, 0, ClickKind::Pickup);
+            assert_eq!(fixture.menu.carried, stack(PLANKS, 12));
+        }
+    }
+
+    #[test]
+    fn a_log_taken_out_of_the_grid_takes_the_result_away() {
+        for kind in GRIDS {
+            let mut fixture = logs(kind, 3);
+            fixture.survival(1, 0, ClickKind::Pickup);
+            assert_eq!(fixture.menu.carried, stack(LOG, 3));
+            assert_eq!(fixture.container[0], None, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_shift_click_on_the_result_crafts_until_the_logs_run_out() {
+        for kind in GRIDS {
+            let mut fixture = logs(kind, 5);
+            let clicked = fixture.survival(0, 0, ClickKind::QuickMove);
+            // To the main inventory and the hotbar, last first: the hotbar's last slot.
+            assert_eq!(
+                fixture.inventory.get(8),
+                Some(stack(PLANKS, 20)),
+                "{kind:?}"
+            );
+            assert_eq!(fixture.container[1], None);
+            assert_eq!(fixture.container[0], None);
+            assert!(clicked.thrown.is_empty() && clicked.dropped.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_shift_click_with_room_for_part_of_a_batch_drops_the_rest_and_consumes_one_log() {
+        for kind in GRIDS {
+            let mut fixture = logs(kind, 3);
+            for slot in 0..36 {
+                fixture.inventory.set(slot, stack(DIRT, 64));
+            }
+            fixture.inventory.set(20, stack(PLANKS, 62));
+            let clicked = fixture.survival(0, 0, ClickKind::QuickMove);
+            assert_eq!(
+                fixture.inventory.get(20),
+                Some(stack(PLANKS, 64)),
+                "{kind:?}"
+            );
+            assert_eq!(clicked.dropped, vec![ItemStack::new(PLANKS, 2)]);
+            assert!(clicked.thrown.is_empty());
+            // One batch made, and the full inventory stops the click's repeat.
+            assert_eq!(fixture.container[1], stack(LOG, 2));
+            assert_eq!(fixture.container[0], stack(PLANKS, 4));
+            // With no room at all nothing moves and nothing is crafted.
+            let before = fixture.snapshot();
+            let clicked = fixture.survival(0, 0, ClickKind::QuickMove);
+            assert!(clicked.dropped.is_empty());
+            assert_eq!(fixture.snapshot(), before);
+        }
+    }
+
+    #[test]
+    fn a_right_click_takes_the_result_whole_and_q_throws_it_whole() {
+        for kind in GRIDS {
+            let mut fixture = logs(kind, 3);
+            fixture.survival(0, 1, ClickKind::Pickup);
+            assert_eq!(fixture.menu.carried, stack(PLANKS, 4), "{kind:?}");
+            assert_eq!(fixture.container[1], stack(LOG, 2));
+            fixture.menu.carried = None;
+            let clicked = fixture.survival(0, 0, ClickKind::Throw);
+            assert_eq!(clicked.thrown, vec![ItemStack::new(PLANKS, 4)]);
+            assert!(clicked.dropped.is_empty());
+            assert_eq!(fixture.container[1], stack(LOG, 1));
+            assert_eq!(fixture.container[0], stack(PLANKS, 4));
+        }
+    }
+
+    #[test]
+    fn q_with_ctrl_on_the_result_throws_a_craft_for_every_log() {
+        for kind in GRIDS {
+            let mut fixture = logs(kind, 64);
+            let clicked = fixture.survival(0, 1, ClickKind::Throw);
+            assert_eq!(
+                clicked.thrown,
+                vec![ItemStack::new(PLANKS, 4); 64],
+                "{kind:?}"
+            );
+            assert_eq!(fixture.container[1], None);
+            assert_eq!(fixture.container[0], None);
+        }
+    }
+
+    #[test]
+    fn a_number_key_onto_an_empty_hotbar_slot_crafts_and_onto_a_full_one_does_nothing() {
+        for kind in GRIDS {
+            let mut fixture = logs(kind, 2);
+            fixture.survival(0, 3, ClickKind::Swap);
+            assert_eq!(fixture.inventory.get(3), Some(stack(PLANKS, 4)), "{kind:?}");
+            assert_eq!(fixture.container[1], stack(LOG, 1));
+            assert_eq!(fixture.container[0], stack(PLANKS, 4));
+            let before = fixture.snapshot();
+            fixture.survival(0, 3, ClickKind::Swap);
+            assert_eq!(fixture.snapshot(), before);
+            // The off hand, empty, takes it too.
+            fixture.survival(0, 40, ClickKind::Swap);
+            assert_eq!(fixture.inventory.get(OFF_HAND), Some(stack(PLANKS, 4)));
+            assert_eq!(fixture.container[1], None);
+            assert_eq!(fixture.container[0], None);
+        }
+    }
+
+    #[test]
+    fn a_creative_middle_click_copies_the_result_and_crafts_nothing() {
+        for kind in GRIDS {
+            let mut fixture = logs(kind, 2);
+            let before = fixture.snapshot();
+            fixture.survival(0, 2, ClickKind::Clone);
+            assert_eq!(fixture.snapshot(), before, "{kind:?}");
+            fixture.click(0, 2, ClickKind::Clone, true);
+            assert_eq!(fixture.menu.carried, stack(PLANKS, 64));
+            assert_eq!(fixture.container[1], stack(LOG, 2));
+            assert_eq!(fixture.container[0], stack(PLANKS, 4));
+        }
+    }
+
+    #[test]
+    fn a_double_click_passes_over_the_result() {
+        for kind in GRIDS {
+            let mut fixture = logs(kind, 2);
+            fixture.inventory.set(20, stack(PLANKS, 3));
+            fixture.menu.carried = stack(PLANKS, 1);
+            let empty = shown(kind, 30) as i16;
+            fixture.survival(empty, 0, ClickKind::PickupAll);
+            assert_eq!(fixture.menu.carried, stack(PLANKS, 4), "{kind:?}");
+            assert_eq!(fixture.container[0], stack(PLANKS, 4));
+            assert_eq!(fixture.container[1], stack(LOG, 2));
+            fixture.survival(empty, 1, ClickKind::PickupAll);
+            assert_eq!(fixture.menu.carried, stack(PLANKS, 4));
+            assert_eq!(fixture.container[0], stack(PLANKS, 4));
+        }
+    }
+
+    #[test]
+    fn nothing_can_be_placed_in_the_result_of_either_grid() {
+        for kind in GRIDS {
+            let mut fixture = logs(kind, 1);
+            fixture.menu.carried = stack(DIRT, 10);
+            let before = fixture.snapshot();
+            for button in [0, 1] {
+                fixture.survival(0, button, ClickKind::Pickup);
+            }
+            assert_eq!(fixture.snapshot(), before, "{kind:?}");
+            fixture.inventory.set(2, stack(DIRT, 1));
+            let before = fixture.snapshot();
+            fixture.survival(0, 2, ClickKind::Swap);
+            assert_eq!(fixture.snapshot(), before);
+            // A drag passes over it and shares among the rest.
+            let other = shown(kind, 30) as i16;
+            fixture.drag(0, &[0, other], false);
+            assert_eq!(fixture.container[0], stack(PLANKS, 4));
+            assert_eq!(fixture.inventory.get(30), Some(stack(DIRT, 10)));
+        }
+    }
+
+    #[test]
+    fn a_result_with_no_recipe_behind_it_is_taken_without_touching_the_grid() {
+        // The region keeps the result worked out, so this never arises; were it to, the
+        // game's no-recipe remainders (copies of the inputs) would double the grid.
+        for kind in GRIDS {
+            let mut fixture = Fixture::new(kind);
+            fixture.container[1] = stack(DIRT, 3);
+            fixture.container[0] = stack(STONE, 4);
+            let clicked = fixture.survival(0, 0, ClickKind::Pickup);
+            assert_eq!(fixture.menu.carried, stack(STONE, 4), "{kind:?}");
+            assert_eq!(fixture.container[1], stack(DIRT, 3));
+            assert_eq!(fixture.container[0], None);
+            assert!(clicked.dropped.is_empty());
+            assert!(fixture.inventory.0.iter().all(Option::is_none));
+        }
+    }
+
+    #[test]
+    fn two_honey_bottles_in_a_slot_leave_a_glass_bottle_in_the_inventory_and_the_rest_in_place() {
+        for kind in GRIDS {
+            let mut fixture = Fixture::new(kind);
+            fixture.put(cell(kind, 0, 0), stack(items::HONEY_BOTTLE, 2));
+            fixture.put(cell(kind, 0, 1), stack(items::HONEY_BOTTLE, 1));
+            fixture.put(cell(kind, 1, 0), stack(items::HONEY_BOTTLE, 1));
+            fixture.put(cell(kind, 1, 1), stack(items::HONEY_BOTTLE, 1));
+            fixture.settle();
+            assert_eq!(
+                fixture.container[0],
+                stack(items::HONEY_BLOCK, 1),
+                "{kind:?}"
+            );
+            let clicked = fixture.survival(0, 0, ClickKind::Pickup);
+            assert_eq!(fixture.menu.carried, stack(items::HONEY_BLOCK, 1));
+            // The first cell still holds a honey bottle, so its glass bottle goes into
+            // the inventory (the selected slot, 0, is empty: `getFreeSlot`'s first).
+            assert_eq!(fixture.at(cell(kind, 0, 0)), stack(items::HONEY_BOTTLE, 1));
+            assert_eq!(
+                fixture.inventory.get(0),
+                Some(stack(items::GLASS_BOTTLE, 1))
+            );
+            for (row, column) in [(0, 1), (1, 0), (1, 1)] {
+                assert_eq!(
+                    fixture.at(cell(kind, row, column)),
+                    stack(items::GLASS_BOTTLE, 1)
+                );
+            }
+            assert!(clicked.dropped.is_empty());
+            // Bottles and honey make nothing.
+            assert_eq!(fixture.container[0], None);
+        }
+    }
+
+    #[test]
+    fn a_remainder_that_fits_nowhere_is_dropped_and_deleted_for_a_creative_player() {
+        for kind in GRIDS {
+            let mut fixture = Fixture::new(kind);
+            fixture.put(cell(kind, 0, 0), stack(items::HONEY_BOTTLE, 3));
+            fixture.settle();
+            assert_eq!(fixture.container[0], stack(items::SUGAR, 3), "{kind:?}");
+            for slot in 0..36 {
+                fixture.inventory.set(slot, stack(DIRT, 64));
+            }
+            fixture.inventory.set(OFF_HAND, stack(DIRT, 64));
+            let clicked = fixture.survival(0, 0, ClickKind::Pickup);
+            assert_eq!(fixture.menu.carried, stack(items::SUGAR, 3));
+            assert_eq!(
+                clicked.dropped,
+                vec![ItemStack::new(items::GLASS_BOTTLE, 1)]
+            );
+            assert!(clicked.thrown.is_empty());
+            assert_eq!(fixture.container[1], stack(items::HONEY_BOTTLE, 2));
+            // For a creative player `Inventory.add` deletes what does not fit.
+            fixture.menu.carried = None;
+            let clicked = fixture.click(0, 0, ClickKind::Pickup, true);
+            assert_eq!(fixture.menu.carried, stack(items::SUGAR, 3));
+            assert!(clicked.dropped.is_empty());
+            assert_eq!(fixture.container[1], stack(items::HONEY_BOTTLE, 1));
+            // The last bottle taken, its glass bottle goes into the emptied slot.
+            fixture.menu.carried = None;
+            fixture.survival(0, 0, ClickKind::Pickup);
+            assert_eq!(fixture.container[1], stack(items::GLASS_BOTTLE, 1));
+        }
+    }
+
+    #[test]
+    fn a_cake_leaves_its_three_milk_buckets_as_buckets_in_their_slots() {
+        let kind = MenuKind::Crafting;
+        let mut fixture = Fixture::new(kind);
+        for column in 0..3 {
+            fixture.put(cell(kind, 0, column), stack(items::MILK_BUCKET, 1));
+            fixture.put(cell(kind, 2, column), stack(items::WHEAT, 1));
+        }
+        fixture.put(cell(kind, 1, 0), stack(items::SUGAR, 1));
+        fixture.put(cell(kind, 1, 1), stack(items::EGG, 1));
+        fixture.put(cell(kind, 1, 2), stack(items::SUGAR, 1));
+        fixture.settle();
+        assert_eq!(fixture.container[0], stack(items::CAKE, 1));
+        let clicked = fixture.survival(0, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.inventory.get(8), Some(stack(items::CAKE, 1)));
+        for column in 0..3 {
+            assert_eq!(fixture.at(cell(kind, 0, column)), stack(items::BUCKET, 1));
+            assert_eq!(fixture.at(cell(kind, 1, column)), None);
+            assert_eq!(fixture.at(cell(kind, 2, column)), None);
+        }
+        assert!(clicked.dropped.is_empty());
+        assert_eq!(fixture.container[0], None);
+    }
+
+    #[test]
+    fn a_drag_over_the_grid_works_the_result_out_at_its_end() {
+        for kind in GRIDS {
+            let mut fixture = Fixture::new(kind);
+            fixture.menu.carried = stack(PLANKS, 6);
+            let (top, below) = (cell(kind, 0, 0) as i16, cell(kind, 1, 0) as i16);
+            fixture.click(-999, 1 << 2, ClickKind::QuickCraft, false);
+            fixture.click(top, (1 << 2) | 1, ClickKind::QuickCraft, false);
+            fixture.click(below, (1 << 2) | 1, ClickKind::QuickCraft, false);
+            // The drag's steps change no slot.
+            assert_eq!(fixture.container[0], None, "{kind:?}");
+            fixture.click(-999, (1 << 2) | 2, ClickKind::QuickCraft, false);
+            assert_eq!(fixture.container[0], stack(items::STICK, 4));
+            assert_eq!(fixture.menu.carried, stack(PLANKS, 4));
+        }
+    }
+
+    #[test]
+    fn a_shift_click_from_the_inventory_fills_the_table_grid_first() {
+        let kind = MenuKind::Crafting;
+        let mut fixture = Fixture::new(kind);
+        fixture.inventory.set(9, stack(LOG, 10));
+        fixture.survival(10, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.container[1], stack(LOG, 10));
+        assert_eq!(fixture.inventory.get(9), Some(None));
+        assert_eq!(fixture.container[0], stack(PLANKS, 4));
+        // From the hotbar too, merging into the grid's logs.
+        fixture.inventory.set(0, stack(LOG, 5));
+        fixture.survival(37, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.container[1], stack(LOG, 15));
+        assert_eq!(fixture.inventory.get(0), Some(None));
+    }
+
+    #[test]
+    fn a_shift_click_that_merges_part_into_the_table_grid_stops_there() {
+        let kind = MenuKind::Crafting;
+        let mut fixture = Fixture::new(kind);
+        fixture.container[1] = stack(STONE, 60);
+        for index in 2..10 {
+            fixture.container[index] = stack(DIRT, 64);
+        }
+        fixture.inventory.set(9, stack(STONE, 10));
+        fixture.survival(10, 0, ClickKind::QuickMove);
+        // The first round merges four into the grid and keeps the rest where it was; the
+        // click's repeat finds the grid full and moves the rest to the hotbar.
+        assert_eq!(fixture.container[1], stack(STONE, 64));
+        assert_eq!(fixture.inventory.get(9), Some(None));
+        assert_eq!(fixture.inventory.get(0), Some(stack(STONE, 6)));
+        // A hotbar stack with the grid full goes to the main inventory.
+        fixture.survival(37, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.inventory.get(9), Some(stack(STONE, 6)));
+        assert_eq!(fixture.inventory.get(0), Some(None));
+    }
+
+    #[test]
+    fn a_shift_click_from_the_table_grid_goes_to_the_main_inventory_first() {
+        let kind = MenuKind::Crafting;
+        let mut fixture = Fixture::new(kind);
+        fixture.container[5] = stack(DIRT, 7);
+        fixture.survival(5, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.inventory.get(9), Some(stack(DIRT, 7)));
+        assert_eq!(fixture.container[5], None);
+    }
+
+    #[test]
+    fn an_iron_pickaxe_crafts_from_its_three_by_three_pattern() {
+        let kind = MenuKind::Crafting;
+        let mut fixture = Fixture::new(kind);
+        for column in 0..3 {
+            fixture.put(cell(kind, 0, column), stack(items::IRON_INGOT, 2));
+        }
+        fixture.put(cell(kind, 1, 1), stack(items::STICK, 2));
+        fixture.put(cell(kind, 2, 1), stack(items::STICK, 2));
+        fixture.settle();
+        assert_eq!(fixture.container[0], stack(items::IRON_PICKAXE, 1));
+        fixture.survival(0, 0, ClickKind::Pickup);
+        assert_eq!(fixture.menu.carried, stack(items::IRON_PICKAXE, 1));
+        // A second pickaxe's worth is left, so the result is made again.
+        assert_eq!(fixture.container[0], stack(items::IRON_PICKAXE, 1));
+        assert_eq!(fixture.container[1], stack(items::IRON_INGOT, 1));
+    }
+
+    #[test]
+    fn an_iron_axe_crafts_either_way_round() {
+        let kind = MenuKind::Crafting;
+        for mirrored in [false, true] {
+            let mut fixture = Fixture::new(kind);
+            let (near, far) = if mirrored { (1, 0) } else { (0, 1) };
+            fixture.put(cell(kind, 0, 0), stack(items::IRON_INGOT, 1));
+            fixture.put(cell(kind, 0, 1), stack(items::IRON_INGOT, 1));
+            fixture.put(cell(kind, 1, near), stack(items::IRON_INGOT, 1));
+            fixture.put(cell(kind, 1, far), stack(items::STICK, 1));
+            fixture.put(cell(kind, 2, far), stack(items::STICK, 1));
+            fixture.settle();
+            assert_eq!(
+                fixture.container[0],
+                stack(items::IRON_AXE, 1),
+                "{mirrored}"
+            );
+            fixture.survival(0, 0, ClickKind::Pickup);
+            assert_eq!(fixture.menu.carried, stack(items::IRON_AXE, 1));
+            assert!(fixture.container.iter().all(Option::is_none));
+        }
+    }
+
+    #[test]
+    fn an_iron_pickaxe_does_not_fit_the_inventory_screens_grid() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.put(1, stack(items::IRON_INGOT, 1));
+        fixture.put(2, stack(items::IRON_INGOT, 1));
+        fixture.put(4, stack(items::STICK, 1));
+        fixture.settle();
+        assert_eq!(fixture.container[0], None);
     }
 }
