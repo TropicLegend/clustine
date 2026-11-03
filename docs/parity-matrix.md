@@ -193,7 +193,7 @@ not placed. A flat world reads it for its Nether and its End.
 | Observers | verified | |
 | Dispensers, droppers, hoppers | partial | The game's dispenser behaviours (a dispenser's shots verified, `projectiles_oracle.rs`) and hoppers moving items. Missing: dispensed spawn eggs, brushes, sheep sheared from a dispenser, fire and wind charges (dropped as items); hoppers and droppers treat furnaces, brewing stands, composters, crafters, chiseled bookshelves, decorated pots, jukeboxes and shelves as shut |
 | Rails | implemented | Powered, activator and detector rails |
-| Update order and scheduled tick order | verified | The game's order of updates, ticks and block events; a circuit across a pinned line runs as in one region (L6) |
+| Update order and scheduled tick order | verified | The game's order of updates, ticks and block events (`redstone_oracle.rs`). A circuit across a pinned line runs as in one region (L6), but for one difference found on 2026-11-03: in "two observers facing each other" the resend of a clicked block comes two ticks later across the line (`redstone_across_a_pinned_line_matches_redstone_in_one_region` fails, also at `77a2b30`; to be mended) |
 | Plates and tripwire pressed by mobs | implemented | See "Pressure plates and tripwire" in T1 |
 | Crafters | not started | |
 
