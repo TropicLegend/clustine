@@ -77,6 +77,8 @@ pub struct GameData {
     pub sound_events: Vec<String>,
     pub synced_registries: Vec<Registry>,
     pub dimension_types: Vec<DimensionType>,
+    /// The damage types, sorted by name (V4).
+    pub damage_types: Vec<crate::damage_types::DamageTypeReport>,
     pub tags: Vec<RegistryTags>,
     /// The fluids and the block entity types by the ids of `registries.json`.
     pub fluids: Vec<String>,
@@ -744,6 +746,15 @@ impl GameData {
             );
         }
 
+        let damage_types = crate::damage_types::load(
+            &data.join("damage_type"),
+            &synced_registries
+                .iter()
+                .find(|registry| registry.name == "damage_type")
+                .context("damage_type is not a synchronised registry")?
+                .entries,
+        )?;
+
         let mut tags = Vec::new();
         for name in TAGGED_STATIC_REGISTRIES {
             let entries = static_registry(&registries, name)?;
@@ -846,6 +857,7 @@ impl GameData {
             sound_events: static_registry(&registries, "sound_event")?,
             synced_registries,
             dimension_types,
+            damage_types,
             tags,
             fluids,
             block_entity_types,

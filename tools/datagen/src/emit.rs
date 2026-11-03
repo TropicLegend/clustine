@@ -151,6 +151,7 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
             "block_physics",
             "block_properties",
             "blocks",
+            "damage_types",
             "dimension_types",
             "enchantments",
             "entity_types",
@@ -186,6 +187,11 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
     add(DATA_DIR, "sound_types.rs", types);
     add(DATA_DIR, "registries.rs", registries(data));
     add(DATA_DIR, "dimension_types.rs", dimension_types(data));
+    add(
+        DATA_DIR,
+        "damage_types.rs",
+        crate::damage_types::emit(&data.damage_types)?,
+    );
     add(DATA_DIR, "tags.rs", tags(data));
     add(DATA_DIR, "trades.rs", crate::trades::emit(&data.trades)?);
     add(
@@ -1318,6 +1324,11 @@ fn item_components(data: &GameData) -> Result<String> {
         .map(|attribute| attribute.name.clone())
         .collect();
     let block_names: Vec<String> = data.blocks.iter().map(|block| block.name.clone()).collect();
+    let damage_types: Vec<String> = data
+        .damage_types
+        .iter()
+        .map(|kind| kind.name.clone())
+        .collect();
     let names = ItemTableNames {
         items: &item_names,
         blocks: &block_names,
@@ -1325,6 +1336,7 @@ fn item_components(data: &GameData) -> Result<String> {
         attributes: &attributes,
         sound_events: &data.sound_events,
         mob_effects: &data.mob_effects,
+        damage_types: &damage_types,
     };
     item_components_table(&data.item_components, &names)
 }
@@ -1337,6 +1349,7 @@ struct ItemTableNames<'a> {
     attributes: &'a [String],
     sound_events: &'a [String],
     mob_effects: &'a [String],
+    damage_types: &'a [String],
 }
 
 /// The table of `components`, one an item in the order of `names.items`. Each item is
@@ -1563,6 +1576,7 @@ fn item_fields(
         items: names.items,
         mob_effects: names.mob_effects,
         sound_events: names.sound_events,
+        damage_types: names.damage_types,
     };
     fields.extend(item_defaults::render(&components.defaults, &registries)?);
     Ok(fields)
@@ -2025,6 +2039,7 @@ mod tests {
             attributes: &[],
             sound_events: &sounds,
             mob_effects: &effects,
+            damage_types: &[],
         };
         let components = [
             ItemComponents::plain(),

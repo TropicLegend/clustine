@@ -8,6 +8,7 @@
 //! `docs/adr/0019-data-made-from-mojangs-jar.md`.
 
 mod carver;
+mod damage_types;
 mod density;
 mod dump;
 mod emit;

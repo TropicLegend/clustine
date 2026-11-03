@@ -6,6 +6,7 @@ pub mod block_breaking;
 pub mod block_physics;
 pub mod block_properties;
 pub mod blocks;
+pub mod damage_types;
 pub mod dimension_types;
 pub mod enchantments;
 pub mod entity_types;

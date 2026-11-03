@@ -701,8 +701,8 @@ pub enum DeathMessageType {
     IntentionalGameDesign,
 }
 
-/// The game's damage types, sorted by name; filled by the generator (V4's part A).
-pub static DAMAGE_TYPES: &[DamageTypeData] = &[];
+/// The game's damage types, sorted by name, from `data/minecraft/damage_type`.
+pub use generated::damage_types::DAMAGE_TYPES;
 
 /// The data of the damage type named `name`, where the game has one.
 pub fn damage_type(name: &str) -> Option<&'static DamageTypeData> {
@@ -1793,5 +1793,163 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The damage types the jar's `data/minecraft/damage_type` gives, field by field,
+    /// for the ones a player's hurt and death message read.
+    #[test]
+    fn the_damage_types_carry_what_their_files_give() {
+        let of = |name: &str| *damage_type(name).unwrap_or_else(|| panic!("{name}"));
+        let fall = of("minecraft:fall");
+        assert_eq!(
+            (
+                fall.message_id,
+                fall.scaling,
+                fall.exhaustion,
+                fall.effects,
+                fall.death_message_type
+            ),
+            (
+                "fall",
+                DamageScaling::WhenCausedByLivingNonPlayer,
+                0.0,
+                DamageEffects::Hurt,
+                DeathMessageType::FallVariants
+            )
+        );
+        let attack = of("minecraft:player_attack");
+        assert_eq!(
+            (attack.message_id, attack.exhaustion, attack.scaling),
+            ("player", 0.1, DamageScaling::WhenCausedByLivingNonPlayer)
+        );
+        assert_eq!(of("minecraft:drown").effects, DamageEffects::Drowning);
+        assert_eq!(of("minecraft:drown").exhaustion, 0.0);
+        // The void scales as most types do, not `never`.
+        let void = of("minecraft:out_of_world");
+        assert_eq!(
+            (void.message_id, void.scaling, void.exhaustion),
+            (
+                "outOfWorld",
+                DamageScaling::WhenCausedByLivingNonPlayer,
+                0.0
+            )
+        );
+        let starve = of("minecraft:starve");
+        assert_eq!(
+            (starve.message_id, starve.exhaustion, starve.effects),
+            ("starve", 0.0, DamageEffects::Hurt)
+        );
+        let fire = of("minecraft:in_fire");
+        assert_eq!(
+            (fire.message_id, fire.exhaustion, fire.effects),
+            ("inFire", 0.1, DamageEffects::Burning)
+        );
+        assert_eq!(
+            of("minecraft:sweet_berry_bush").effects,
+            DamageEffects::Poking
+        );
+        assert_eq!(of("minecraft:freeze").effects, DamageEffects::Freezing);
+        assert_eq!(of("minecraft:thorns").effects, DamageEffects::Thorns);
+        let respawn = of("minecraft:bad_respawn_point");
+        assert_eq!(
+            (
+                respawn.message_id,
+                respawn.scaling,
+                respawn.death_message_type
+            ),
+            (
+                "badRespawnPoint",
+                DamageScaling::Always,
+                DeathMessageType::IntentionalGameDesign
+            )
+        );
+        assert_eq!(of("minecraft:explosion").scaling, DamageScaling::Always);
+        assert_eq!(damage_type("minecraft:tickled"), None);
+        assert_eq!(damage_type("fall"), None, "names carry their namespace");
+    }
+
+    /// Every type of the synchronised registry is in the table, and only those, sorted
+    /// so that `damage_type` finds each.
+    #[test]
+    fn the_damage_types_are_the_registry_s_and_sorted() {
+        let registry = synced_registry("minecraft:damage_type").unwrap();
+        assert_eq!(DAMAGE_TYPES.len(), 51);
+        assert_eq!(DAMAGE_TYPES.len(), registry.entries.len());
+        assert!(
+            DAMAGE_TYPES
+                .windows(2)
+                .all(|pair| pair[0].name < pair[1].name)
+        );
+        for entry in registry.entries {
+            assert_eq!(damage_type(entry).map(|data| data.name), Some(*entry));
+        }
+    }
+
+    /// The shield's `blocks_attacks`: the report's values, with the codec's default
+    /// reduction (all of any damage within 90 degrees) where the report leaves it out.
+    #[test]
+    fn the_shield_blocks_as_its_component_says() {
+        let blocks = ItemComponents::of(items::SHIELD)
+            .blocks_attacks
+            .expect("the shield blocks");
+        assert_eq!(
+            blocks,
+            BlocksAttacks {
+                block_delay_seconds: 0.25,
+                disable_cooldown_scale: 1.0,
+                damage_reductions: &[DamageReduction {
+                    horizontal_blocking_angle: 90.0,
+                    kinds: None,
+                    base: 0.0,
+                    factor: 1.0,
+                }],
+                item_damage: ItemDamageFunction {
+                    threshold: 3.0,
+                    base: 1.0,
+                    factor: 1.0,
+                },
+                bypassed_by: Some("minecraft:bypasses_shield"),
+                block_sound: Some("minecraft:item.shield.block"),
+                disable_sound: Some("minecraft:item.shield.break"),
+            }
+        );
+        assert_eq!(ItemComponents::of(items::SHIELD).death_protection, None);
+        assert_eq!(ItemComponents::of(items::STONE).blocks_attacks, None);
+        // What disables it: an axe's five seconds.
+        assert_eq!(
+            ItemComponents::of(items::IRON_AXE)
+                .weapon
+                .map(|weapon| weapon.disable_blocking_for_seconds),
+            Some(5.0)
+        );
+    }
+
+    /// The totem's `death_protection`: every effect cleared, then regeneration II for 45
+    /// seconds, absorption II for 5 and fire resistance for 40.
+    #[test]
+    fn the_totem_protects_from_death_with_its_effects() {
+        let totem = ItemComponents::of(items::TOTEM_OF_UNDYING);
+        const EXPECTED: &[ConsumeEffect] = &[
+            ConsumeEffect::ClearAllEffects,
+            ConsumeEffect::ApplyEffects {
+                effects: &[
+                    EffectInstance::new("minecraft:regeneration", 900, 1),
+                    EffectInstance::new("minecraft:absorption", 100, 1),
+                    EffectInstance::new("minecraft:fire_resistance", 800, 0),
+                ],
+                probability: 1.0,
+            },
+        ];
+        assert_eq!(totem.death_protection, Some(EXPECTED));
+        assert_eq!(totem.blocks_attacks, None);
+        let only = ITEM_COMPONENTS
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.death_protection.is_some() || item.blocks_attacks.is_some())
+            .map(|(id, _)| id as i32);
+        assert_eq!(
+            only.collect::<Vec<_>>(),
+            [items::SHIELD, items::TOTEM_OF_UNDYING]
+        );
     }
 }

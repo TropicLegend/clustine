@@ -8,6 +8,9 @@
 //! hidden effect, a default firework with explosions, a remainder with components) is
 //! refused rather than guessed at, so that a game update that brings one stops the
 //! generator.
+//!
+//! V4 adds the shield's `minecraft:blocks_attacks` and the totem's
+//! `minecraft:death_protection`, read by their codecs as `v4-javap` has them.
 
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Map, Value};
@@ -74,7 +77,40 @@ pub struct Defaults {
     pub food: Option<(i32, u32, bool)>,
     /// The item by name, and the count.
     pub use_remainder: Option<(String, i32)>,
+    pub blocks_attacks: Option<BlocksAttacksReport>,
+    /// The effects of `minecraft:death_protection`, in the data's order.
+    pub death_protection: Option<Vec<ConsumeEffectReport>>,
     pub ominous_bottle_amplifier: Option<i32>,
+}
+
+/// Damage types as a `HolderSet` of the damage type registry names them: a tag's name
+/// without its `#` (`Err`), or the types listed (`Ok`), one where a single name is
+/// written.
+pub type DamageTypesReport = std::result::Result<Vec<String>, String>;
+
+/// A `minecraft:blocks_attacks`, as `BlocksAttacks.CODEC` reads one (v4
+/// BlocksAttacks.lambda$static$0 @1-163). Floats as their bits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlocksAttacksReport {
+    pub block_delay_seconds: u32,
+    pub disable_cooldown_scale: u32,
+    pub damage_reductions: Vec<DamageReductionReport>,
+    /// The threshold, the base and the factor.
+    pub item_damage: (u32, u32, u32),
+    /// The tag's name, without its `#`.
+    pub bypassed_by: Option<String>,
+    pub block_sound: Option<String>,
+    pub disable_sound: Option<String>,
+}
+
+/// One of `blocks_attacks`'s `damage_reductions` (v4 BlocksAttacks$DamageReduction
+/// .lambda$static$0 @1-78). Floats as their bits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DamageReductionReport {
+    pub horizontal_blocking_angle: u32,
+    pub kinds: Option<DamageTypesReport>,
+    pub base: u32,
+    pub factor: u32,
 }
 
 /// `ItemUseAnimation`'s serialised names, each with the variant of
@@ -100,6 +136,16 @@ const DEFAULT_CONSUME_SOUND: &str = "minecraft:entity.generic.eat";
 
 /// `TeleportRandomlyConsumeEffect.DEFAULT_DIAMETER` (n9 TeleportRandomlyConsumeEffect 7).
 const DEFAULT_DIAMETER: f32 = 16.0;
+
+/// `BlocksAttacks.CODEC`'s default `damage_reductions` (v4 BlocksAttacks
+/// .lambda$static$0 @55-69): one `new DamageReduction(90, Optional.empty(), 0, 1)`, which
+/// takes away all of any damage within 90 degrees. The shield's report leaves it out
+/// for being the default.
+const DEFAULT_REDUCTION: (f32, f32, f32) = (90.0, 0.0, 1.0);
+
+/// `BlocksAttacks$ItemDamageFunction.DEFAULT` (v4 BlocksAttacks$ItemDamageFunction
+/// <clinit> @50-56): threshold 1, base 0, factor 1.
+const DEFAULT_ITEM_DAMAGE: (f32, f32, f32) = (1.0, 0.0, 1.0);
 
 /// Reads the defaults of one item from its report's `components`.
 pub fn read(components: &Map<String, Value>) -> Result<Defaults> {
@@ -191,6 +237,24 @@ pub fn read(components: &Map<String, Value>) -> Result<Defaults> {
             .get("count")
             .map_or(Ok(1), |value| int(value, "a remainder's count"))?;
         defaults.use_remainder = Some((item, count));
+    }
+    if let Some(value) = get("blocks_attacks") {
+        defaults.blocks_attacks = Some(blocks_attacks(value).context("blocks_attacks")?);
+    }
+    if let Some(value) = get("death_protection") {
+        // `DeathProtection.CODEC`: `death_effects`, a list of consume effects, empty
+        // where not written (v4 DeathProtection.lambda$static$0 @1-24).
+        let object = fields(value, &["death_effects"], "a death protection")?;
+        let mut effects = Vec::new();
+        if let Some(list) = object.get("death_effects") {
+            for entry in list
+                .as_array()
+                .context("death effects that are not a list")?
+            {
+                effects.push(consume_effect(entry).context("a death effect")?);
+            }
+        }
+        defaults.death_protection = Some(effects);
     }
     if let Some(value) = get("ominous_bottle_amplifier") {
         defaults.ominous_bottle_amplifier = Some(int(value, "an ominous bottle's amplifier")?);
@@ -339,6 +403,143 @@ fn consumable(value: &Value) -> Result<ConsumableReport> {
     })
 }
 
+/// `BlocksAttacks.CODEC` (v4 BlocksAttacks.lambda$static$0 @1-163): every field
+/// optional, with the defaults the codec gives.
+fn blocks_attacks(value: &Value) -> Result<BlocksAttacksReport> {
+    let object = fields(
+        value,
+        &[
+            "block_delay_seconds",
+            "disable_cooldown_scale",
+            "damage_reductions",
+            "item_damage",
+            "bypassed_by",
+            "block_sound",
+            "disabled_sound",
+        ],
+        "a blocks_attacks",
+    )?;
+    // Both are `ExtraCodecs.NON_NEGATIVE_FLOAT` (@1, @23), 0 and 1 where not written
+    // (@6, @28).
+    let non_negative = |key: &str, default: f32| -> Result<u32> {
+        let bits = object
+            .get(key)
+            .map_or(Ok(default.to_bits()), |value| float(value, key))?;
+        ensure!(f32::from_bits(bits) >= 0.0, "a negative {key}");
+        Ok(bits)
+    };
+    let damage_reductions = match object.get("damage_reductions") {
+        None => {
+            let (angle, base, factor) = DEFAULT_REDUCTION;
+            vec![DamageReductionReport {
+                horizontal_blocking_angle: angle.to_bits(),
+                kinds: None,
+                base: base.to_bits(),
+                factor: factor.to_bits(),
+            }]
+        }
+        Some(list) => list
+            .as_array()
+            .context("damage reductions that are not a list")?
+            .iter()
+            .map(damage_reduction)
+            .collect::<Result<_>>()?,
+    };
+    let item_damage = match object.get("item_damage") {
+        None => {
+            let (threshold, base, factor) = DEFAULT_ITEM_DAMAGE;
+            (threshold.to_bits(), base.to_bits(), factor.to_bits())
+        }
+        Some(value) => {
+            // `ItemDamageFunction.CODEC` (v4 BlocksAttacks$ItemDamageFunction
+            // .lambda$static$0 @1-42): all three written; the threshold not negative.
+            let object = fields(value, &["threshold", "base", "factor"], "an item damage")?;
+            let required = |key: &str| -> Result<u32> {
+                float(
+                    object
+                        .get(key)
+                        .with_context(|| format!("an item damage without its {key}"))?,
+                    key,
+                )
+            };
+            let threshold = required("threshold")?;
+            ensure!(
+                f32::from_bits(threshold) >= 0.0,
+                "a negative item damage threshold"
+            );
+            (threshold, required("base")?, required("factor")?)
+        }
+    };
+    // `bypassed_by` is a `HolderSet` (@109); `BlocksAttacks` of `clustine_data` holds a
+    // tag only, so a list of types is refused rather than dropped.
+    let bypassed_by = match object.get("bypassed_by") {
+        None => None,
+        Some(value) => match damage_types(value)? {
+            Err(tag) => Some(tag),
+            Ok(_) => bail!("a bypassed_by that is not a tag"),
+        },
+    };
+    let sound_of = |key: &str| object.get(key).map(sound).transpose();
+    Ok(BlocksAttacksReport {
+        block_delay_seconds: non_negative("block_delay_seconds", 0.0)?,
+        disable_cooldown_scale: non_negative("disable_cooldown_scale", 1.0)?,
+        damage_reductions,
+        item_damage,
+        bypassed_by,
+        block_sound: sound_of("block_sound")?,
+        disable_sound: sound_of("disabled_sound")?,
+    })
+}
+
+/// `BlocksAttacks$DamageReduction.CODEC` (v4 BlocksAttacks$DamageReduction
+/// .lambda$static$0 @1-78): the angle a `POSITIVE_FLOAT`, 90 where not written; the
+/// types optional; the base and the factor written.
+fn damage_reduction(value: &Value) -> Result<DamageReductionReport> {
+    let object = fields(
+        value,
+        &["horizontal_blocking_angle", "type", "base", "factor"],
+        "a damage reduction",
+    )?;
+    let angle = object
+        .get("horizontal_blocking_angle")
+        .map_or(Ok(DEFAULT_REDUCTION.0.to_bits()), |value| {
+            float(value, "a blocking angle")
+        })?;
+    ensure!(
+        f32::from_bits(angle) > 0.0,
+        "a blocking angle that is not positive"
+    );
+    let required = |key: &str| -> Result<u32> {
+        float(
+            object
+                .get(key)
+                .with_context(|| format!("a damage reduction without its {key}"))?,
+            key,
+        )
+    };
+    Ok(DamageReductionReport {
+        horizontal_blocking_angle: angle,
+        kinds: object.get("type").map(damage_types).transpose()?,
+        base: required("base")?,
+        factor: required("factor")?,
+    })
+}
+
+/// A `HolderSet` of damage types: a tag, one name, or a list of names.
+fn damage_types(value: &Value) -> Result<DamageTypesReport> {
+    Ok(match value {
+        Value::String(text) => match text.strip_prefix('#') {
+            Some(tag) => Err(tag.to_owned()),
+            None => Ok(vec![text.clone()]),
+        },
+        Value::Array(list) => Ok(list
+            .iter()
+            .map(|entry| name(entry, "a damage type"))
+            .collect::<Result<_>>()?),
+        _ => bail!("damage types that are neither a name nor a list"),
+    })
+}
+
 /// One `ConsumeEffect`, by its `type` (n9 ConsumeEffect$Type and the five kinds).
 fn consume_effect(value: &Value) -> Result<ConsumeEffectReport> {
     let kind = value
@@ -462,6 +663,7 @@ pub struct Registries<'a> {
     pub items: &'a [String],
     pub mob_effects: &'a [String],
     pub sound_events: &'a [String],
+    pub damage_types: &'a [String],
 }
 
 impl Registries<'_> {
@@ -469,6 +671,14 @@ impl Registries<'_> {
         ensure!(
             self.mob_effects.iter().any(|known| known == name),
             "{name} is no mob effect"
+        );
+        Ok(format!("{name:?}"))
+    }
+
+    fn damage_type(&self, name: &str) -> Result<String> {
+        ensure!(
+            self.damage_types.iter().any(|known| known == name),
+            "{name} is no damage type"
         );
         Ok(format!("{name:?}"))
     }
@@ -539,6 +749,21 @@ pub fn render(defaults: &Defaults, registries: &Registries) -> Result<Vec<(&'sta
             Some(format!("UseRemainder {{ item: {id}, count: {count} }}"))
         }
     };
+    let blocks_attacks = match &defaults.blocks_attacks {
+        None => None,
+        Some(blocks) => Some(blocks_attacks_literal(blocks, registries)?),
+    };
+    let death_protection = match &defaults.death_protection {
+        None => None,
+        Some(entries) => Some(format!(
+            "&[{}]",
+            entries
+                .iter()
+                .map(|entry| consume_effect_literal(entry, registries))
+                .collect::<Result<Vec<_>>>()?
+                .join(", ")
+        )),
+    };
     Ok(vec![
         ("potion_contents", some(potion_contents)),
         (
@@ -574,6 +799,8 @@ pub fn render(defaults: &Defaults, registries: &Registries) -> Result<Vec<(&'sta
         ("consumable", some(consumable)),
         ("food", some(food)),
         ("use_remainder", some(use_remainder)),
+        ("blocks_attacks", some(blocks_attacks)),
+        ("death_protection", some(death_protection)),
         (
             "ominous_bottle_amplifier",
             some(
@@ -587,17 +814,75 @@ pub fn render(defaults: &Defaults, registries: &Registries) -> Result<Vec<(&'sta
 
 /// The types of `clustine_data` a rendering may name, which the generated file imports
 /// where it does.
-pub const TYPES: [&str; 9] = [
+pub const TYPES: [&str; 13] = [
+    "BlocksAttacks",
     "ConsumeEffect",
     "Consumable",
+    "DamageReduction",
+    "DamageTypes",
     "EffectInstance",
     "EffectSet",
     "Food",
+    "ItemDamageFunction",
     "PotionContents",
     "UseAnimation",
     "UseCooldown",
     "UseRemainder",
 ];
+
+/// A `BlocksAttacks` literal, its damage types and sounds checked against the
+/// registries.
+fn blocks_attacks_literal(blocks: &BlocksAttacksReport, registries: &Registries) -> Result<String> {
+    let some =
+        |value: Option<String>| value.map_or("None".to_owned(), |value| format!("Some({value})"));
+    let reductions = blocks
+        .damage_reductions
+        .iter()
+        .map(|reduction| {
+            let kinds = match &reduction.kinds {
+                None => None,
+                Some(Err(tag)) => Some(format!("DamageTypes::Tag({tag:?})")),
+                Some(Ok(names)) => Some(format!(
+                    "DamageTypes::Listed(&[{}])",
+                    names
+                        .iter()
+                        .map(|name| registries.damage_type(name))
+                        .collect::<Result<Vec<_>>>()?
+                        .join(", ")
+                )),
+            };
+            Ok(format!(
+                "DamageReduction {{ horizontal_blocking_angle: {}, kinds: {}, base: {}, factor: {} }}",
+                float_literal(reduction.horizontal_blocking_angle),
+                some(kinds),
+                float_literal(reduction.base),
+                float_literal(reduction.factor)
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let (threshold, base, factor) = blocks.item_damage;
+    let sound = |name: &Option<String>| -> Result<String> {
+        Ok(some(
+            name.as_ref()
+                .map(|name| registries.sound(name))
+                .transpose()?,
+        ))
+    };
+    Ok(format!(
+        "BlocksAttacks {{ block_delay_seconds: {}, disable_cooldown_scale: {}, damage_reductions: &[{}], \
+         item_damage: ItemDamageFunction {{ threshold: {}, base: {}, factor: {} }}, bypassed_by: {}, \
+         block_sound: {}, disable_sound: {} }}",
+        float_literal(blocks.block_delay_seconds),
+        float_literal(blocks.disable_cooldown_scale),
+        reductions.join(", "),
+        float_literal(threshold),
+        float_literal(base),
+        float_literal(factor),
+        some(blocks.bypassed_by.as_ref().map(|tag| format!("{tag:?}"))),
+        sound(&blocks.block_sound)?,
+        sound(&blocks.disable_sound)?,
+    ))
+}
 
 fn consume_effect_literal(entry: &ConsumeEffectReport, registries: &Registries) -> Result<String> {
     Ok(match entry {
@@ -812,6 +1097,7 @@ mod tests {
             items: &[],
             mob_effects: &named(&["minecraft:speed"]),
             sound_events: &[],
+            damage_types: &[],
         };
         let fields = render(&defaults, &registries).unwrap();
         assert_eq!(
@@ -841,6 +1127,7 @@ mod tests {
             items: &items,
             mob_effects: &effects,
             sound_events: &sounds,
+            damage_types: &[],
         };
         let fields = render(&defaults, &registries).unwrap();
         let names: Vec<&str> = fields.iter().map(|(name, _)| *name).collect();
@@ -857,6 +1144,8 @@ mod tests {
                 "consumable",
                 "food",
                 "use_remainder",
+                "blocks_attacks",
+                "death_protection",
                 "ominous_bottle_amplifier",
             ]
         );
@@ -902,14 +1191,190 @@ mod tests {
             items: &items,
             mob_effects: &named(&["minecraft:hunger"]),
             sound_events: &sounds,
+            damage_types: &[],
         };
         assert!(render(&defaults, &unknown).is_err(), "poison is not known");
         let no_bottle = Registries {
             items: &named(&["minecraft:air"]),
             mob_effects: &effects,
             sound_events: &sounds,
+            damage_types: &[],
         };
         assert!(render(&defaults, &no_bottle).is_err());
+    }
+
+    /// The shield's report as the data generator writes it: the default reduction left
+    /// out, which the codec's default fills.
+    #[test]
+    fn a_blocks_attacks_without_reductions_takes_the_codecs_default_reduction() {
+        let defaults = read_json(
+            r##"{"minecraft:blocks_attacks": {
+                "block_delay_seconds": 0.25,
+                "block_sound": "minecraft:item.shield.block",
+                "bypassed_by": "#minecraft:bypasses_shield",
+                "disabled_sound": "minecraft:item.shield.break",
+                "item_damage": {"base": 1.0, "factor": 1.0, "threshold": 3.0}
+            }}"##,
+        )
+        .unwrap();
+        let sounds = named(&["minecraft:item.shield.block", "minecraft:item.shield.break"]);
+        let registries = Registries {
+            items: &[],
+            mob_effects: &[],
+            sound_events: &sounds,
+            damage_types: &[],
+        };
+        let fields = render(&defaults, &registries).unwrap();
+        let (_, value) = fields
+            .iter()
+            .find(|(name, _)| *name == "blocks_attacks")
+            .unwrap();
+        assert_eq!(
+            value,
+            "Some(BlocksAttacks { block_delay_seconds: 0.25, disable_cooldown_scale: 1.0, \
+             damage_reductions: &[DamageReduction { horizontal_blocking_angle: 90.0, kinds: None, \
+             base: 0.0, factor: 1.0 }], item_damage: ItemDamageFunction { threshold: 3.0, \
+             base: 1.0, factor: 1.0 }, bypassed_by: Some(\"minecraft:bypasses_shield\"), \
+             block_sound: Some(\"minecraft:item.shield.block\"), \
+             disable_sound: Some(\"minecraft:item.shield.break\") })"
+        );
+        let silent = Registries {
+            sound_events: &[],
+            ..registries
+        };
+        assert!(
+            render(&defaults, &silent).is_err(),
+            "the sounds are checked"
+        );
+    }
+
+    #[test]
+    fn an_empty_blocks_attacks_takes_every_default_of_the_codec() {
+        let blocks = read_json(r#"{"minecraft:blocks_attacks": {}}"#)
+            .unwrap()
+            .blocks_attacks
+            .unwrap();
+        assert_eq!(
+            blocks,
+            BlocksAttacksReport {
+                block_delay_seconds: 0.0_f32.to_bits(),
+                disable_cooldown_scale: 1.0_f32.to_bits(),
+                damage_reductions: vec![DamageReductionReport {
+                    horizontal_blocking_angle: 90.0_f32.to_bits(),
+                    kinds: None,
+                    base: 0.0_f32.to_bits(),
+                    factor: 1.0_f32.to_bits(),
+                }],
+                item_damage: (1.0_f32.to_bits(), 0.0_f32.to_bits(), 1.0_f32.to_bits()),
+                bypassed_by: None,
+                block_sound: None,
+                disable_sound: None,
+            }
+        );
+    }
+
+    /// Reductions of their own, naming types by a tag, by one name and by a list; the
+    /// names checked against the registry of damage types.
+    #[test]
+    fn reductions_of_their_own_name_their_damage_types() {
+        let defaults = read_json(
+            r##"{"minecraft:blocks_attacks": {"damage_reductions": [
+                {"type": "#minecraft:is_projectile", "base": 1.0, "factor": 0.5},
+                {"horizontal_blocking_angle": 45.0, "type": "minecraft:arrow", "base": 0.0,
+                 "factor": 1.0},
+                {"type": ["minecraft:arrow", "minecraft:trident"], "base": 2.0, "factor": 0.0}
+            ]}}"##,
+        )
+        .unwrap();
+        let types = named(&["minecraft:arrow", "minecraft:trident"]);
+        let registries = Registries {
+            items: &[],
+            mob_effects: &[],
+            sound_events: &[],
+            damage_types: &types,
+        };
+        let fields = render(&defaults, &registries).unwrap();
+        let (_, value) = fields
+            .iter()
+            .find(|(name, _)| *name == "blocks_attacks")
+            .unwrap();
+        assert!(value.contains(
+            "damage_reductions: &[DamageReduction { horizontal_blocking_angle: 90.0, \
+             kinds: Some(DamageTypes::Tag(\"minecraft:is_projectile\")), base: 1.0, factor: 0.5 }, \
+             DamageReduction { horizontal_blocking_angle: 45.0, \
+             kinds: Some(DamageTypes::Listed(&[\"minecraft:arrow\"])), base: 0.0, factor: 1.0 }, \
+             DamageReduction { horizontal_blocking_angle: 90.0, \
+             kinds: Some(DamageTypes::Listed(&[\"minecraft:arrow\", \"minecraft:trident\"])), \
+             base: 2.0, factor: 0.0 }]"
+        ));
+        let unknown = Registries {
+            damage_types: &types[..1],
+            ..registries
+        };
+        assert!(
+            render(&defaults, &unknown).is_err(),
+            "the trident is unknown"
+        );
+    }
+
+    #[test]
+    fn a_blocks_attacks_the_types_cannot_hold_is_refused() {
+        for text in [
+            r#"{"minecraft:blocks_attacks": {"bypassed_by": "minecraft:arrow"}}"#,
+            r#"{"minecraft:blocks_attacks": {"bypassed_by": ["minecraft:arrow"]}}"#,
+            r#"{"minecraft:blocks_attacks": {"block_delay_seconds": -1.0}}"#,
+            r#"{"minecraft:blocks_attacks": {"disable_cooldown_scale": -0.5}}"#,
+            r#"{"minecraft:blocks_attacks": {"block_sound": {"sound_id": "a"}}}"#,
+            r#"{"minecraft:blocks_attacks": {"parry": true}}"#,
+            r#"{"minecraft:blocks_attacks": {"item_damage": {"threshold": 1.0, "base": 0.0}}}"#,
+            r#"{"minecraft:blocks_attacks": {"item_damage": {"threshold": -1.0, "base": 0.0,
+                "factor": 1.0}}}"#,
+            r#"{"minecraft:blocks_attacks": {"damage_reductions": [{"base": 0.0}]}}"#,
+            r#"{"minecraft:blocks_attacks": {"damage_reductions": [{"base": 0.0, "factor": 1.0,
+                "horizontal_blocking_angle": 0.0}]}}"#,
+            r#"{"minecraft:blocks_attacks": {"damage_reductions": [{"base": 0.0, "factor": 1.0,
+                "type": 3}]}}"#,
+            r#"{"minecraft:death_protection": {"death_effects": [{"type": "minecraft:explode"}]}}"#,
+            r#"{"minecraft:death_protection": {"death_effects": [], "revive": true}}"#,
+        ] {
+            assert!(read_json(text).is_err(), "{text}");
+        }
+    }
+
+    /// The totem's report: every effect cleared, then three applied.
+    #[test]
+    fn a_death_protection_reads_its_effects_as_a_consumable_s() {
+        let defaults = read_json(
+            r#"{"minecraft:death_protection": {"death_effects": [
+                {"type": "minecraft:clear_all_effects"},
+                {"type": "minecraft:apply_effects", "effects": [
+                    {"amplifier": 1, "duration": 900, "id": "minecraft:regeneration",
+                     "show_icon": true},
+                    {"duration": 800, "id": "minecraft:fire_resistance", "show_icon": true}
+                ]}
+            ]}}"#,
+        )
+        .unwrap();
+        let effects = named(&["minecraft:regeneration", "minecraft:fire_resistance"]);
+        let registries = Registries {
+            items: &[],
+            mob_effects: &effects,
+            sound_events: &[],
+            damage_types: &[],
+        };
+        let fields = render(&defaults, &registries).unwrap();
+        let (_, value) = fields
+            .iter()
+            .find(|(name, _)| *name == "death_protection")
+            .unwrap();
+        assert_eq!(
+            value,
+            "Some(&[ConsumeEffect::ClearAllEffects, ConsumeEffect::ApplyEffects { effects: \
+             &[EffectInstance::new(\"minecraft:regeneration\", 900, 1), \
+             EffectInstance::new(\"minecraft:fire_resistance\", 800, 0)], probability: 1.0 }])"
+        );
+        let empty = read_json(r#"{"minecraft:death_protection": {}}"#).unwrap();
+        assert_eq!(empty.death_protection, Some(Vec::new()));
     }
 
     #[test]
