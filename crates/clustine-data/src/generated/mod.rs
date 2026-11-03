@@ -13,6 +13,7 @@ pub mod item_components;
 pub mod items;
 pub mod loot_tables;
 pub mod path_types;
+pub mod recipes;
 pub mod registries;
 pub mod sound_events;
 pub mod sound_types;

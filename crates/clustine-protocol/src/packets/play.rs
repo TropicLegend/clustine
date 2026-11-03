@@ -4488,6 +4488,139 @@ impl Decode for SwingAnimation {
     }
 }
 
+/// The recipes' data a client needs whatever it knows of the recipe book
+/// (`ClientboundUpdateRecipesPacket`): the property sets, by which the furnaces', the
+/// smithing table's and the brewing stand's slots tell what may go in them, and the
+/// stonecutter's selectable recipes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateRecipes {
+    /// `ByteBufCodecs.map`: each set's key (`RecipePropertySet.TYPE_KEY`'s, such as
+    /// `minecraft:furnace_input`) and its items.
+    pub property_sets: Vec<PropertySet>,
+    /// `SelectableRecipe$SingleInputSet.noRecipeCodec`: the entries without their
+    /// recipes.
+    pub stonecutter: Vec<StonecutterRecipe>,
+}
+
+/// A `RecipePropertySet`: a key and the items in it (`Item.STREAM_CODEC`, by id).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertySet {
+    pub key: String,
+    pub items: Vec<i32>,
+}
+
+/// An item `HolderSet` (`ByteBufCodecs.holderSet`): a tag by name, or the items listed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HolderSet {
+    Tag(String),
+    Items(Vec<i32>),
+}
+
+/// One of the stonecutter's selectable recipes (`SelectableRecipe$SingleInputEntry`):
+/// the input it takes and what its button shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StonecutterRecipe {
+    pub input: HolderSet,
+    pub display: SlotDisplay,
+}
+
+/// A `SlotDisplay`, of the one kind the stonecutter's recipes show: `item_stack`, an
+/// `ItemStackTemplate` of an item and a count. Its component patch is written empty; no
+/// stonecutting result has components.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SlotDisplay {
+    ItemStack { item: i32, count: i32 },
+}
+
+/// The id of `item_stack` in the `slot_display` registry.
+const SLOT_DISPLAY_ITEM_STACK: i32 = 5;
+
+impl Packet for UpdateRecipes {
+    const ID: i32 = clientbound::UPDATE_RECIPES;
+}
+
+impl Encode for UpdateRecipes {
+    fn encode(&self, w: &mut Writer) {
+        w.put_array(&self.property_sets, |w, set| {
+            w.put_string(&set.key);
+            w.put_array(&set.items, |w, item| w.put_var_int(*item));
+        });
+        w.put_array(&self.stonecutter, |w, recipe| {
+            match &recipe.input {
+                HolderSet::Tag(tag) => {
+                    w.put_var_int(0);
+                    w.put_string(tag);
+                }
+                HolderSet::Items(items) => {
+                    w.put_length(items.len() + 1);
+                    for item in items {
+                        w.put_var_int(*item);
+                    }
+                }
+            }
+            match recipe.display {
+                SlotDisplay::ItemStack { item, count } => {
+                    w.put_var_int(SLOT_DISPLAY_ITEM_STACK);
+                    // `ItemStackTemplate.STREAM_CODEC`: the item, the count, and an empty
+                    // patch (none added, none removed).
+                    w.put_var_int(item);
+                    w.put_var_int(count);
+                    w.put_var_int(0);
+                    w.put_var_int(0);
+                }
+            }
+        });
+    }
+}
+
+impl Decode for UpdateRecipes {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let property_sets = r.array(|r| {
+            Ok(PropertySet {
+                key: r.identifier()?,
+                items: r.array(Reader::var_int)?,
+            })
+        })?;
+        let stonecutter = r.array(|r| {
+            let input = match r.length()? {
+                0 => HolderSet::Tag(r.identifier()?),
+                plus_one => {
+                    let mut items = Vec::new();
+                    for _ in 1..plus_one {
+                        items.push(r.var_int()?);
+                    }
+                    HolderSet::Items(items)
+                }
+            };
+            let kind = r.var_int()?;
+            if kind != SLOT_DISPLAY_ITEM_STACK {
+                return Err(DecodeError::InvalidValue {
+                    what: "stonecutter slot display",
+                    value: i64::from(kind),
+                });
+            }
+            let (item, count) = (r.var_int()?, r.var_int()?);
+            for what in ["count of added components", "count of removed components"] {
+                let components = r.var_int()?;
+                if components != 0 {
+                    return Err(DecodeError::InvalidValue {
+                        what,
+                        value: i64::from(components),
+                    });
+                }
+            }
+            Ok(StonecutterRecipe {
+                input,
+                display: SlotDisplay::ItemStack { item, count },
+            })
+        })?;
+        Ok(Self {
+            property_sets,
+            stonecutter,
+        })
+    }
+}
+
 packet_set! {
     /// Packets a server can send in the play state.
     pub enum ClientboundPlay in crate::packet_ids::play::clientbound {
@@ -4570,6 +4703,58 @@ mod tests {
     /// One offer, as `docs/groundwork/n10-dumps.md`'s table lays it out: the costs and
     /// the result first, then the four-byte integers and the float, then the level and
     /// the xp as VarInts and the two flags.
+    /// `ClientboundUpdateRecipesPacket.STREAM_CODEC`: the map of property sets (a count,
+    /// then each key's identifier and its items as a list of ids), then the stonecutter's
+    /// entries (a count, then each input's `HolderSet`, its size plus one and the ids or
+    /// nought and a tag, and its `item_stack` slot display: the type's id 5, the item, the
+    /// count and an empty patch).
+    #[test]
+    fn update_recipes_is_written_as_the_game_writes_its_sets_and_stonecutter_entries() {
+        let packet = UpdateRecipes {
+            property_sets: vec![
+                PropertySet {
+                    key: "minecraft:smoker_input".to_owned(),
+                    items: vec![3, 300],
+                },
+                PropertySet {
+                    key: "minecraft:brewing_input".to_owned(),
+                    items: Vec::new(),
+                },
+            ],
+            stonecutter: vec![
+                StonecutterRecipe {
+                    input: HolderSet::Items(vec![7]),
+                    display: SlotDisplay::ItemStack { item: 9, count: 2 },
+                },
+                StonecutterRecipe {
+                    input: HolderSet::Tag("minecraft:logs".to_owned()),
+                    display: SlotDisplay::ItemStack { item: 1, count: 1 },
+                },
+            ],
+        };
+        assert_eq!(UpdateRecipes::ID, 136);
+        // The id, 136, as a VarInt; then two sets.
+        let mut expected = vec![0x88, 0x01, 2];
+        expected.push(22);
+        expected.extend(b"minecraft:smoker_input");
+        expected.extend([2, 3, 0xac, 0x02]); // two items, 3 and 300
+        expected.push(23);
+        expected.extend(b"minecraft:brewing_input");
+        expected.push(0); // no items
+        expected.push(2); // two stonecutter entries
+        expected.extend([2, 7, 5, 9, 2, 0, 0]); // one item, 7; nine, two of them
+        expected.push(0);
+        expected.push(14);
+        expected.extend(b"minecraft:logs");
+        expected.extend([5, 1, 1, 0, 0]);
+        assert_eq!(crate::packets::encode(&packet), expected);
+        // Not among `ClientboundPlay`'s packets yet: the bots' match over them would have
+        // to take it. Read back on its own.
+        let mut reader = Reader::new(&expected[2..]);
+        assert_eq!(UpdateRecipes::decode(&mut reader), Ok(packet));
+        assert_eq!(reader.finish(), Ok(()));
+    }
+
     #[test]
     fn merchant_offers_are_written_with_four_byte_integers_as_the_game_writes_them() {
         let offers = MerchantOffers {

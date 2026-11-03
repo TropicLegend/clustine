@@ -101,6 +101,8 @@ pub struct GameData {
     pub trades: trades::Compiled,
     /// What enchanting reads of the enchantments and of the items' enchantability.
     pub enchantments: crate::enchantments::Compiled,
+    /// The recipes, compiled, and the dye colours of the items.
+    pub recipes: crate::recipes::Compiled,
 }
 
 /// What the default components of an item say that Clustine reads
@@ -781,6 +783,19 @@ impl GameData {
             },
         )?;
 
+        let item_tags = tags
+            .iter()
+            .find(|tags| tags.registry == "item")
+            .context("the items have no tags")?;
+        let recipes = crate::recipes::load(
+            &data.join("recipe"),
+            &reports.join("minecraft/components/item"),
+            &crate::recipes::Names {
+                items: &item_names,
+                item_tags: &item_tags.tags,
+            },
+        )?;
+
         let fluids = static_registry(&registries, "fluid")?;
         let block_entity_types = static_registry(&registries, "block_entity_type")?;
         let extract = Extract::load(extract)?;
@@ -844,6 +859,7 @@ impl GameData {
             loot,
             trades,
             enchantments,
+            recipes,
         })
     }
 

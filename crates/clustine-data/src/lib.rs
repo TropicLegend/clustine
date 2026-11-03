@@ -20,6 +20,7 @@ pub mod faces;
 pub mod loot;
 pub mod packed;
 pub mod potions;
+pub mod recipes;
 pub mod spawning;
 pub mod spawns;
 pub mod trading;

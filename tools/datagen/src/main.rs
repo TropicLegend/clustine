@@ -22,6 +22,7 @@ mod material;
 mod model;
 mod nbt;
 mod packed;
+mod recipes;
 mod reference;
 mod router;
 mod sha256;

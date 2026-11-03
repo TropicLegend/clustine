@@ -158,6 +158,7 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
             "items",
             "loot_tables",
             "path_types",
+            "recipes",
             "registries",
             "sound_events",
             "sound_types",
@@ -192,6 +193,7 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
         "enchantments.rs",
         crate::enchantments::emit(&data.enchantments)?,
     );
+    add(DATA_DIR, "recipes.rs", crate::recipes::emit(&data.recipes)?);
     let biomes = data
         .synced_registries
         .iter()
