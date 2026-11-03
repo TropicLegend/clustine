@@ -641,6 +641,14 @@ breaking, crafting, health with hunger and death, furnaces, after which survival
 default), with the owner's trial after it; then V6 to V13 (enchantments' effects, the
 work blocks, the recipe book, brewing, the beacon, advancements, statistics).
 
+V1 (game modes) stands so on 2026-11-03: each player has a mode of their own, kept with
+their place (`--gamemode`, `--force-gamemode`; creative stays the default until V5); a
+survival client's creative slots and flying are refused by the edge and the region; the
+client's `player_loaded` keeps a player unhurt until it is sent or 60 ticks pass; and
+what a survival player uses is used up and worn as the game's, with reach from the
+attributes. Left of V1: changing a mode in play. V2 (breaking) has its data (hardness,
+the items' `tool` component) and loot that reads the tool; the digging itself is next.
+
 **What to try with a real client** (the End, since 2026-10-31): start a new world
 (`cargo run --release -p clustine`; a world made before is refused), find a stronghold
 with eyes of ender (thrown, they fly towards it), fill its portal's frames and step in.

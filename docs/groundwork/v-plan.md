@@ -561,7 +561,8 @@ attributes):
   `pufferfish.rs:12`, `mobs/tick.rs:126`); explosions only push
   (`explosions.rs:522-526`); a portal fires at once (`portals.rs:34, 470-475`); TNT's
   owner is creative (`explosions.rs:146-149`, the format's `BLAST_BY_CREATIVE`); no
-  invulnerability while the client loads (`PlayerLoaded` is dropped, `play.rs:327-329`).
+  invulnerability while the client loads (`PlayerLoaded` was dropped, `play.rs:327-329`; an input since 825e62e,
+  `region/loading.rs`).
 - **Mobs' targeting**: `seen_as_enemy` is `!creative && seen_by_anyone()`
   (`mobs/ai/sensing.rs:136-138`) and the `NO_CREATIVE_OR_SPECTATOR` selectors
   (`goals.rs:729, 1742, 1755`, `neutral.rs:57, 112`, `fox.rs`, `iron_golem.rs`,
@@ -695,7 +696,7 @@ attributes):
   region's tick.
 - **Reach** from the player's attributes, as the game reckons it with its tolerance, in
   place of the creative constants of 3.1.
-- **Invulnerable until loaded**: `PlayerLoaded` becomes an input (today it is dropped),
+- **Invulnerable until loaded**: `PlayerLoaded` becomes an input (built in 825e62e),
   and the region refuses damage to a player who has not sent it since their join, their
   last change of dimension or their last respawn, as `isInvulnerableTo @27-33`, with the
   game's timeout.
