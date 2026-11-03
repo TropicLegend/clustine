@@ -666,7 +666,31 @@ has (a click, a shift-click that crafts while there is room, a number key, Q, a 
 middle click), leaving the remainders (buckets, bottles) in the grid; the table's grid
 goes back to the inventory when it closes, is broken, or the player crosses a line or
 changes level; the client is sent the recipes' property sets and the stonecutter's list
-at a join. The recipe book stays empty (V9).
+at a join. The recipe book stays empty (V9). V4 (health) is built, its specification tests
+being written: a survival player is hurt as the game's `Player.hurtServer` and
+`actuallyHurt` hurt (difficulty, armour and toughness, the protections, resistance,
+absorption, the cooldown's two halves, shields with their delay and an axe's disabling,
+the totem), knocked back with their client told, by every source of the first hours:
+mobs' hits (here and across a line, where regions merge for a chase), arrows, fireballs
+and the other projectiles, explosions (beds and anchors too), the dragon, falling anvils,
+falls (by the block landed on), fire, lava, drowning, walls, cactus, berry bushes, magma,
+powder snow, cramming, the effects (poison, wither, instant damage), starvation and other
+players (`pvp`); hunger as `FoodData` (exhaustion from moves, jumps, attacks, breaks and
+hurts; regeneration; eating feeds), told on the game's rule; and a death as the game's
+(its message, the items spread around and the experience as orbs, a new body at the
+respawn). The world stays easy, and its game rules at the game's defaults with no
+command to change them yet.
+
+**What to try with a real client** (health, from 2026-11-03): in survival, jump off a
+pillar of 5 and of 10 blocks (2 and 7 hurt; onto hay a fifth, into water nothing), stand in
+fire and in lava, swim until the bubbles run out, let a zombie hit you (it pushes you
+back, and your hearts shake), wear iron armour and let it hit again, eat bread when
+hungry after sprinting for a while, hold a shield up against a skeleton, and die in lava
+with things in your inventory: the death screen says how, the items lie around where
+you died, the experience as orbs, and you respawn with full health and food. With a
+second player: hit each other, and shoot each other with a bow (you hear the hit's
+ding). Across x = 64 (`--pin 4 --reshape by-hand`): a zombie that follows you over the
+line keeps hitting you.
 
 **What to try with a real client** (the inventory screen, since 2026-11-03): in
 survival (`gamemode <you> survival`, `give <you> iron_helmet`, `give <you> oak_log 10`),
