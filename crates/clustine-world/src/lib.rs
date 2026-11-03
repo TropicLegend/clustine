@@ -12,6 +12,7 @@ mod dimension;
 pub mod dragon;
 mod effects;
 mod entity;
+mod game_mode;
 pub mod generation;
 mod light;
 pub mod poi;
@@ -42,6 +43,7 @@ pub use entity::{
     ItemStack, Leash, LeashHolder, MAIN_START, MAX_CHUNK_ENTITIES, OFF_HAND, Pending, Riding, Seat,
     TypeState,
 };
+pub use game_mode::{Abilities, GameMode, PlayerMode};
 pub use light::{LIGHT_ARRAY_LENGTH, Light, SectionLight, sky_light};
 pub use position::{
     BlockPos, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, Generated, PlayerId, RegionId, Vec3,

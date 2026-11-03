@@ -312,6 +312,9 @@ pub enum Presence {
         /// Where the player last died, which a login made from this answer shows as
         /// the game does (`docs/groundwork/p-plan.md`, section 19.9).
         last_death: Option<(Dimension, BlockPos)>,
+        /// The player's game mode, for that login (`docs/groundwork/v-plan.md`,
+        /// section 4.1).
+        mode: clustine_world::PlayerMode,
     },
     Absent,
     /// The region holds a stay of the player as entering, for this edge, from the join
@@ -919,6 +922,11 @@ pub struct Restored {
     /// leaves the End or dies without a bed or anchor respawns, and what an entity out
     /// of the End is sent to (`docs/groundwork/p-plan.md`, sections 5.3 and 19.2).
     pub world_spawn: BlockPos,
+    /// The game mode a newcomer is given, and whether everyone who enters is given it:
+    /// the world store's setting (`--gamemode`, `--force-gamemode`), as the game's
+    /// `server.properties` is its server's (`docs/groundwork/v-plan.md`, section 4.1).
+    pub game_mode: clustine_world::GameMode,
+    pub force_game_mode: bool,
     /// The dimension whose chunks the region holds.
     pub dimension: Dimension,
     /// Each dimension's home region, which a portal sends a player to
@@ -1012,6 +1020,10 @@ pub enum StoreWelcome {
         spawn: Option<BlockPos>,
         /// [`Restored::world_spawn`].
         world_spawn: BlockPos,
+        /// [`Restored::game_mode`].
+        game_mode: clustine_world::GameMode,
+        /// [`Restored::force_game_mode`].
+        force_game_mode: bool,
         /// [`Restored::dimension`].
         dimension: Dimension,
         /// [`Restored::homes`].

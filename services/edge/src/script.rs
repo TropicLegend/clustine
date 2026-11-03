@@ -1178,6 +1178,7 @@ impl Script {
             sleeping: None,
             respawn: None,
             last_death: None,
+            mode: Default::default(),
             experience: Default::default(),
             attack_ticks: None,
             using: None,
@@ -1309,6 +1310,7 @@ impl Script {
                     flying: false,
                     attempt: None,
                     last_death: None,
+                    mode: Default::default(),
                 },
                 None if named.contains(who) => Presence::Absent,
                 None => continue,
@@ -1511,6 +1513,7 @@ impl Script {
             player: who,
             event: PlayerEvent::Spawned {
                 last_death: None,
+                mode: Default::default(),
                 riding: None,
                 attempt: session.0,
                 entity_id: entity,

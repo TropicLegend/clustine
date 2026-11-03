@@ -641,6 +641,8 @@ mod tests {
             dimension: Default::default(),
             spawn: Some(Vec3::new(0.5, -60.0, 0.5)),
             starting_inventory: Inventory::default(),
+            default_mode: clustine_world::GameMode::Creative,
+            force_mode: false,
             return_after: 0,
             lowest_y: -64,
             seed: 0,

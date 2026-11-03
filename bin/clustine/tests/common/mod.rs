@@ -50,6 +50,9 @@ pub fn config() -> Config {
         serialise_link: false,
         pins,
         follow,
+        // Every scene so far plays creative; survival's scenes ask for their own.
+        game_mode: clustine_world::GameMode::Creative,
+        force_game_mode: false,
     }
 }
 

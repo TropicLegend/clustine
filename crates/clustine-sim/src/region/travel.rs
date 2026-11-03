@@ -214,6 +214,7 @@ impl Region {
                 &transfer.inventory,
                 transfer.selected_slot,
                 None,
+                transfer.mode.current,
             )
         };
         output.events.push(RegionEvent::EntityRemoved {

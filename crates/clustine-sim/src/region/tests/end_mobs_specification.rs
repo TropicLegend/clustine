@@ -88,6 +88,8 @@ fn end_home(reach: i32, game_seed: i64) -> Region {
         dimension: Dimension::End,
         spawn: None,
         starting_inventory: Inventory::default(),
+        default_mode: clustine_world::GameMode::Creative,
+        force_mode: false,
         return_after: u64::MAX,
         lowest_y: rules.min_y,
         seed: SEED,

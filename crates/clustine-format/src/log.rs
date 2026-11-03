@@ -302,6 +302,9 @@ pub struct LoggedPlace {
     /// Where they last died, the level and the block (`docs/groundwork/p-plan.md`,
     /// section 19.9).
     pub last_death: Option<(Dimension, [i32; 3])>,
+    /// Their game mode's id and the previous one's, if any (`docs/groundwork/v-plan.md`,
+    /// section 4.1).
+    pub mode: (u8, Option<u8>),
 }
 
 impl PartialEq for LoggedPlace {
@@ -332,6 +335,7 @@ impl PartialEq for LoggedPlace {
             && self.health.to_bits() == other.health.to_bits()
             && self.dead == other.dead
             && self.last_death == other.last_death
+            && self.mode == other.mode
     }
 }
 
@@ -1324,7 +1328,13 @@ pub(crate) fn put_place(out: &mut Vec<u8>, place: &LoggedPlace) {
             }
         }
     }
+    // The game mode's id, then the previous one's or 255 for none (format 24).
+    out.push(place.mode.0);
+    out.push(place.mode.1.unwrap_or(NO_PREVIOUS_MODE));
 }
+
+/// What a place writes for no previous game mode.
+const NO_PREVIOUS_MODE: u8 = 255;
 
 /// Reads what [`put_place`] wrote.
 pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatError> {
@@ -1380,7 +1390,16 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
         )),
         _ => return Err(FormatError::Corrupt("a place's last death flag")),
     };
+    let mode = input.u8()?;
+    let previous = match input.u8()? {
+        NO_PREVIOUS_MODE => None,
+        previous => Some(previous),
+    };
+    if mode > 3 || previous.is_some_and(|previous| previous > 3) {
+        return Err(FormatError::Corrupt("a place's game mode"));
+    }
     Ok(LoggedPlace {
+        mode: (mode, previous),
         last_death,
         dimension,
         seen_credits,
@@ -3051,6 +3070,7 @@ mod tests {
             portal_cooldown: 0,
             respawn: None,
             last_death: Some((Dimension::End, [-3, -81, 7])),
+            mode: (0, Some(1)),
             experience: (5, 0.25, 87),
             position: [1.5, -2.0, 0.0],
             yaw: 90.0,
@@ -3371,6 +3391,8 @@ mod tests {
         payload.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFD]);
         payload.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xAF]);
         payload.extend_from_slice(&[0, 0, 0, 7]);
+        // Survival (0), creative (1) before it.
+        payload.extend_from_slice(&[0, 1]);
         assert_eq!(bytes[..4], (payload.len() as u32).to_be_bytes());
         assert_eq!(bytes[4..8], crc32fast::hash(&payload).to_be_bytes());
         assert_eq!(bytes[8..], payload);
@@ -3524,9 +3546,9 @@ mod tests {
     /// carried its island, and of 22, before a place carried the last death, are refused
     /// as any record of another format is.
     #[test]
-    fn records_of_formats_13_to_22_are_refused() {
-        assert_eq!(FORMAT_VERSION, 23);
-        for earlier in [13, 14, 15, 16, 17, 18, 19, 20, 21, 22] {
+    fn records_of_formats_13_to_23_are_refused() {
+        assert_eq!(FORMAT_VERSION, 24);
+        for earlier in [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23] {
             let mut payload = commit_with_stays().encode()[FRAME_HEADER_LENGTH..].to_vec();
             assert_eq!(payload[0], FORMAT_VERSION);
             payload[0] = earlier;
@@ -3719,6 +3741,7 @@ mod tests {
                             .map(|(pos, (yaw, pitch), dimension)| (pos, yaw, pitch, dimension)),
                         position,
                         last_death: None,
+                        mode: (1, None),
                         yaw,
                         pitch,
                         on_ground,

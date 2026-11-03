@@ -1220,6 +1220,7 @@ fn face_beyond(x: f64, held: Option<i32>, sprinting: bool) -> TickInputs {
         &Default::default(),
         0,
         None,
+        clustine_world::GameMode::Creative,
     );
     face.main_hand = held.map(one);
     face.sprinting = sprinting;

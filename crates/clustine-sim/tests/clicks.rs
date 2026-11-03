@@ -65,6 +65,8 @@ fn config(spawn: Vec3) -> RegionConfig {
         dimension: Default::default(),
         spawn: Some(spawn),
         starting_inventory: Inventory::with_hotbar(starting_hotbar()),
+        default_mode: clustine_world::GameMode::Creative,
+        force_mode: false,
         return_after: 0,
         lowest_y: -64,
         seed: 0,

@@ -1309,6 +1309,8 @@ mod in_a_region {
             dimension: Default::default(),
             spawn: Some(clustine_world::Vec3::new(0.5, FEET, 0.5)),
             starting_inventory: Inventory::with_hotbar([const { None }; HOTBAR_SLOTS]),
+            default_mode: clustine_world::GameMode::Creative,
+            force_mode: false,
             return_after: 0,
             lowest_y: -64,
             seed: SEED,

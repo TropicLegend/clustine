@@ -73,6 +73,8 @@ fn world(
         dimension,
         spawn: None,
         starting_inventory: Inventory::default(),
+        default_mode: clustine_world::GameMode::Creative,
+        force_mode: false,
         return_after: u64::MAX,
         lowest_y: rules.min_y,
         seed: 9,

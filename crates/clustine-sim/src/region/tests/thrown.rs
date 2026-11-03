@@ -529,6 +529,7 @@ fn face_at(feet: [f64; 3], sneaking: bool) -> crate::api::FaceChange {
             &clustine_world::Inventory::default(),
             0,
             None,
+            clustine_world::GameMode::Creative,
         ),
     }
 }

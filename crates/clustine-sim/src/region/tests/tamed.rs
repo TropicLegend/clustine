@@ -546,6 +546,7 @@ fn face(x: f64, mode: u8, hurt_by: Option<(EntityId, u64)>, seq: u64) -> crate::
         &Default::default(),
         0,
         None,
+        clustine_world::GameMode::Creative,
     );
     face.game_mode = mode;
     face.last_hurt_by = hurt_by;

@@ -1193,6 +1193,7 @@ mod tests {
                         portal_cooldown: 0,
                         respawn: None,
                         last_death: None,
+                        mode: (1, None),
                         experience: (2, 0.5, 13),
                         position: [1.5, -2.0, 0.0],
                         yaw: 90.0,
@@ -1389,6 +1390,8 @@ mod tests {
         body.extend_from_slice(&20.0_f32.to_be_bytes());
         body.push(0);
         body.push(0);
+        // Creative (1), with no mode before it (255).
+        body.extend_from_slice(&[1, 255]);
         assert_eq!(bytes[..body.len()], body);
         assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
         assert_eq!(PlayersFile::decode(&bytes), Ok(players()));
@@ -1735,6 +1738,7 @@ mod tests {
                                 LoggedPlace { health: 20.0, dead: false, dimension: Default::default(), travel: None, seen_credits: false, portal_cooldown: 0,
                                     respawn: None,
                                     last_death: None,
+                                    mode: (1, None),
                                     experience: (0, 0.0, 0),
                                     position,
                                     yaw,

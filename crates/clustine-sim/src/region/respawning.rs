@@ -177,6 +177,7 @@ impl Region {
             &transfer.inventory,
             transfer.selected_slot,
             None,
+            transfer.mode.current,
         );
         self.travelled
             .push(((waiting.edge, id, transfer, to), face));
@@ -215,6 +216,7 @@ impl Region {
                 &transfer.inventory,
                 transfer.selected_slot,
                 None,
+                transfer.mode.current,
             )
         };
         output.events.push(RegionEvent::EntityRemoved {

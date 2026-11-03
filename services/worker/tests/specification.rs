@@ -1774,6 +1774,7 @@ fn the_resume_comes_first_and_in_order_in(mut world: World) {
         *answer,
         Presence::Present {
             last_death: None,
+            mode: Default::default(),
             riding: None,
             entity,
             pose: Pose {
@@ -5408,6 +5409,7 @@ fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
         sleeping: None,
         respawn: None,
         last_death: None,
+        mode: Default::default(),
         experience: Default::default(),
         attack_reset: None,
         using: None,

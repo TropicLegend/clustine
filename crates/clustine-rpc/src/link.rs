@@ -265,6 +265,7 @@ mod tests {
             sleeping: None,
             respawn: None,
             last_death: None,
+            mode: clustine_world::PlayerMode::new(clustine_world::GameMode::Survival),
             experience: Default::default(),
             attack_ticks: None,
             using: None,
@@ -413,6 +414,7 @@ mod tests {
                 player: player(),
                 event: PlayerEvent::Spawned {
                     last_death: None,
+                    mode: Default::default(),
                     riding: None,
                     attempt: 12,
                     entity_id: EntityId(5),
@@ -577,6 +579,7 @@ mod tests {
                     flying: true,
                     attempt: Some(12),
                     last_death: Some((Dimension::End, BlockPos::new(-3, -81, 7))),
+                    mode: Default::default(),
                 },
             },
             WorkerToEdge::Presence {
@@ -592,6 +595,7 @@ mod tests {
                     flying: false,
                     attempt: None,
                     last_death: None,
+                    mode: Default::default(),
                 },
             },
             WorkerToEdge::Presence {

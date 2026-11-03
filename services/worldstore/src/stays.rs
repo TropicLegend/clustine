@@ -63,6 +63,7 @@ pub(crate) fn place(x: f64, z: f64) -> Place {
         portal_cooldown: 0,
         respawn: None,
         last_death: None,
+        mode: Default::default(),
         experience: clustine_rpc::Experience {
             level: 3,
             progress: 0.5,
@@ -182,6 +183,10 @@ pub(crate) fn on_disk(place: &Place) -> LoggedPlace {
         last_death: place
             .last_death
             .map(|(dimension, block)| (dimension, [block.x, block.y, block.z])),
+        mode: (
+            place.mode.current.id(),
+            place.mode.previous.map(clustine_world::GameMode::id),
+        ),
         experience: (experience.level, experience.progress, experience.total),
         position: [
             place.pose.position.x,

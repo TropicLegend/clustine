@@ -1010,6 +1010,8 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
     let expected = [
         Restored {
             world_spawn: crate::tests::spawn_in(from.home),
+            game_mode: clustine_world::GameMode::Creative,
+            force_game_mode: false,
             strongholds: Vec::new(),
             homes: homes.clone(),
             dimension: Default::default(),
@@ -1039,6 +1041,8 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
         },
         Restored {
             world_spawn: crate::tests::spawn_in(from.home),
+            game_mode: clustine_world::GameMode::Creative,
+            force_game_mode: false,
             strongholds: Vec::new(),
             homes: homes.clone(),
             dimension: Default::default(),
@@ -1063,6 +1067,8 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
         },
         Restored {
             world_spawn: crate::tests::spawn_in(from.home),
+            game_mode: clustine_world::GameMode::Creative,
+            force_game_mode: false,
             strongholds: Vec::new(),
             homes: homes.clone(),
             dimension: Default::default(),

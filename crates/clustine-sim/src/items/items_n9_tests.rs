@@ -607,6 +607,8 @@ impl World {
             dimension: Default::default(),
             spawn: Some(SPAWN),
             starting_inventory: Inventory::default(),
+            default_mode: clustine_world::GameMode::Creative,
+            force_mode: false,
             return_after: 0,
             lowest_y: -64,
             seed: SEED,

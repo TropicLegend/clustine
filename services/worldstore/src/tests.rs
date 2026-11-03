@@ -1327,8 +1327,8 @@ fn everything_in(directory: &Path) -> Vec<(String, Option<Vec<u8>>)> {
 fn a_world_of_an_earlier_format_is_refused_with_the_records_sentence_and_nothing_in_it_is_touched()
 {
     let settings = generator().settings().identity;
-    assert_eq!(FORMAT_VERSION, 23, "22 is the format just before");
-    let metas = [1u8, 2, 3, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+    assert_eq!(FORMAT_VERSION, 24, "23 is the format just before");
+    let metas = [1u8, 2, 3, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
         .into_iter()
         .flat_map(|format| {
             [

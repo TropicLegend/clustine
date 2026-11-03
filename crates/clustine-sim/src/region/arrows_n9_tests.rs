@@ -725,6 +725,7 @@ fn an_arrow_turns_back_from_another_region_s_player_s_face() {
         &crate::api::Inventory::default(),
         0,
         None,
+        clustine_world::GameMode::Creative,
     );
     let player = clustine_world::PlayerId(uuid::Uuid::from_u128(42));
     region

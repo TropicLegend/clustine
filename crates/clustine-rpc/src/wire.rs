@@ -520,6 +520,8 @@ mod tests {
 
         let restored = Restored {
             world_spawn: clustine_world::BlockPos::new(0, -60, 0),
+            game_mode: clustine_world::GameMode::Survival,
+            force_game_mode: true,
             strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
@@ -564,6 +566,8 @@ mod tests {
         let welcomes = [
             StoreWelcome::Accepted {
                 world_spawn: clustine_world::BlockPos::new(0, -60, 0),
+                game_mode: clustine_world::GameMode::Survival,
+                force_game_mode: true,
                 strongholds: Vec::new(),
                 homes: Vec::new(),
                 dimension: Default::default(),
@@ -686,6 +690,8 @@ mod tests {
         // with a state and no commits after it up to the state's tick.
         let mut fresh = Restored {
             world_spawn: clustine_world::BlockPos::new(0, -60, 0),
+            game_mode: clustine_world::GameMode::Creative,
+            force_game_mode: false,
             strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
@@ -747,6 +753,8 @@ mod tests {
             portal_cooldown: 0,
             respawn: None,
             last_death: Some((Dimension::Nether, BlockPos::new(-12, 4, 30))),
+            mode: clustine_world::PlayerMode::new(clustine_world::GameMode::Survival)
+                .changed_to(clustine_world::GameMode::Creative),
             experience: Default::default(),
             pose: Pose {
                 position: Vec3::new(-1234.5, 71.25, 0.5),
@@ -771,6 +779,7 @@ mod tests {
             portal_cooldown: 0,
             respawn: None,
             last_death: None,
+            mode: Default::default(),
             experience: Default::default(),
             pose: Pose::at(Vec3::new(8.5, -60.0, 8.5)),
             flying: false,
@@ -864,6 +873,8 @@ mod tests {
         for issued in [EntityId(0), EntityId(41), EntityId(u64::MAX)] {
             round_trip(StoreWelcome::Accepted {
                 world_spawn: clustine_world::BlockPos::new(0, -60, 0),
+                game_mode: clustine_world::GameMode::Creative,
+                force_game_mode: false,
                 strongholds: Vec::new(),
                 homes: Vec::new(),
                 dimension: Default::default(),
@@ -887,6 +898,8 @@ mod tests {
             });
             round_trip(Restored {
                 world_spawn: clustine_world::BlockPos::new(0, -60, 0),
+                game_mode: clustine_world::GameMode::Creative,
+                force_game_mode: false,
                 strongholds: Vec::new(),
                 homes: Vec::new(),
                 dimension: Default::default(),

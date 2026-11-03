@@ -258,6 +258,7 @@ pub(super) fn waiting_place(transfer: &PlayerTransfer) -> Place {
         experience: transfer.experience,
         respawn: transfer.respawn,
         last_death: transfer.last_death,
+        mode: transfer.mode,
         effects: transfer.effects.clone(),
         time_since_rest: transfer.time_since_rest,
         raid_omen_position: transfer.raid_omen_position,

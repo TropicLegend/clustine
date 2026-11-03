@@ -3770,6 +3770,9 @@ impl Lanes {
             // by (`docs/groundwork/p-plan.md`, section 15.2).
             spawn: (dimension == Dimension::Overworld).then_some(self.spawn),
             world_spawn: self.spawn,
+            // The store's own setting, which it puts in ([`crate::Store::open_region`]).
+            game_mode: clustine_world::GameMode::Creative,
+            force_game_mode: false,
             strongholds: self.strongholds.clone(),
             dimension,
             world: self.world,

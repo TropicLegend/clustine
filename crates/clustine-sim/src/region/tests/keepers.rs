@@ -1170,6 +1170,7 @@ fn across_a_pinned_line_a_nautilus_is_tempted_by_a_player_there() {
                 &inventory,
                 0,
                 None,
+                clustine_world::GameMode::Creative,
             ),
         };
         checked(

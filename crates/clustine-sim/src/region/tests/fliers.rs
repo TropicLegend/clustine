@@ -1036,6 +1036,7 @@ fn face_at(x: f64, held: i32, seq: u64) -> crate::api::FaceChange {
             &clustine_world::Inventory::with_hotbar(hotbar),
             0,
             None,
+            clustine_world::GameMode::Creative,
         ),
     }
 }

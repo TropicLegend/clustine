@@ -199,6 +199,8 @@ pub struct PlayerState {
     /// `docs/groundwork/p-plan.md`, section 19.9), which every login, respawn and change
     /// of level tells their client, and the recovery compass points to.
     pub last_death: Option<(clustine_world::Dimension, clustine_world::BlockPos)>,
+    /// Their game mode and the one before it (`docs/groundwork/v-plan.md`, section 4.1).
+    pub mode: clustine_world::PlayerMode,
     /// The use of an item under way (`docs/groundwork/n9-plan.md`, section 5.5).
     pub using: Option<crate::api::Using>,
     /// The item groups' cooldowns, on the region's ticks; a merge moves them onto the

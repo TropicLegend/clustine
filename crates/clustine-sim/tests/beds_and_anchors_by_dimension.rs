@@ -167,6 +167,7 @@ fn join_in(scene: &mut Scene, dimension: Dimension, n: u128, feet: Vec3) {
                 portal_cooldown: 0,
                 respawn: None,
                 last_death: None,
+                mode: Default::default(),
                 experience: Default::default(),
                 pose: Pose {
                     position: feet,

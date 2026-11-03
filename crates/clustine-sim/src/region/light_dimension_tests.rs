@@ -75,6 +75,8 @@ fn config(dimension: Dimension) -> RegionConfig {
         spawn: (dimension == Dimension::Overworld)
             .then(|| Vec3::new(0.5, f64::from(floor_y(dimension) + 1), 0.5)),
         starting_inventory: Inventory::default(),
+        default_mode: clustine_world::GameMode::Creative,
+        force_mode: false,
         return_after: u64::MAX,
         lowest_y: rules.min_y,
         seed: 5,

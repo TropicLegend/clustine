@@ -19,6 +19,7 @@ pub async fn worldstore(
     world: PathBuf,
     pins: Vec<i32>,
     land: Land,
+    (game_mode, force_game_mode): (clustine_world::GameMode, bool),
 ) -> Result<()> {
     let pins = if pins.is_empty() {
         Pins::none()
@@ -27,7 +28,8 @@ pub async fn worldstore(
     };
     let pinned = pins.areas.len();
     let store = Store::local_divided(&world, land.generators, pins)
-        .with_context(|| format!("opening the world in {}", world.display()))?;
+        .with_context(|| format!("opening the world in {}", world.display()))?
+        .with_game_mode(game_mode, force_game_mode);
     let listener =
         std::net::TcpListener::bind(listen).with_context(|| format!("listening on {listen}"))?;
     let server =

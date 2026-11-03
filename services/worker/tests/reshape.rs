@@ -1472,6 +1472,7 @@ fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
         sleeping: None,
         respawn: None,
         last_death: None,
+        mode: Default::default(),
         experience: Default::default(),
         attack_ticks: None,
         using: None,
@@ -2996,6 +2997,7 @@ fn a_merge_closes_the_survivors_link_and_the_next_hello_is_told_of_it_and_of_who
         presence(log, player(2)),
         Some(&Presence::Present {
             last_death: None,
+            mode: Default::default(),
             riding: None,
             entity: pair.two,
             pose: theirs.pose,

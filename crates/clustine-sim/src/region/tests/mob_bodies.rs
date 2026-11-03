@@ -804,6 +804,7 @@ fn a_leash_held_by_a_player_of_another_region_pulls_by_their_face() {
             &Default::default(),
             0,
             None,
+            clustine_world::GameMode::Creative,
         ),
     };
     checked(

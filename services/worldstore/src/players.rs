@@ -465,6 +465,10 @@ pub(crate) fn logged_place(place: &Place) -> LoggedPlace {
         last_death: place
             .last_death
             .map(|(dimension, block)| (dimension, [block.x, block.y, block.z])),
+        mode: (
+            place.mode.current.id(),
+            place.mode.previous.map(clustine_world::GameMode::id),
+        ),
         dimension: place.dimension,
         travel: place.travel,
         seen_credits: place.seen_credits,
@@ -506,6 +510,12 @@ pub(crate) fn place(logged: &LoggedPlace) -> Place {
         last_death: logged
             .last_death
             .map(|(dimension, [x, y, z])| (dimension, clustine_world::BlockPos::new(x, y, z))),
+        // The format refuses an id that is no mode, so these are always some.
+        mode: clustine_world::PlayerMode {
+            current: clustine_world::GameMode::of_id(logged.mode.0)
+                .unwrap_or(clustine_world::GameMode::Creative),
+            previous: logged.mode.1.and_then(clustine_world::GameMode::of_id),
+        },
         dimension: logged.dimension,
         travel: logged.travel,
         seen_credits: logged.seen_credits,

@@ -895,6 +895,7 @@ fn a_pearl_of_another_region_s_player_lands_as_an_effect_addressed_to_them() {
             &clustine_world::Inventory::default(),
             0,
             None,
+            clustine_world::GameMode::Creative,
         ),
     };
     region.tick(&TickInputs {

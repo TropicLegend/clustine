@@ -1,6 +1,6 @@
 # World format
 
-How Clustine stores a world on disk. This describes **format version 23**
+How Clustine stores a world on disk. This describes **format version 24**
 (`FORMAT_VERSION` in `crates/clustine-format/src/lib.rs`) as implemented in
 `crates/clustine-format` (encodings) and `services/worldstore` (files); see
 `docs/adr/0008-durable-regions-and-resuming.md` for what the store promises of commits
@@ -15,13 +15,13 @@ finds an earlier `format` in a world's `meta` stops before it reads, changes or 
 anything else in the directory, and says:
 
 ```text
-This world was made by an earlier Clustine (world format 22; this server writes
-format 23). Worlds are not carried over before the first release: move <directory>
+This world was made by an earlier Clustine (world format 23; this server writes
+format 24). Worlds are not carried over before the first release: move <directory>
 away or name another, and a new world is made.
 ```
 
 A world of a later format is refused too, as any other setting of `meta` that differs
-("the world was made with format `24`, but this server uses `23`").
+("the world was made with format `25`, but this server uses `24`").
 
 The version is raised whenever what is written changes meaning; a tag that no world
 made before it can hold (a new kind of entity data, of effect or of a use of an entity)
@@ -46,6 +46,7 @@ needs no raise, as an older record never has it. The raises since 2:
 | 21 | A place holds the player's health and whether they are dead; a travel may be a respawn, with what else the End's contracts change (section 19.6 of the same plan) |
 | 22 | A gateway's travel may carry the island its exit's holder makes (section 19.8) |
 | 23 | A place ends with where the player last died (section 19.9) |
+| 24 | A place ends with the player's game mode and the one before it (`docs/groundwork/v-plan.md`, section 4.1) |
 
 ## Principles
 
@@ -153,7 +154,7 @@ A chunk's blocks file, of kind 5 (`crates/clustine-format/src/chunk.rs`):
 
 | Field | Type |
 |---|---|
-| Format version | u8, `FORMAT_VERSION` (23) |
+| Format version | u8, `FORMAT_VERSION` (24) |
 | Kind | u8, 5 |
 | Chunk x, z | i32, i32 |
 | Y of the lowest block | i32 |
@@ -296,7 +297,7 @@ no such file.
 
 | Field | Type |
 |---|---|
-| Format version | u8, `FORMAT_VERSION` (23) |
+| Format version | u8, `FORMAT_VERSION` (24) |
 | Kind | u8, 7 |
 | Chunk x, z | i32, i32 |
 | Tick as of which it was saved | u64 |
@@ -632,6 +633,7 @@ A place is where a player is and what they hold:
 | Health | f32 |
 | Whether they are dead | u8, 0 or 1 |
 | Where they last died | u8 0, or u8 1, a dimension u8 and i32 x, y, z |
+| Their game mode, and the one before it | u8 (0 survival, 1 creative, 2 adventure, 3 spectator), u8 (the same, or 255 for none) |
 
 A travel and a traveller are written as `crates/clustine-format/src/travel.rs` writes
 them: the dimension it goes to, its target block, and the way (a Nether portal with its

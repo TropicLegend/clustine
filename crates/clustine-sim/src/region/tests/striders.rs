@@ -260,6 +260,7 @@ fn face_holding(x: f64, held: i32) -> crate::api::FaceChange {
         &Default::default(),
         0,
         None,
+        clustine_world::GameMode::Creative,
     );
     face.main_hand = Some(ItemStack::new(held, 1));
     crate::api::FaceChange::Face {
@@ -505,6 +506,8 @@ fn nether_sea() -> Region {
         dimension: clustine_world::Dimension::Nether,
         spawn: Some(Vec3::new(0.5, f64::from(SEA_TOP + 1), 0.5)),
         starting_inventory: Default::default(),
+        default_mode: clustine_world::GameMode::Creative,
+        force_mode: false,
         return_after: u64::MAX,
         lowest_y: rules.min_y,
         seed: 0x571d,

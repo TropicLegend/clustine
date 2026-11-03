@@ -65,6 +65,8 @@ pub fn config(inventory: Inventory) -> RegionConfig {
         dimension: Default::default(),
         spawn: Some(SPAWN),
         starting_inventory: inventory,
+        default_mode: clustine_world::GameMode::Creative,
+        force_mode: false,
         return_after: 0,
         lowest_y: -64,
         seed: 0,
@@ -377,6 +379,7 @@ impl Scene {
                     portal_cooldown: 0,
                     respawn: None,
                     last_death: None,
+                    mode: Default::default(),
                     experience: Default::default(),
                     pose: Pose {
                         position: feet,

@@ -402,6 +402,10 @@ enum Message {
 #[derive(Clone)]
 pub struct Store {
     messages: Sender<Message>,
+    /// The game mode a newcomer is given, and whether everyone is: said to every region
+    /// opened ([`Restored::game_mode`]).
+    game_mode: clustine_world::GameMode,
+    force_game_mode: bool,
 }
 
 impl Store {
@@ -649,8 +653,18 @@ impl Store {
             reply_to: self.messages.clone(),
             answer,
         });
-        let (opened, restored) = answered.recv().expect("the store answers every hello")?;
+        let (opened, mut restored) = answered.recv().expect("the store answers every hello")?;
+        restored.game_mode = self.game_mode;
+        restored.force_game_mode = self.force_game_mode;
         Ok((StoreHandle::local(opened, self.messages.clone()), restored))
+    }
+
+    /// This store, giving newcomers `mode`, and everyone who enters where `forced`
+    /// (`--gamemode`, `--force-gamemode`).
+    pub fn with_game_mode(mut self, mode: clustine_world::GameMode, forced: bool) -> Self {
+        self.game_mode = mode;
+        self.force_game_mode = forced;
+        self
     }
 }
 
@@ -961,5 +975,10 @@ fn begin_clocked(
     thread::Builder::new()
         .name("worldstore".to_owned())
         .spawn(move || lanes.run(received))?;
-    Ok(Store { messages })
+    Ok(Store {
+        messages,
+        // Creative until survival is whole (`docs/groundwork/v-plan.md`, step V5).
+        game_mode: clustine_world::GameMode::Creative,
+        force_game_mode: false,
+    })
 }

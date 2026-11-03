@@ -1310,6 +1310,7 @@ fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
         sleeping: None,
         respawn: None,
         last_death: None,
+        mode: Default::default(),
         experience: Default::default(),
         attack_ticks: None,
         using: None,

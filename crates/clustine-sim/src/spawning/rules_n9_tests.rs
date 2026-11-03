@@ -1002,6 +1002,8 @@ fn field_region(biome: Biome, floor: BlockState, structures: Vec<KeptStructure>)
         dimension: Default::default(),
         spawn: Some(Vec3::new(0.5, f64::from(STANDING), 0.5)),
         starting_inventory: Default::default(),
+        default_mode: clustine_world::GameMode::Creative,
+        force_mode: false,
         return_after: u64::MAX,
         lowest_y: -64,
         seed: 0x5_10,

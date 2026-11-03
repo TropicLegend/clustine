@@ -17,6 +17,7 @@ use clustine::{Config, EdgeConfig, Land, LoginWorld, Server, login_of, stop_sign
 use clustine_coordinator::Policy;
 use clustine_region::RegionId;
 use clustine_world::ChunkPos;
+use clustine_world::GameMode;
 use tracing::{info, warn};
 
 /// What each command says when it is given `--boundaries`, which divided a world into
@@ -98,6 +99,33 @@ struct Made {
     /// its End.
     #[arg(long, value_name = "PATH")]
     minecraft_jar: Option<PathBuf>,
+}
+
+/// The game mode players are given: the server's settings of the game's
+/// `server.properties` `gamemode` and `force-gamemode` (`docs/groundwork/v-plan.md`,
+/// section 4.1).
+#[derive(Args)]
+struct Modes {
+    /// The game mode a player is given the first time they enter: `survival` or
+    /// `creative` (adventure and spectator are not built yet). Creative until survival
+    /// is whole.
+    #[arg(long = "gamemode", value_name = "MODE", default_value = "creative", value_parser = game_mode)]
+    gamemode: GameMode,
+    /// Give every player who enters the mode of `--gamemode`, whatever they had.
+    #[arg(long = "force-gamemode")]
+    force_gamemode: bool,
+}
+
+/// A game mode named on the command line, if it is one Clustine plays.
+fn game_mode(name: &str) -> Result<GameMode, String> {
+    match GameMode::named(name) {
+        Some(mode) if mode.is_built() => Ok(mode),
+        Some(mode) => Err(format!(
+            "{} is not built yet: survival or creative",
+            mode.name()
+        )),
+        None => Err(format!("{name} is no game mode: survival or creative")),
+    }
 }
 
 /// Where `cargo datagen` keeps the game's jar, looked for when no jar is named.
@@ -236,6 +264,9 @@ struct Standalone {
     #[command(flatten)]
     made: Made,
 
+    #[command(flatten)]
+    modes: Modes,
+
     /// Seconds between two saves of all changed chunks that are still loaded.
     #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..))]
     checkpoint_interval: u64,
@@ -344,6 +375,10 @@ enum Service {
         /// The store makes the chunks nobody has changed.
         #[command(flatten)]
         made: Made,
+
+        /// The store says which game mode players are given.
+        #[command(flatten)]
+        modes: Modes,
     },
     /// Simulates the region the coordinator gives it.
     Worker {
@@ -527,6 +562,7 @@ async fn main() -> Result<()> {
             boundaries,
             pin,
             made,
+            modes,
         }) => {
             let refuse = |why: String| -> ! {
                 let mut command = Cli::command();
@@ -539,7 +575,8 @@ async fn main() -> Result<()> {
                 refuse(NO_BOUNDARIES_FOR_THE_STORE.to_owned());
             }
             let pins = pins(&pin).unwrap_or_else(|why| refuse(why));
-            cluster::worldstore(listen, world, pins, made.land()?).await
+            let modes = (modes.gamemode, modes.force_gamemode);
+            cluster::worldstore(listen, world, pins, made.land()?, modes).await
         }
         Some(Service::Worker {
             coordinator,
@@ -656,6 +693,8 @@ async fn run_standalone(args: Standalone, pins: Vec<i32>, follow: Option<Policy>
         serialise_link: false,
         pins,
         follow,
+        game_mode: args.modes.gamemode,
+        force_game_mode: args.modes.force_gamemode,
     };
     let mut server = Server::start_in(config, land).await?;
     match args.made.seed {

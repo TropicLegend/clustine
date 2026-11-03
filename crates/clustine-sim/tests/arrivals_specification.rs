@@ -60,6 +60,8 @@ fn config(return_after: u64) -> RegionConfig {
         dimension: Default::default(),
         spawn: Some(FEET),
         starting_inventory: Inventory::with_hotbar(hotbar),
+        default_mode: clustine_world::GameMode::Creative,
+        force_mode: false,
         return_after,
         lowest_y: -64,
         seed: 0,

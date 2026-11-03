@@ -159,6 +159,7 @@ pub(super) fn entering_place(
         experience: Default::default(),
         respawn: None,
         last_death: None,
+        mode: Default::default(),
         effects,
         time_since_rest,
         raid_omen_position: None,
@@ -336,6 +337,7 @@ pub(super) fn face_of(number: u128, entity: EntityId, feet: [f64; 3], seq: u64) 
             &Inventory::default(),
             0,
             None,
+            clustine_world::GameMode::Creative,
         ),
     }
 }

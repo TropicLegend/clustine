@@ -1041,6 +1041,7 @@ fn face_holding(x: f64, held: i32) -> crate::api::FaceChange {
         &Default::default(),
         0,
         None,
+        clustine_world::GameMode::Creative,
     );
     face.main_hand = Some(one(held));
     crate::api::FaceChange::Face {

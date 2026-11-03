@@ -95,6 +95,8 @@ impl Scene {
             dimension,
             spawn: Some(feet),
             starting_inventory: inventory.clone(),
+            default_mode: clustine_world::GameMode::Creative,
+            force_mode: false,
             return_after: u64::MAX,
             lowest_y: rules.min_y,
             seed: 11,
@@ -194,6 +196,7 @@ impl Scene {
                     portal_cooldown: 0,
                     respawn: None,
                     last_death: None,
+                    mode: Default::default(),
                     experience: Default::default(),
                     pose: Pose {
                         position: feet,

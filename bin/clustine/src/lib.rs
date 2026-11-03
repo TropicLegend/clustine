@@ -248,6 +248,10 @@ pub struct Config {
     /// What the regions are merged and split by, or `None` for a server that does
     /// neither.
     pub follow: Option<Policy>,
+    /// The game mode a newcomer is given, and whether everyone who enters is given it
+    /// (`--gamemode`, `--force-gamemode`; `docs/groundwork/v-plan.md`, section 4.1).
+    pub game_mode: clustine_world::GameMode,
+    pub force_game_mode: bool,
 }
 
 /// The name of the one worker of a single process, and what stands for its address in
@@ -322,7 +326,8 @@ impl Server {
             None => {
                 Store::memory_divided(generators(), pins).context("starting a world in memory")?
             }
-        };
+        }
+        .with_game_mode(config.game_mode, config.force_game_mode);
         let store: Kept = Arc::new(Mutex::new(Some(store)));
 
         // The coordinator, which learns which regions there are from the store's list

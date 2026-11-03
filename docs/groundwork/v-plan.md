@@ -672,9 +672,11 @@ attributes):
   abilities (spectators unseen, through blocks, the camera; adventure's
   `can_break`/`can_place_on`).
 - The **default** is the world's: `--gamemode` on `clustine` (and on the world store's
-  subcommand, where a new player is first placed) sets it; it is written to the world's
-  `meta` at its making and again at every start, as `DedicatedServer.initServer @151-160`
-  writes the property into the world data. A player without a place gets it at the home
+  subcommand, where a new player is first placed) sets it. *As built (V1, 2026-11-03)*:
+  it is the world store's setting, as `server.properties` is the game's server's, and
+  said to every region the store opens (`Restored::game_mode`), not kept in `meta`: the
+  game writes the property into its world data at every start
+  (`DedicatedServer.initServer @151-160`), which nothing of Clustine's reads back. A player without a place gets it at the home
   region's entering (`StayNote::Entering`, ADR-0020). `--force-gamemode` sets every
   entering player to the default, as `calculateGameModeForNewPlayer` does.
 - A change of mode (by `--force-gamemode` at a join, or the operator's tool of question

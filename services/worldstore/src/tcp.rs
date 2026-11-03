@@ -321,6 +321,8 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         issued,
         spawn,
         world_spawn,
+        game_mode,
+        force_game_mode,
         dimension,
         homes,
         strongholds,
@@ -343,6 +345,8 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         issued,
         spawn,
         world_spawn,
+        game_mode,
+        force_game_mode,
         dimension,
         homes,
         strongholds,
@@ -512,6 +516,8 @@ impl Arriving {
                 homes: Vec::new(),
                 strongholds: Vec::new(),
                 world_spawn: spawn.unwrap_or(BlockPos::new(0, 0, 0)),
+                game_mode: clustine_world::GameMode::Creative,
+                force_game_mode: false,
                 faces: Vec::new(),
                 held: Vec::new(),
                 pinned,
@@ -750,6 +756,8 @@ fn welcomed(
             issued,
             spawn,
             world_spawn,
+            game_mode,
+            force_game_mode,
             dimension,
             homes,
             strongholds,
@@ -769,6 +777,8 @@ fn welcomed(
             restored.homes = homes;
             restored.strongholds = strongholds;
             restored.world_spawn = world_spawn;
+            restored.game_mode = game_mode;
+            restored.force_game_mode = force_game_mode;
             restored.seed = seed;
             restored.clock = clock;
             restored.faces = faces;
@@ -1041,6 +1051,8 @@ mod tests {
         );
         let mut expected = Restored {
             world_spawn: clustine_world::BlockPos::new(0, -60, 0),
+            game_mode: clustine_world::GameMode::Creative,
+            force_game_mode: false,
             strongholds: Vec::new(),
             // The homes a portal sends players to, as the store's list has them.
             homes: store.regions().unwrap().homes,
@@ -1605,6 +1617,8 @@ mod tests {
             assert_eq!(said, Some(StoreHello::Region(hello(1, 1))));
             let welcome = StoreWelcome::Accepted {
                 world_spawn: clustine_world::BlockPos::new(0, -60, 0),
+                game_mode: clustine_world::GameMode::Creative,
+                force_game_mode: false,
                 strongholds: Vec::new(),
                 homes: Vec::new(),
                 dimension: Default::default(),
@@ -1840,6 +1854,8 @@ mod tests {
         let entity_ids = EntityIds::block(2).unwrap();
         let restored = |state: Option<usize>, deltas: &[usize]| Restored {
             world_spawn: clustine_world::BlockPos::new(0, -60, 0),
+            game_mode: clustine_world::GameMode::Creative,
+            force_game_mode: false,
             strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
@@ -2064,6 +2080,8 @@ mod tests {
         ];
         let expected = Restored {
             world_spawn: clustine_world::BlockPos::new(0, -60, 0),
+            game_mode: clustine_world::GameMode::Creative,
+            force_game_mode: false,
             strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
@@ -2282,6 +2300,8 @@ mod tests {
                 given = block;
                 let accepted = StoreWelcome::Accepted {
                     world_spawn: clustine_world::BlockPos::new(0, -60, 0),
+                    game_mode: clustine_world::GameMode::Creative,
+                    force_game_mode: false,
                     strongholds: Vec::new(),
                     homes: store.regions().unwrap().homes,
                     dimension: Default::default(),
@@ -2332,6 +2352,8 @@ mod tests {
         // Far more than the system takes for a connection that nobody reads from.
         let restored = Restored {
             world_spawn: clustine_world::BlockPos::new(0, -60, 0),
+            game_mode: clustine_world::GameMode::Creative,
+            force_game_mode: false,
             strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
@@ -2427,6 +2449,8 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let restored = Restored {
             world_spawn: clustine_world::BlockPos::new(0, -60, 0),
+            game_mode: clustine_world::GameMode::Creative,
+            force_game_mode: false,
             strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),

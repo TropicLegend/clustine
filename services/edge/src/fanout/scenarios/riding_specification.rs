@@ -295,6 +295,7 @@ fn riding_transfer() -> PlayerTransfer {
         sleeping: None,
         respawn: None,
         last_death: None,
+        mode: Default::default(),
         experience: Default::default(),
         attack_ticks: None,
         using: None,

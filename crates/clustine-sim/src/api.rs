@@ -101,6 +101,8 @@ pub struct Place {
     /// `docs/groundwork/p-plan.md`, section 19.9), which every login, respawn and change
     /// of level tells their client, and the recovery compass points to.
     pub last_death: Option<(Dimension, BlockPos)>,
+    /// Their game mode and the one before it (`docs/groundwork/v-plan.md`, section 4.1).
+    pub mode: clustine_world::PlayerMode,
     /// Their effects, each level with the ticks it has left, in the order of the effects
     /// and of the levels they hide (`docs/groundwork/n9-plan.md`, section 5.4): an
     /// effect does not run down while they are away.
@@ -263,7 +265,7 @@ pub struct PlayerFace {
     /// Feet, legs, chest and head.
     pub worn: [Option<ItemStack>; 4],
     pub sneaking: bool,
-    /// The game mode's id: 1, creative, for everyone until survival.
+    /// Their game mode's id (`docs/groundwork/v-plan.md`, section 4.1).
     pub game_mode: u8,
     /// The game time they lay down at, while they sleep (their region's clock), from
     /// which their sleep counter is reckoned.
@@ -302,6 +304,7 @@ impl PlayerFace {
         inventory: &Inventory,
         selected_slot: u8,
         vehicle: Option<EntityId>,
+        mode: clustine_world::GameMode,
     ) -> Self {
         let slot = |index: usize| inventory.0[index].clone();
         Self {
@@ -317,8 +320,7 @@ impl PlayerFace {
             off_hand: slot(OFF_HAND),
             worn: std::array::from_fn(|index| slot(clustine_world::ARMOUR_START + index)),
             sneaking,
-            // Everyone is in creative mode until survival.
-            game_mode: 1,
+            game_mode: mode.id(),
             sleeping: None,
             vehicle,
             alive: true,
@@ -339,6 +341,7 @@ impl PlayerFace {
             &place.inventory,
             place.selected_slot,
             None,
+            place.mode.current,
         )
     }
 }
@@ -478,6 +481,8 @@ pub struct PlayerTransfer {
     /// `docs/groundwork/p-plan.md`, section 19.9), which every login, respawn and change
     /// of level tells their client, and the recovery compass points to.
     pub last_death: Option<(Dimension, BlockPos)>,
+    /// Their game mode and the one before it (`docs/groundwork/v-plan.md`, section 4.1).
+    pub mode: clustine_world::PlayerMode,
     /// The use under way, which goes on in the next region (the client does not see a
     /// hand-over).
     pub using: Option<Using>,
@@ -1708,6 +1713,9 @@ pub enum PlayerEvent {
         riding: Option<EntityId>,
         /// Where they last died, for the login (section 19.9).
         last_death: Option<(Dimension, BlockPos)>,
+        /// Their game mode, for the login and their abilities
+        /// (`docs/groundwork/v-plan.md`, section 4.1).
+        mode: clustine_world::PlayerMode,
     },
     /// Everything the player did with a sequence number up to `sequence` has been
     /// handled, whether it took effect or not. The client then stops showing its own

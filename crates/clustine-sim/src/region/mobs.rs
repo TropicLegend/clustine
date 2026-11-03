@@ -218,6 +218,8 @@ impl MobWorld for View<'_> {
             &clustine_world::Inventory::default(),
             0,
             None,
+            clustine_world::GameMode::of_id(known.game_mode)
+                .unwrap_or(clustine_world::GameMode::Creative),
         );
         face.game_mode = known.game_mode;
         // Their sleep's counter as of the store's last word, as the time they lay down.

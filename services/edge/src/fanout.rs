@@ -63,8 +63,25 @@ use crate::{EdgeIdentity, RegionLink, Relink, Routing, Stopped};
 
 const OVERWORLD: &str = "minecraft:overworld";
 
-/// Player ability flags of creative mode: invulnerable, may fly, breaks blocks instantly.
-const CREATIVE_ABILITIES: u8 = 0x01 | 0x04 | 0x08;
+/// The ability flags a client is told for a player in `mode` who flies or not
+/// (`Abilities.write`, as `GameType.updatePlayerAbilities` sets them).
+fn ability_flags(mode: clustine_world::GameMode, flying: bool) -> u8 {
+    let can = mode.abilities();
+    let mut flags = 0;
+    if can.invulnerable {
+        flags |= abilities::INVULNERABLE;
+    }
+    if mode.flies_from(flying) {
+        flags |= abilities::FLYING;
+    }
+    if can.may_fly {
+        flags |= abilities::MAY_FLY;
+    }
+    if can.instabuild {
+        flags |= abilities::INSTANT_BREAK;
+    }
+    flags
+}
 
 /// Messages from the regions that may wait for the fan-out task.
 const REGION_QUEUE_CAPACITY: usize = 1024;
@@ -618,6 +635,10 @@ struct PlayerView {
     /// (`docs/groundwork/p-plan.md`, section 19.9): from the stay that entered, and
     /// from each death since.
     last_death: Option<(Dimension, BlockPos)>,
+    /// Their game mode, which their abilities, every `SpawnInfo` made for them and the
+    /// player list say (`docs/groundwork/v-plan.md`, section 4.1): from the stay that
+    /// entered, and from every hand-over since.
+    mode: clustine_world::PlayerMode,
 }
 
 /// A change of dimension under way: since when, and how the player goes, which the
@@ -1768,6 +1789,7 @@ impl Fanout {
                         travelling: None,
                         respawn_owed: None,
                         last_death: None,
+                        mode: Default::default(),
                         session,
                         name: profile.name.clone(),
                         outbound,
@@ -1983,6 +2005,7 @@ impl Fanout {
                         selected_slot,
                         riding,
                         last_death,
+                        mode,
                     },
             } => {
                 // Only the connection whose join this answers enters by it. An answer
@@ -2001,6 +2024,7 @@ impl Fanout {
                         inventory: inventory_packets(&inventory, selected_slot),
                         riding,
                         last_death,
+                        mode,
                     };
                     self.spawn_player(player, entering).await;
                 }
@@ -2596,6 +2620,7 @@ impl Fanout {
             attempt,
             riding,
             last_death,
+            mode,
         } = answer
         else {
             if self
@@ -2631,6 +2656,7 @@ impl Fanout {
                     inventory: inventory_packets(&inventory, selected_slot),
                     riding,
                     last_death,
+                    mode,
                 };
                 self.spawn_player(player, entering).await;
             }
@@ -3567,6 +3593,8 @@ impl Fanout {
             return;
         }
 
+        // The mode goes with the stay, as the region had it when it let it go.
+        view.mode = transfer.mode;
         // The old region ignored everything it was sent after letting the player go.
         // What it had applied by then the player takes along; the rest is still kept,
         // because nothing is dropped before a region has reported it applied.
@@ -3681,8 +3709,13 @@ impl Fanout {
             // level and its entities, keeping its own entity's data (`Respawn`, keep 3).
             // A portal sets the traveller's cooldown before the `Respawn` is made
             // (`Entity.setPortalCooldown`, a player's `getDimensionChangingDelay` of 10).
-            let last_death = self.players.get(&player).and_then(|view| view.last_death);
-            let mut spawn = spawn_info(&self.config, level, last_death);
+            let (last_death, mode) = self
+                .players
+                .get(&player)
+                .map_or((None, Default::default()), |view| {
+                    (view.last_death, view.mode)
+                });
+            let mut spawn = spawn_info(&self.config, level, last_death, mode);
             if through_a_portal {
                 spawn.portal_cooldown = PLAYER_PORTAL_COOLDOWN;
             }
@@ -3802,11 +3835,7 @@ impl Fanout {
         view.teleports = view.teleports.wrapping_add(1).max(1);
         let teleport_id = view.teleports;
         view.awaiting_teleport.store(teleport_id, Ordering::Relaxed);
-        let flags = if flying {
-            CREATIVE_ABILITIES | abilities::FLYING
-        } else {
-            CREATIVE_ABILITIES
-        };
+        let flags = ability_flags(view.mode.current, flying);
         // A travel's look is told as the turn from the look the stay departed with, so
         // that the client keeps its own look turned as the portal turns it, and its
         // velocity turned with it (`Relative.DELTA` with `ROTATE_DELTA`, and
@@ -3948,14 +3977,11 @@ impl Fanout {
         view.told_clocks = None;
         let held = view.respawn_owed.take().unwrap_or_default();
         let last_death = view.last_death;
+        let mode = view.mode;
         view.teleports = view.teleports.wrapping_add(1).max(1);
         let teleport_id = view.teleports;
         view.awaiting_teleport.store(teleport_id, Ordering::Relaxed);
-        let flags = if flying {
-            CREATIVE_ABILITIES | abilities::FLYING
-        } else {
-            CREATIVE_ABILITIES
-        };
+        let flags = ability_flags(view.mode.current, flying);
         let mut packets = vec![encoded(&PlayerAbilities {
             flags,
             flying_speed: 0.05,
@@ -3971,7 +3997,7 @@ impl Fanout {
         // spawn (1001), the difficulty (1011), then the level's information.
         packets.extend([
             encoded(&Respawn {
-                spawn: spawn_info(&self.config, dimension, last_death),
+                spawn: spawn_info(&self.config, dimension, last_death, mode),
                 data_to_keep: respawn.keep,
             }),
             // `ServerPlayer.teleport(DDDFF)`: absolute, and still.
@@ -5644,6 +5670,7 @@ impl Fanout {
             flying: transfer.flying,
             inventory: inventory_packets(&transfer.inventory, transfer.selected_slot),
             last_death: transfer.last_death,
+            mode: transfer.mode,
         };
         // The view's level is the stay's before the view is shifted, which keys every
         // chunk it asks for by it: a join placed in the End by its home has the
@@ -5714,6 +5741,7 @@ impl Fanout {
             flying,
             inventory,
             last_death,
+            mode,
             ..
         } = entering;
         let Some(view) = self.players.get_mut(&player) else {
@@ -5721,21 +5749,19 @@ impl Fanout {
         };
         view.dimension = dimension;
         view.last_death = last_death;
+        view.mode = mode;
         // Placing the player is the first teleport the client has to confirm.
         let teleport_id = 1;
         view.teleports = teleport_id;
         view.awaiting_teleport.store(teleport_id, Ordering::Relaxed);
-        let flags = if flying {
-            CREATIVE_ABILITIES | abilities::FLYING
-        } else {
-            CREATIVE_ABILITIES
-        };
+        let flags = ability_flags(mode.current, flying);
         let entered = [
             encoded(&login_packet(
                 self.wire.of(entity),
                 &self.config,
                 dimension,
                 last_death,
+                mode,
             )),
             // The world's difficulty, unlocked as a new dedicated server's is; a client's
             // change of it is not taken (`docs/groundwork/n7k-plan.md`, section 10).
@@ -7979,6 +8005,8 @@ struct Entering {
     riding: Option<EntityId>,
     /// Where they last died, for the login (`docs/groundwork/p-plan.md`, section 19.9).
     last_death: Option<(Dimension, BlockPos)>,
+    /// Their game mode (`docs/groundwork/v-plan.md`, section 4.1).
+    mode: clustine_world::PlayerMode,
 }
 
 /// The light a chunk is shown with where none could be made for it: the sky light
@@ -8033,6 +8061,7 @@ fn login_packet(
     config: &FanoutConfig,
     dimension: Dimension,
     last_death: Option<(Dimension, BlockPos)>,
+    mode: clustine_world::PlayerMode,
 ) -> Login {
     Login {
         entity_id,
@@ -8047,7 +8076,7 @@ fn login_packet(
         reduced_debug_info: false,
         enable_respawn_screen: true,
         limited_crafting: false,
-        spawn: spawn_info(config, dimension, last_death),
+        spawn: spawn_info(config, dimension, last_death, mode),
         online_mode: false,
         enforces_secure_chat: false,
     }
@@ -8060,6 +8089,7 @@ fn spawn_info(
     config: &FanoutConfig,
     dimension: Dimension,
     last_death: Option<(Dimension, BlockPos)>,
+    mode: clustine_world::PlayerMode,
 ) -> SpawnInfo {
     let dimension_type = synced_registry("minecraft:dimension_type")
         .and_then(|registry| registry.id_of(dimension.type_name()))
@@ -8069,8 +8099,8 @@ fn spawn_info(
         dimension_name: dimension.type_name().to_owned(),
         // The client blurs the borders of biomes with it, as the server's surface did.
         hashed_seed: config.login.hashed_seed,
-        game_mode: game_mode::CREATIVE,
-        previous_game_mode: None,
+        game_mode: i32::from(mode.current.id()),
+        previous_game_mode: mode.previous.map(|previous| i32::from(previous.id())),
         is_debug: false,
         // The world's, in every dimension, as the game's `ServerLevel.isFlat` is: the
         // flat world's Nether and End are those of seed 0
@@ -8396,6 +8426,7 @@ mod tests {
             player,
             event: PlayerEvent::Spawned {
                 last_death: None,
+                mode: Default::default(),
                 riding: None,
                 attempt,
                 entity_id: entity,
@@ -8431,6 +8462,7 @@ mod tests {
             sleeping: None,
             respawn: None,
             last_death: None,
+            mode: Default::default(),
             experience: Default::default(),
             attack_ticks: None,
             using: None,
@@ -8466,6 +8498,7 @@ mod tests {
             flying: false,
             attempt: None,
             last_death: None,
+            mode: Default::default(),
         }
     }
 
@@ -8496,6 +8529,7 @@ mod tests {
             flying,
             attempt: Some(attempt),
             last_death: None,
+            mode: Default::default(),
         }
     }
 
@@ -11418,6 +11452,7 @@ mod scenarios {
             player,
             event: PlayerEvent::Spawned {
                 last_death: None,
+                mode: Default::default(),
                 riding: None,
                 attempt,
                 entity_id: entity,
@@ -11445,6 +11480,7 @@ mod scenarios {
             sleeping: None,
             respawn: None,
             last_death: None,
+            mode: Default::default(),
             experience: Default::default(),
             attack_ticks: None,
             using: None,
@@ -11578,6 +11614,7 @@ mod scenarios {
             player,
             answer: Presence::Present {
                 last_death: None,
+                mode: Default::default(),
                 riding: None,
                 entity,
                 pose: Pose::at(SPAWN),
@@ -17078,6 +17115,7 @@ mod scenarios {
                 player: *player,
                 answer: Presence::Present {
                     last_death: None,
+                    mode: Default::default(),
                     riding: None,
                     entity: resident.entity,
                     pose: Pose::at(within(resident.chunk)),
@@ -18205,6 +18243,7 @@ mod scenarios {
             player,
             answer: Presence::Present {
                 last_death: None,
+                mode: Default::default(),
                 riding: None,
                 entity,
                 pose: Pose::at(SPAWN),

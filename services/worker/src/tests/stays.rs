@@ -352,6 +352,7 @@ fn place_at(x: f64) -> Place {
         portal_cooldown: 0,
         respawn: None,
         last_death: None,
+        mode: Default::default(),
         experience: Default::default(),
         pose: standing(x),
         flying: false,
@@ -412,6 +413,7 @@ fn told(seat: &Seat, player: PlayerId, attempt: u64) -> Option<(EntityId, Place)
                     portal_cooldown: 0,
                     respawn: None,
                     last_death: None,
+                    mode: Default::default(),
                     experience: Default::default(),
                     pose,
                     flying,
@@ -633,6 +635,7 @@ fn a_player_who_comes_back_is_placed_where_they_were_in_the_home_region_as_they_
         portal_cooldown: 0,
         respawn: None,
         last_death: None,
+        mode: Default::default(),
         experience: Default::default(),
         pose: Pose {
             position: Vec3::new(HOME_X, -50.0, 0.5),
@@ -774,6 +777,7 @@ fn a_player_whose_place_another_region_holds_is_let_go_to_it_without_being_place
         sleeping: None,
         respawn: None,
         last_death: None,
+        mode: Default::default(),
         experience: Default::default(),
         attack_ticks: None,
         using: None,
@@ -903,6 +907,7 @@ fn a_player_who_left_below_the_world_enters_at_the_spawn_point_with_what_they_he
         portal_cooldown: 0,
         respawn: None,
         last_death: None,
+        mode: Default::default(),
         experience: Default::default(),
         pose: Pose::at(SPAWN),
         flying: false,
@@ -1842,6 +1847,8 @@ fn restored_with(
     let tick_state = |tick: u64, state: Vec<u8>| clustine_rpc::TickState { tick, state };
     Restored {
         world_spawn: clustine_world::BlockPos::new(0, -60, 0),
+        game_mode: clustine_world::GameMode::Creative,
+        force_game_mode: false,
         strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: Default::default(),

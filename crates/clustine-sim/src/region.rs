@@ -183,8 +183,15 @@ pub struct RegionConfig {
     /// flies towards (`docs/groundwork/p-plan.md`, section 19.2 P10-0); none in a world
     /// without them.
     pub strongholds: Vec<ChunkPos>,
-    /// What players carry when they enter the world for the first time.
+    /// What players carry when they enter the world for the first time, in creative
+    /// mode; a newcomer in another mode starts empty.
     pub starting_inventory: Inventory,
+    /// The game mode a newcomer is given: the world's (`--gamemode`, kept in its
+    /// `meta`; `docs/groundwork/v-plan.md`, section 4.1).
+    pub default_mode: clustine_world::GameMode,
+    /// Whether every player who enters is given [`RegionConfig::default_mode`]
+    /// (`--force-gamemode`).
+    pub force_mode: bool,
     /// How many ticks a chunk the region holds outside its pinned areas may be without
     /// use before the region gives it back.
     pub return_after: u64,
@@ -461,6 +468,8 @@ struct Player {
     respawn: Option<crate::api::Respawn>,
     /// See [`PlayerState::last_death`].
     last_death: Option<(Dimension, BlockPos)>,
+    /// See [`PlayerState::mode`].
+    mode: clustine_world::PlayerMode,
     /// The tick of their last level-up's sound (`lastLevelUpTime`), in memory only: a
     /// restore may let a level-up five levels on be heard once more.
     last_level_up: Option<u64>,
@@ -1516,6 +1525,7 @@ impl Region {
                     portal_cooldown: transfer.portal.cooldown,
                     respawn: transfer.respawn,
                     last_death: transfer.last_death,
+                    mode: transfer.mode,
                     pose: transfer.pose,
                     flying: transfer.flying,
                     inventory: transfer.inventory.clone(),
@@ -1535,6 +1545,7 @@ impl Region {
                         &transfer.inventory,
                         transfer.selected_slot,
                         transfer.riding.map(|riding| riding.vehicle),
+                        transfer.mode.current,
                     )
                 }),
                 let_go: true,
@@ -1882,6 +1893,7 @@ impl Region {
                 selected_slot: player.selected_slot,
                 riding: player.riding.map(|riding| riding.vehicle),
                 last_death: player.last_death,
+                mode: player.mode,
             },
         ));
         // A client begins with none (`ServerPlayer`'s first `set_experience`).
@@ -2097,6 +2109,7 @@ impl Region {
             // The bed or anchor they wake at goes with them wherever they go.
             respawn: transfer.respawn,
             last_death: transfer.last_death,
+            mode: transfer.mode,
             entity_id: transfer.entity_id,
             name: transfer.name.clone(),
             pose: transfer.pose,
@@ -2268,8 +2281,27 @@ impl Region {
             .unit
             .clone()
             .and_then(|unit| self.unit_returning(id, entity_id, edge, unit, !below, output));
+        // Their game mode: the one they had, or the world's for a newcomer; the world's
+        // for everyone where it is forced (`PlayerList.placeNewPlayer`'s
+        // `calculateGameModeForNewPlayer`; `docs/groundwork/v-plan.md`, section 4.1).
+        let mode = match kept {
+            Some((place, _))
+                if self.config.force_mode && place.mode.current != self.config.default_mode =>
+            {
+                place.mode.changed_to(self.config.default_mode)
+            }
+            Some((place, _)) => place.mode,
+            None => clustine_world::PlayerMode::new(self.config.default_mode),
+        };
+        // A newcomer starts empty but in creative, which is given the starting hotbar
+        // (the plan's question 15).
+        let starting = if mode.current == clustine_world::GameMode::Creative {
+            self.config.starting_inventory.clone()
+        } else {
+            Inventory::default()
+        };
         let (pose, flying, inventory, selected_slot) = match kept {
-            None => (at_spawn, false, self.config.starting_inventory.clone(), 0),
+            None => (at_spawn, false, starting, 0),
             Some((place, true)) => (
                 at_spawn,
                 false,
@@ -2298,6 +2330,7 @@ impl Region {
                         sleeping: None,
                         respawn: place.respawn,
                         last_death: place.last_death,
+                        mode: place.mode,
                         entity_id,
                         name,
                         pose: place.pose,
@@ -2355,11 +2388,14 @@ impl Region {
         let respawn = kept.and_then(|(place, _)| place.respawn);
         // So is where they last died.
         let last_death = kept.and_then(|(place, _)| place.last_death);
+        // A mode that may not fly lands them (`updatePlayerAbilities`).
+        let flying = mode.current.flies_from(flying);
         let player = Player {
             hurting: Default::default(),
             sleeping: None,
             respawn,
             last_death,
+            mode,
             entity_id,
             name,
             pose,
@@ -4122,6 +4158,7 @@ impl Player {
             sleeping: self.sleeping,
             respawn: self.respawn,
             last_death: self.last_death,
+            mode: self.mode,
             using: self.using,
             cooldowns: self.cooldowns.clone(),
             effects: crate::mobs::body::effects::kept(&self.effects),
@@ -4176,6 +4213,7 @@ impl Player {
             sleeping: state.sleeping,
             respawn: state.respawn,
             last_death: state.last_death,
+            mode: state.mode,
             last_level_up: None,
             last_hurt_mob: None,
             appearance: state.appearance,
@@ -4193,6 +4231,7 @@ impl Player {
             &self.inventory,
             self.selected_slot,
             self.riding.map(|riding| riding.vehicle),
+            self.mode.current,
         );
         face.sleeping = self.sleeping.map(|sleep| sleep.since);
         face.last_hurt_mob = self.last_hurt_mob;
@@ -4237,6 +4276,7 @@ impl Player {
             experience: self.experience,
             respawn: self.respawn,
             last_death: self.last_death,
+            mode: self.mode,
             effects: crate::mobs::body::effects::instances(&self.effects, tick + 1),
             time_since_rest: self.time_since_rest(tick + 1),
             raid_omen_position: self.raid_omen_position,
@@ -4275,6 +4315,7 @@ impl Player {
             sleeping: self.sleeping,
             respawn: self.respawn,
             last_death: self.last_death,
+            mode: self.mode,
             using: self.using,
             effects,
             time_since_rest,
@@ -4581,6 +4622,8 @@ mod tests {
             dimension: Default::default(),
             spawn: Some(SPAWN),
             starting_inventory: Inventory::with_hotbar(hotbar()),
+            default_mode: clustine_world::GameMode::Creative,
+            force_mode: false,
             return_after: 0,
             lowest_y: -64,
             seed: 0,
@@ -5247,6 +5290,7 @@ mod tests {
         let output = enter(&mut region);
         let spawned = |entity, number| PlayerEvent::Spawned {
             last_death: None,
+            mode: Default::default(),
             riding: None,
             attempt: attempt(number),
             entity_id: EntityId(entity),
@@ -5371,6 +5415,7 @@ mod tests {
         let output = enter(&mut region);
         let spawned = PlayerEvent::Spawned {
             last_death: None,
+            mode: Default::default(),
             riding: None,
             attempt: attempt(1),
             entity_id: EntityId(2),
@@ -6671,6 +6716,7 @@ mod tests {
             sleeping: None,
             respawn: None,
             last_death: None,
+            mode: Default::default(),
             experience: Default::default(),
             attack_ticks: None,
             using: None,
@@ -7267,6 +7313,7 @@ mod tests {
                         sleeping: None,
                         respawn: None,
                         last_death: None,
+                        mode: Default::default(),
                         experience: Default::default(),
                         // The selection changed the main hand in the tick.
                         attack_ticks: Some(0),
@@ -7579,6 +7626,7 @@ mod tests {
         let output = enter(&mut region);
         let spawned = PlayerEvent::Spawned {
             last_death: None,
+            mode: Default::default(),
             riding: None,
             attempt: attempt(1),
             entity_id: EntityId(1),
@@ -7603,6 +7651,7 @@ mod tests {
             sleeping: None,
             respawn: None,
             last_death: None,
+            mode: Default::default(),
             experience: Default::default(),
             attack_ticks: None,
             using: None,

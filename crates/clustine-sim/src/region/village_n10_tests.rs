@@ -132,6 +132,8 @@ fn region_at(day: u64, reach: i32, kept: Kept, beds: &[BlockPos]) -> Region {
         dimension: Default::default(),
         spawn: Some(Vec3::new(0.5, FEET, 0.5)),
         starting_inventory: Default::default(),
+        default_mode: clustine_world::GameMode::Creative,
+        force_mode: false,
         return_after: u64::MAX,
         lowest_y: -64,
         seed: SEED,
