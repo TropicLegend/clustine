@@ -13,10 +13,11 @@
 //! (`Container.getMaxStackSize`), so a slot holds a full stack of its item at most.
 
 use clustine_blocks::data::is_class;
-use clustine_data::{BlockClass, ITEMS, items};
-use clustine_world::{HOTBAR_SLOTS, MAIN_START, OFF_HAND};
+use clustine_data::{BlockClass, ITEMS, ItemComponents, items};
+use clustine_world::{ARMOUR_START, HOTBAR_SLOTS, MAIN_START, OFF_HAND};
 
 use crate::api::{ClickKind, Inventory, ItemStack, MenuKind};
+use crate::living::slots;
 use crate::physics::item::max_stack_size;
 use crate::state::{Drag, DragKind, Menu};
 
@@ -64,6 +65,19 @@ pub(crate) trait MerchantSide {
 /// The slot of a merchant's window that shows what the trade gives.
 const MERCHANT_RESULT: usize = 2;
 
+/// The player's inventory screen (`InventoryMenu.<init>` @18-137, v3): the result (0),
+/// the 2×2 grid (1-4, `addCraftingGridSlots`), the armour from the head down (5-8, an
+/// `ArmorSlot` each over inventory slot `39 - i`, @37-105), the main inventory (9-35)
+/// and the hotbar (36-44, `addStandardInventorySlots`), then the off hand (45,
+/// `InventoryMenu$1` over inventory slot 40).
+const INVENTORY_RESULT: usize = 0;
+const INVENTORY_ARMOUR: usize = 5;
+const INVENTORY_MAIN: usize = 9;
+const INVENTORY_HOTBAR: usize = 36;
+const INVENTORY_OFF_HAND: usize = 45;
+/// One past the inventory screen's last slot.
+const INVENTORY_END: usize = 46;
+
 /// What the two equipment slots of a horse's menu (`HorseInventoryMenu`'s `ArmorSlot`s)
 /// ask of the horse: its type, which the item's allowed entities name, and whether it
 /// may use each slot now (`canUseSlot`: a saddle only grown and tamed).
@@ -86,6 +100,20 @@ pub(crate) struct Clicked {
     pub(crate) thrown: Vec<ItemStack>,
     /// Whether the click was refused as the game refuses it, changing nothing.
     pub(crate) refused: bool,
+    /// The inventory screen's equipment slots (5-8 the armour, 45 the off hand) that the
+    /// click set by the player to another item or other components than they held, in
+    /// the order it set them, once for each time: each is the game's
+    /// `setByPlayer(new, old)` → `LivingEntity.onEquipItem(slot, old, new)` (`ArmorSlot`
+    /// @0-19 and `InventoryMenu$1` @0-18, v3), which does nothing where
+    /// `isSameItemSameComponents(old, new)` (n5 LivingEntity @18-23). A slot emptied by a
+    /// take is one (the `UNEQUIP` game event, no sound). The region plays the sound (the
+    /// new stack's `equippable` sound where its slot is this one, @34-107) and emits the
+    /// event (@110-133); whether the player is a spectator, silent or in its first tick
+    /// (@0-33) is the region's to ask. The off hand set by a `SWAP` with button 40 is
+    /// written by `Inventory.setItem` (AbstractContainerMenu @1167, @1258, @1361), not by
+    /// its slot, and is not reported, as the game calls no `onEquipItem` for it (n6
+    /// Inventory.setItem @44: `EntityEquipment.set`). Empty for any other menu.
+    pub(crate) equipped: Vec<usize>,
 }
 
 /// `AbstractContainerMenu.clicked` of the player's click, for a player who is creative
@@ -109,6 +137,7 @@ pub(crate) fn click(
     let refused = Clicked {
         thrown: Vec::new(),
         refused: true,
+        equipped: Vec::new(),
     };
     // The region hands the menu's container with the menu; one of another size is not
     // this menu's, and no rule below may index past it.
@@ -124,11 +153,13 @@ pub(crate) fn click(
         menu,
         creative,
         thrown: Vec::new(),
+        equipped: Vec::new(),
     };
     match clicker.do_click(slot, i32::from(button), kind) {
         Ok(()) => Clicked {
             thrown: clicker.thrown,
             refused: false,
+            equipped: clicker.equipped,
         },
         Err(Malformed) => refused,
     }
@@ -150,6 +181,15 @@ pub(crate) fn menu_slot(slots: &MenuSlots<'_>, index: usize) -> Option<Option<It
 /// The inventory slot shown in the menu's slot `index`, if it shows one (the edge maps
 /// a change of the inventory onto the menu with it).
 pub(crate) fn inventory_slot_of(kind: MenuKind, index: usize) -> Option<usize> {
+    if kind == MenuKind::Inventory {
+        return match index {
+            INVENTORY_ARMOUR..INVENTORY_MAIN => Some(ARMOUR_START + INVENTORY_MAIN - 1 - index),
+            INVENTORY_MAIN..INVENTORY_HOTBAR => Some(index),
+            INVENTORY_HOTBAR..INVENTORY_OFF_HAND => Some(index - INVENTORY_HOTBAR),
+            INVENTORY_OFF_HAND => Some(OFF_HAND),
+            _ => None,
+        };
+    }
     let from = index.checked_sub(kind.container_slots())?;
     // `addStandardInventorySlots`: the main inventory's 27 first, then the hotbar.
     let main = ITEM_SLOTS - HOTBAR_SLOTS;
@@ -162,7 +202,8 @@ pub(crate) fn inventory_slot_of(kind: MenuKind, index: usize) -> Option<usize> {
     }
 }
 
-/// The menu slot that shows the inventory slot `slot` (0 to 35), if one does.
+/// The menu slot that shows the inventory slot `slot`, if one does: 0 to 35 in every
+/// menu, and in the inventory screen the armour (36 to 39) and the off hand (40) too.
 #[cfg_attr(
     not(test),
     expect(
@@ -171,6 +212,15 @@ pub(crate) fn inventory_slot_of(kind: MenuKind, index: usize) -> Option<usize> {
     )
 )]
 pub(crate) fn menu_slot_of(kind: MenuKind, slot: usize) -> Option<usize> {
+    if kind == MenuKind::Inventory {
+        return match slot {
+            0..HOTBAR_SLOTS => Some(INVENTORY_HOTBAR + slot),
+            MAIN_START..ITEM_SLOTS => Some(slot),
+            ARMOUR_START..OFF_HAND => Some(INVENTORY_MAIN - 1 - (slot - ARMOUR_START)),
+            OFF_HAND => Some(INVENTORY_OFF_HAND),
+            _ => None,
+        };
+    }
     let main = ITEM_SLOTS - HOTBAR_SLOTS;
     let from = if slot < HOTBAR_SLOTS {
         main + slot
@@ -222,6 +272,8 @@ struct Clicker<'s, 'a> {
     menu: &'s mut Menu,
     creative: bool,
     thrown: Vec<ItemStack>,
+    /// The equipment slots set by the player so far ([`Clicked::equipped`]).
+    equipped: Vec<usize>,
 }
 
 impl Clicker<'_, '_> {
@@ -363,7 +415,10 @@ impl Clicker<'_, '_> {
                     let index = usize::from(index);
                     // The carried stack does not change in the loop: each slot's share
                     // depends only on the slot, the carried stack and how many slots
-                    // there are, so the game's `HashSet` order does not matter.
+                    // there are, so the game's `HashSet` order does not matter. It
+                    // matters only to the order of the equipment slots reported
+                    // (`Clicked::equipped`), which here is the order dragged over (named:
+                    // the game's is its `HashSet`'s, of no order a client can know).
                     if self.quick_replace(index, &carried)
                         && self.may_place(index, &carried)
                         && (drag.kind == DragKind::Clone
@@ -473,6 +528,9 @@ impl Clicker<'_, '_> {
         if let MenuKind::Merchant { .. } = self.slots.kind {
             return self.quick_move_merchant(slot);
         }
+        if self.slots.kind == MenuKind::Inventory {
+            return self.quick_move_inventory(slot);
+        }
         let mut stack = self.get(slot)?;
         let copy = stack.clone();
         let containers = self.slots.kind.container_slots();
@@ -564,13 +622,100 @@ impl Clicker<'_, '_> {
         Some(copy)
     }
 
+    /// `InventoryMenu.quickMoveStack` (v3 InventoryMenu @0-390): the result to the main
+    /// inventory and the hotbar, last first (@45-75: `moveItemStackTo(9, 45, true)`, the
+    /// end not taken, so never the off hand); the grid and the armour to them, first
+    /// first (@78-134). From any other slot (9-45), by the slot the player would wear the
+    /// stack in (`getEquipmentSlotForItem`, n5 LivingEntity @10735-10753: the
+    /// `equippable`'s slot, else the main hand): armour into its own armour slot if that
+    /// is empty (@135-200: menu slot `8 - index`, and nothing else is tried if it will
+    /// not go there), else an off-hand item into an empty off hand (@203-246), else the
+    /// main inventory to the hotbar (@247-276), the hotbar to the main inventory
+    /// (@277-306), and the off hand to both (@307-324). Then (@325-389) the slot is
+    /// written back (`setByPlayer(EMPTY)` if emptied, which is an equipment slot's
+    /// `onEquipItem`); an unchanged count answers nothing, which ends the click's loop;
+    /// the slot's `onTake` runs; and what the result could not move is thrown
+    /// (`player.drop(stack, false)`).
+    fn quick_move_inventory(&mut self, slot: usize) -> Option<ItemStack> {
+        let mut stack = self.get(slot)?;
+        let copy = stack.clone();
+        let worn = equipment_slot_for(&copy);
+        let moved = match slot {
+            INVENTORY_RESULT => self.move_to(&mut stack, INVENTORY_MAIN, INVENTORY_OFF_HAND, true),
+            _ if slot < INVENTORY_MAIN => {
+                self.move_to(&mut stack, INVENTORY_MAIN, INVENTORY_OFF_HAND, false)
+            }
+            _ => {
+                if let Some(armour) = armour_menu_slot(worn)
+                    && self.get(armour).is_none()
+                {
+                    self.move_to(&mut stack, armour, armour + 1, false)
+                } else if worn == slots::OFF_HAND && self.get(INVENTORY_OFF_HAND).is_none() {
+                    self.move_to(&mut stack, INVENTORY_OFF_HAND, INVENTORY_END, false)
+                } else if slot < INVENTORY_HOTBAR {
+                    self.move_to(&mut stack, INVENTORY_HOTBAR, INVENTORY_OFF_HAND, false)
+                } else if slot < INVENTORY_OFF_HAND {
+                    self.move_to(&mut stack, INVENTORY_MAIN, INVENTORY_HOTBAR, false)
+                } else {
+                    self.move_to(&mut stack, INVENTORY_MAIN, INVENTORY_OFF_HAND, false)
+                }
+            }
+        };
+        if !moved {
+            return None;
+        }
+        let rest = present(Some(stack.clone()));
+        self.set(slot, rest.clone());
+        if stack.count == copy.count {
+            return None;
+        }
+        if slot == INVENTORY_RESULT {
+            // The game throws the very stack the result slot still holds, and its
+            // `onTake` has by then put the grid's new result into the slot
+            // (`slotChangedCraftingGrid`), so the rest leaves the slot. The slot is
+            // emptied first so that the result side (V3c) sees the take and refills it.
+            if rest.is_some() {
+                self.set(slot, None);
+            }
+            self.result_taken();
+            self.thrown.extend(rest);
+        }
+        Some(copy)
+    }
+
     /// Whether the menu is a merchant's.
     fn is_merchant(&self) -> bool {
         matches!(self.slots.kind, MenuKind::Merchant { .. })
     }
 
-    /// `Slot.mayPickup`: true but for a merchant's result, which asks the merchant.
+    /// The menu's result slot, whose stack the menu makes and which takes nothing
+    /// placed: a merchant's trade (`MerchantResultSlot`) and the inventory screen's
+    /// craft (`ResultSlot`).
+    fn result_slot(&self) -> Option<usize> {
+        match self.slots.kind {
+            MenuKind::Merchant { .. } => Some(MERCHANT_RESULT),
+            MenuKind::Inventory => Some(INVENTORY_RESULT),
+            _ => None,
+        }
+    }
+
+    /// Whether `index` is the menu's result slot.
+    fn is_result(&self, index: usize) -> bool {
+        self.result_slot() == Some(index)
+    }
+
+    /// `Slot.mayPickup`: true but for a merchant's result, which asks the merchant, and
+    /// an armour slot of the inventory screen that holds a stack with Curse of Binding
+    /// (`ArmorSlot.mayPickup` @0-36: `EnchantmentHelper.has(stack,
+    /// PREVENT_ARMOR_CHANGE)`), unless the player is creative. The game asks
+    /// `Player.isCreative()`, the game mode; the click's `creative` is the player's
+    /// `instabuild`, which only the creative mode gives, so the two agree.
     fn may_pickup(&self, index: usize) -> bool {
+        if self.slots.kind == MenuKind::Inventory
+            && (INVENTORY_ARMOUR..INVENTORY_MAIN).contains(&index)
+        {
+            return self.creative || !self.get(index).is_some_and(|here| binds(&here));
+        }
         if !(self.is_merchant() && index == MERCHANT_RESULT) {
             return true;
         }
@@ -580,7 +725,10 @@ impl Clicker<'_, '_> {
             .is_some_and(|merchant| merchant.may_pickup(self.slots.container))
     }
 
-    /// `MerchantResultSlot.onTake`: the merchant's trade for the result taken.
+    /// The result slot's `onTake`: for a merchant's window, the merchant's trade for the
+    /// result taken (`MerchantResultSlot.onTake`). The inventory screen's result is
+    /// inert until V3c (`ResultSlot.onTake`: the craft, its remainders and the grid's
+    /// new result); its result side belongs here, as the merchant's does.
     fn result_taken(&mut self) {
         let MenuSlots {
             container,
@@ -659,7 +807,7 @@ impl Clicker<'_, '_> {
                 }
                 self.slots.inventory.set(held, Some(here));
                 self.set(slot, None);
-                if self.is_merchant() && slot == MERCHANT_RESULT {
+                if self.is_result(slot) {
                     self.result_taken();
                 }
             }
@@ -677,7 +825,9 @@ impl Clicker<'_, '_> {
                 }
             }
             (Some(mut stack), Some(here)) => {
-                if self.may_place(slot, &stack) {
+                // 1271-1288: the slot must give up what it holds and take the held stack
+                // (a cursed helmet stays on).
+                if self.may_pickup(slot) && self.may_place(slot, &stack) {
                     let most = self.slot_max(slot, &stack);
                     if stack.count > most {
                         // The held stack is split where it lies, and the slot's stack
@@ -760,7 +910,11 @@ impl Clicker<'_, '_> {
                 let Some(here) = self.get(index) else {
                     continue;
                 };
-                if !self.quick_replace(index, &carried) {
+                // The inventory screen gathers nothing from its result
+                // (`InventoryMenu.canTakeItemForPickAll` @0-25).
+                if !self.quick_replace(index, &carried)
+                    || (self.slots.kind == MenuKind::Inventory && index == INVENTORY_RESULT)
+                {
                     continue;
                 }
                 if pass == 0 && here.count == max_stack_size(&here) {
@@ -790,9 +944,27 @@ impl Clicker<'_, '_> {
         menu_slot(self.slots, index).flatten()
     }
 
-    /// Puts `stack` into the menu's slot `index` (`Slot.set`).
+    /// Puts `stack` into the menu's slot `index` (`Slot.set`, or `setByPlayer`).
+    ///
+    /// Every write of a click to a slot is one the game makes by `setByPlayer` (a
+    /// `safeInsert`, a `tryRemove` that empties the slot, a swap, a drag's share, a
+    /// placing by `moveItemStackTo`, a quick move's emptied slot) or one that leaves the
+    /// same item with the same components (a partial take, a merge, `setChanged`), so an
+    /// equipment slot of the inventory screen whose item or components change here is
+    /// one the game's `onEquipItem` hears of ([`Clicked::equipped`]).
     fn set(&mut self, index: usize, stack: Option<ItemStack>) {
         let stack = present(stack);
+        if self.slots.kind == MenuKind::Inventory && is_equipment_slot(index) {
+            let old = self.get(index);
+            let same = match (&old, &stack) {
+                (None, None) => true,
+                (Some(old), Some(new)) => old.same_kind(new),
+                _ => false,
+            };
+            if !same {
+                self.equipped.push(index);
+            }
+        }
         if index < self.slots.container.len() {
             if let Some(place) = self.slots.container.get_mut(index) {
                 *place = stack;
@@ -804,8 +976,19 @@ impl Clicker<'_, '_> {
 
     /// `Slot.mayPlace`: true but for a shulker box's slot, which refuses what may not go
     /// inside a container (`ShulkerBoxSlot`), and a horse's saddle and body, which take
-    /// only what the horse may wear there (`ArmorSlot`: `isEquippableInSlot`).
+    /// only what the horse may wear there (`ArmorSlot`: `isEquippableInSlot`); a result,
+    /// which takes nothing (`MerchantResultSlot`, `ResultSlot.mayPlace` @0-1, v3); and the
+    /// inventory screen's armour, which takes only what the player wears there
+    /// (`ArmorSlot.mayPlace` @0-12).
     fn may_place(&self, index: usize, stack: &ItemStack) -> bool {
+        if self.is_result(index) {
+            return false;
+        }
+        if self.slots.kind == MenuKind::Inventory
+            && let Some(slot) = armour_equipment_slot(index)
+        {
+            return equippable_in_slot(stack, slot);
+        }
         if let MenuKind::Mount { .. } = self.slots.kind
             && index <= MOUNT_BODY
         {
@@ -820,20 +1003,21 @@ impl Clicker<'_, '_> {
             return usable
                 && crate::mobs::types::equine::equippable_by(stack.item, slot, facts.kind);
         }
-        if self.is_merchant() && index == MERCHANT_RESULT {
-            return false;
-        }
         !(self.slots.kind == MenuKind::ShulkerBox
             && index < self.slots.kind.container_slots()
             && !fits_inside_containers(stack.item))
     }
 
     /// `Slot.getMaxStackSize(stack)`: the container's most, or the item's if less; one
-    /// in a horse's saddle and body (`ArmorSlot`).
+    /// in a horse's saddle and body and in the inventory screen's armour (`ArmorSlot.
+    /// getMaxStackSize` @0-1).
     fn slot_max(&self, index: usize, stack: &ItemStack) -> i32 {
         if let MenuKind::Mount { .. } = self.slots.kind
             && index <= MOUNT_BODY
         {
+            return 1;
+        }
+        if self.slots.kind == MenuKind::Inventory && armour_equipment_slot(index).is_some() {
             return 1;
         }
         CONTAINER_MAX.min(max_stack_size(stack))
@@ -854,9 +1038,10 @@ impl Clicker<'_, '_> {
         if !self.may_pickup(index) {
             return None;
         }
-        // A merchant's result is taken whole (`MerchantContainer.removeItem`), and the
-        // take is the trade (`safeTake`'s and the pickup's `onTake`).
-        let result = self.is_merchant() && index == MERCHANT_RESULT;
+        // A result is taken whole (`MerchantContainer.removeItem`; `ResultContainer.
+        // removeItem`, `ContainerHelper.takeItem`, v3 ResultContainer.txt 53-59), and the
+        // take is the trade or the craft (`safeTake`'s and the pickup's `onTake`).
+        let result = self.is_result(index);
         let count = if result { here.count } else { count };
         // `allowModification`: `mayPickup` (always) and `mayPlace` of what it holds.
         if !self.may_place(index, &here) && limit < here.count {
@@ -935,6 +1120,75 @@ fn fits_inside_containers(item: i32) -> bool {
         .and_then(|item| ITEMS.get(item))
         .and_then(|item| item.block)
         .is_some_and(|block| is_class(block, BlockClass::ShulkerBoxBlock))
+}
+
+/// Whether the inventory screen's slot `index` is one of its equipment slots, whose
+/// `setByPlayer` tells the player of what it wears (the armour and the off hand).
+fn is_equipment_slot(index: usize) -> bool {
+    (INVENTORY_ARMOUR..INVENTORY_MAIN).contains(&index) || index == INVENTORY_OFF_HAND
+}
+
+/// The `EquipmentSlot` (by ordinal, as [`slots`] numbers them) of the inventory screen's
+/// armour slot `index`, if it is one: 5 the head down to 8 the feet (`SLOT_IDS`).
+fn armour_equipment_slot(index: usize) -> Option<u8> {
+    match index {
+        5 => Some(slots::HEAD),
+        6 => Some(slots::CHEST),
+        7 => Some(slots::LEGS),
+        8 => Some(slots::FEET),
+        _ => None,
+    }
+}
+
+/// The inventory screen's armour slot for the `EquipmentSlot` `slot`, if it is a
+/// `HUMANOID_ARMOR` one: `8 - slot.getIndex()` (InventoryMenu @146-178), the index of
+/// the feet being 0 and of the head 3.
+fn armour_menu_slot(slot: u8) -> Option<usize> {
+    (INVENTORY_ARMOUR..INVENTORY_MAIN).find(|&index| armour_equipment_slot(index) == Some(slot))
+}
+
+/// `LivingEntity.getEquipmentSlotForItem(stack)` for a player (n5 @10735-10753): the
+/// slot of the item's `equippable` where the player can use it, else the main hand. A
+/// player can use every slot that matters here; an animal's body or a saddle is neither
+/// armour nor the off hand, so the quick move treats it as the main hand either way.
+///
+/// Named difference: the `equippable` read is the item's own; a stack whose patch
+/// changes or removes it (by a command, say) is read as its item. The stacks keep no
+/// such component in Clustine.
+fn equipment_slot_for(stack: &ItemStack) -> u8 {
+    equippable(stack).map_or(slots::MAIN_HAND, |equippable| equippable.slot)
+}
+
+/// `LivingEntity.isEquippableInSlot(stack, slot)` for a player (n5 @10755-10792): with
+/// no `equippable`, the main hand only; with one, its own slot (`canUseSlot`, true for a
+/// player) where `canBeEquippedBy` the player.
+///
+/// Named difference: `canBeEquippedBy` reads the component's `allowed_entities`, which
+/// the generated data does not keep; no item of 26.3 whose slot is a player's armour
+/// names any, so every one is allowed. The item's own component is read, as in
+/// [`equipment_slot_for`].
+fn equippable_in_slot(stack: &ItemStack, slot: u8) -> bool {
+    match equippable(stack) {
+        None => slot == slots::MAIN_HAND,
+        Some(equippable) => equippable.slot == slot,
+    }
+}
+
+/// The `minecraft:equippable` of the stack's item, where it has one.
+fn equippable(stack: &ItemStack) -> Option<clustine_data::Equippable> {
+    usize::try_from(stack.item)
+        .ok()
+        .filter(|item| *item < ITEMS.len())
+        .and_then(|_| ItemComponents::of(stack.item).equippable)
+}
+
+/// `EnchantmentHelper.has(stack, PREVENT_ARMOR_CHANGE)`: of 26.3's enchantments only
+/// Curse of Binding has that effect, read from the stack's `minecraft:enchantments`.
+fn binds(stack: &ItemStack) -> bool {
+    stack
+        .components
+        .enchantment_level("minecraft:binding_curse")
+        > 0
 }
 
 /// `Inventory.getMaxStackSize(stack)`: the inventory's most, or the item's if less.
@@ -1861,5 +2115,460 @@ mod tests {
         assert_eq!(inventory.get(5), Some(stack(STONE, 64)));
         assert!(add(&mut inventory, 0, None, &mut rest, true));
         assert_eq!(rest.count, 0);
+    }
+
+    // The inventory screen (window 0): 0 the result, 1-4 the grid, 5-8 the armour from
+    // the head down, 9-35 the main inventory, 36-44 the hotbar, 45 the off hand.
+    const HELMET: i32 = items::IRON_HELMET;
+    const CHESTPLATE: i32 = items::DIAMOND_CHESTPLATE;
+    const BOOTS: i32 = items::IRON_BOOTS;
+    const SHIELD: i32 = items::SHIELD;
+    const TORCH: i32 = items::TORCH;
+
+    /// A stack of `item` with Curse of Binding.
+    fn cursed(item: i32) -> Option<ItemStack> {
+        let mut stack = ItemStack::new(item, 1);
+        stack
+            .components
+            .set(clustine_world::Component::Enchantments(vec![(
+                "minecraft:binding_curse".to_owned(),
+                1,
+            )]));
+        Some(stack)
+    }
+
+    #[test]
+    fn the_inventory_screen_lays_out_its_own_slots_the_armour_the_inventory_and_the_off_hand() {
+        let kind = MenuKind::Inventory;
+        for index in 0..5 {
+            assert_eq!(inventory_slot_of(kind, index), None);
+        }
+        assert_eq!(inventory_slot_of(kind, 5), Some(39));
+        assert_eq!(inventory_slot_of(kind, 6), Some(38));
+        assert_eq!(inventory_slot_of(kind, 7), Some(37));
+        assert_eq!(inventory_slot_of(kind, 8), Some(36));
+        assert_eq!(inventory_slot_of(kind, 9), Some(9));
+        assert_eq!(inventory_slot_of(kind, 35), Some(35));
+        assert_eq!(inventory_slot_of(kind, 36), Some(0));
+        assert_eq!(inventory_slot_of(kind, 44), Some(8));
+        assert_eq!(inventory_slot_of(kind, 45), Some(OFF_HAND));
+        assert_eq!(inventory_slot_of(kind, 46), None);
+        assert_eq!(menu_slot_of(kind, 0), Some(36));
+        assert_eq!(menu_slot_of(kind, 8), Some(44));
+        assert_eq!(menu_slot_of(kind, 9), Some(9));
+        assert_eq!(menu_slot_of(kind, 35), Some(35));
+        assert_eq!(menu_slot_of(kind, 36), Some(8));
+        assert_eq!(menu_slot_of(kind, 39), Some(5));
+        assert_eq!(menu_slot_of(kind, 40), Some(45));
+        assert_eq!(menu_slot_of(kind, 41), None);
+        // Every inventory slot is shown once, and the two maps are each other's inverse.
+        for slot in 0..INVENTORY_SLOTS {
+            let index = menu_slot_of(kind, slot).expect("the screen shows every slot");
+            assert_eq!(inventory_slot_of(kind, index), Some(slot));
+        }
+        // The other menus show no armour and no off hand.
+        assert_eq!(menu_slot_of(MenuKind::Rows3, 36), None);
+        assert_eq!(menu_slot_of(MenuKind::Rows3, 40), None);
+        assert_eq!(menu_slot_of(MenuKind::Rows3, 0), Some(54));
+    }
+
+    #[test]
+    fn a_menu_slot_of_the_inventory_screen_reads_the_grid_and_the_inventory() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.container[2] = stack(STONE, 3);
+        fixture.inventory.set(39, stack(HELMET, 1));
+        fixture.inventory.set(OFF_HAND, stack(SHIELD, 1));
+        assert_eq!(fixture.at(2), stack(STONE, 3));
+        assert_eq!(fixture.at(5), stack(HELMET, 1));
+        assert_eq!(fixture.at(45), stack(SHIELD, 1));
+        assert_eq!(fixture.at(0), None);
+    }
+
+    #[test]
+    fn a_helmet_is_put_on_by_two_clicks_and_its_slot_reported() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.put(36, stack(HELMET, 1));
+        let taken = fixture.survival(36, 0, ClickKind::Pickup);
+        assert_eq!(taken.equipped, Vec::<usize>::new());
+        assert_eq!(fixture.menu.carried, stack(HELMET, 1));
+        let put = fixture.survival(5, 0, ClickKind::Pickup);
+        assert!(!put.refused);
+        assert_eq!(put.equipped, vec![5]);
+        assert_eq!(fixture.inventory.get(39), Some(stack(HELMET, 1)));
+        assert_eq!(fixture.menu.carried, None);
+    }
+
+    #[test]
+    fn a_quick_move_from_the_hotbar_puts_a_helmet_on() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.put(36, stack(HELMET, 1));
+        let clicked = fixture.survival(36, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.at(5), stack(HELMET, 1));
+        assert_eq!(fixture.at(36), None);
+        assert_eq!(clicked.equipped, vec![5]);
+    }
+
+    #[test]
+    fn a_quick_move_of_boots_puts_them_on_the_feet() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.put(20, stack(BOOTS, 1));
+        fixture.survival(20, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.inventory.get(36), Some(stack(BOOTS, 1)));
+    }
+
+    #[test]
+    fn a_quick_move_of_a_chestplate_when_the_chest_is_full_goes_to_the_main_inventory() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.put(6, named(CHESTPLATE, 1, "worn"));
+        fixture.put(36, stack(CHESTPLATE, 1));
+        let clicked = fixture.survival(36, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.at(6), named(CHESTPLATE, 1, "worn"));
+        assert_eq!(fixture.at(9), stack(CHESTPLATE, 1));
+        assert_eq!(fixture.at(36), None);
+        assert_eq!(clicked.equipped, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn a_quick_move_takes_armour_off_into_the_main_inventory_then_the_hotbar() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.put(5, stack(HELMET, 1));
+        for index in 9..36 {
+            fixture.put(index, stack(DIRT, 64));
+        }
+        let clicked = fixture.survival(5, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.at(5), None);
+        assert_eq!(fixture.at(36), stack(HELMET, 1));
+        assert_eq!(clicked.equipped, vec![5]);
+    }
+
+    #[test]
+    fn a_shield_quick_moves_into_an_empty_off_hand_and_else_between_the_inventories() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.put(9, stack(SHIELD, 1));
+        let clicked = fixture.survival(9, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.at(45), stack(SHIELD, 1));
+        assert_eq!(fixture.at(9), None);
+        assert_eq!(clicked.equipped, vec![45]);
+        // With the off hand full, a second shield goes from the main inventory to the
+        // hotbar.
+        fixture.put(10, stack(SHIELD, 1));
+        let clicked = fixture.survival(10, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.at(36), stack(SHIELD, 1));
+        assert_eq!(clicked.equipped, Vec::<usize>::new());
+        // And the off hand's own goes to the main inventory first.
+        let clicked = fixture.survival(45, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.at(9), stack(SHIELD, 1));
+        assert_eq!(fixture.at(45), None);
+        assert_eq!(clicked.equipped, vec![45]);
+    }
+
+    #[test]
+    fn an_armour_slot_refuses_what_is_not_worn_there() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.menu.carried = stack(HELMET, 1);
+        let clicked = fixture.survival(6, 0, ClickKind::Pickup);
+        assert_eq!(fixture.at(6), None);
+        assert_eq!(fixture.menu.carried, stack(HELMET, 1));
+        assert_eq!(clicked.equipped, Vec::<usize>::new());
+        fixture.menu.carried = stack(STONE, 5);
+        fixture.survival(5, 0, ClickKind::Pickup);
+        assert_eq!(fixture.at(5), None);
+        // Nor by a swap from the hotbar, nor by a drag.
+        fixture.put(36, stack(STONE, 1));
+        fixture.survival(5, 0, ClickKind::Swap);
+        assert_eq!(fixture.at(5), None);
+        assert_eq!(fixture.at(36), stack(STONE, 1));
+        fixture.drag(0, &[5, 6, 10, 11], false);
+        assert_eq!(fixture.at(5), None);
+        assert_eq!(fixture.at(6), None);
+        assert_eq!(fixture.at(10), stack(STONE, 2));
+        assert_eq!(fixture.at(11), stack(STONE, 2));
+        assert_eq!(fixture.menu.carried, stack(STONE, 1));
+    }
+
+    #[test]
+    fn an_armour_slot_holds_one_however_many_are_carried() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        // A carved pumpkin is worn on the head and stacks to 64.
+        fixture.menu.carried = stack(items::CARVED_PUMPKIN, 10);
+        let clicked = fixture.survival(5, 0, ClickKind::Pickup);
+        assert_eq!(fixture.at(5), stack(items::CARVED_PUMPKIN, 1));
+        assert_eq!(fixture.menu.carried, stack(items::CARVED_PUMPKIN, 9));
+        assert_eq!(clicked.equipped, vec![5]);
+        // Another of the same changes nothing.
+        let clicked = fixture.survival(5, 0, ClickKind::Pickup);
+        assert_eq!(fixture.at(5), stack(items::CARVED_PUMPKIN, 1));
+        assert_eq!(fixture.menu.carried, stack(items::CARVED_PUMPKIN, 9));
+        assert_eq!(clicked.equipped, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn a_helmet_with_curse_of_binding_stays_on_for_a_survival_player() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.put(5, cursed(HELMET));
+        fixture.put(36, stack(HELMET, 1));
+        for kind in [ClickKind::Pickup, ClickKind::QuickMove, ClickKind::Throw] {
+            let clicked = fixture.survival(5, 0, kind);
+            assert!(!clicked.refused);
+            assert_eq!(clicked.equipped, Vec::<usize>::new());
+            assert_eq!(fixture.at(5), cursed(HELMET));
+        }
+        fixture.survival(5, 1, ClickKind::Throw);
+        // A swap with a hotbar slot that holds another helmet, or that is empty.
+        fixture.survival(5, 0, ClickKind::Swap);
+        fixture.survival(5, 1, ClickKind::Swap);
+        assert_eq!(fixture.at(5), cursed(HELMET));
+        assert_eq!(fixture.at(36), stack(HELMET, 1));
+        assert_eq!(fixture.at(37), None);
+        assert_eq!(fixture.menu.carried, None);
+        // A helmet carried onto it does not swap.
+        fixture.menu.carried = stack(HELMET, 1);
+        fixture.survival(5, 0, ClickKind::Pickup);
+        assert_eq!(fixture.at(5), cursed(HELMET));
+        assert_eq!(fixture.menu.carried, stack(HELMET, 1));
+    }
+
+    #[test]
+    fn a_helmet_with_curse_of_binding_is_taken_off_by_a_creative_player() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.put(5, cursed(HELMET));
+        let clicked = fixture.click(5, 0, ClickKind::Pickup, true);
+        assert_eq!(fixture.at(5), None);
+        assert_eq!(fixture.menu.carried, cursed(HELMET));
+        assert_eq!(clicked.equipped, vec![5]);
+    }
+
+    #[test]
+    fn a_quick_move_from_the_grid_goes_to_the_main_inventory_first_and_never_the_off_hand() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.container[1] = stack(STONE, 10);
+        fixture.survival(1, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.container[1], None);
+        assert_eq!(fixture.at(9), stack(STONE, 10));
+        // With the inventory full, nothing moves, not even into an off hand of the item
+        // with room (`moveItemStackTo(9, 45)`: the end is not taken).
+        for index in 9..45 {
+            fixture.put(index, stack(DIRT, 64));
+        }
+        fixture.put(45, stack(STONE, 1));
+        fixture.container[4] = stack(STONE, 10);
+        fixture.survival(4, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.container[4], stack(STONE, 10));
+        assert_eq!(fixture.at(45), stack(STONE, 1));
+    }
+
+    #[test]
+    fn a_quick_move_goes_from_the_main_inventory_to_the_hotbar_and_back() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.put(12, stack(STONE, 20));
+        fixture.survival(12, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.at(12), None);
+        assert_eq!(fixture.at(36), stack(STONE, 20));
+        fixture.survival(36, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.at(36), None);
+        assert_eq!(fixture.at(9), stack(STONE, 20));
+        // Stone in the off hand goes to the main inventory, merging first.
+        fixture.put(45, stack(STONE, 5));
+        let clicked = fixture.survival(45, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.at(45), None);
+        assert_eq!(fixture.at(9), stack(STONE, 25));
+        assert_eq!(clicked.equipped, vec![45]);
+        // A full hotbar keeps the main inventory's stack where it is.
+        for index in 36..45 {
+            fixture.put(index, stack(DIRT, 64));
+        }
+        let before = fixture.snapshot();
+        fixture.survival(9, 0, ClickKind::QuickMove);
+        assert_eq!(fixture.snapshot(), before);
+    }
+
+    #[test]
+    fn nothing_is_placed_in_the_result_and_an_empty_result_gives_nothing() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.menu.carried = stack(STONE, 10);
+        for button in [0, 1] {
+            let clicked = fixture.survival(0, button, ClickKind::Pickup);
+            assert!(!clicked.refused);
+        }
+        assert_eq!(fixture.container[0], None);
+        assert_eq!(fixture.menu.carried, stack(STONE, 10));
+        // A drag passes over it.
+        fixture.drag(0, &[0, 1, 2], false);
+        assert_eq!(fixture.container[0], None);
+        assert_eq!(fixture.container[1], stack(STONE, 5));
+        assert_eq!(fixture.container[2], stack(STONE, 5));
+        assert_eq!(fixture.menu.carried, None);
+        // A swap from the hotbar puts nothing into it.
+        fixture.put(36, stack(STONE, 1));
+        fixture.survival(0, 0, ClickKind::Swap);
+        assert_eq!(fixture.container[0], None);
+        assert_eq!(fixture.at(36), stack(STONE, 1));
+        // Every way of taking from it while it is empty does nothing.
+        let before = fixture.snapshot();
+        for (button, kind) in [
+            (0, ClickKind::Pickup),
+            (1, ClickKind::Pickup),
+            (0, ClickKind::QuickMove),
+            (1, ClickKind::Throw),
+            (2, ClickKind::Clone),
+        ] {
+            let clicked = fixture.click(0, button, kind, true);
+            assert!(clicked.thrown.is_empty());
+        }
+        assert_eq!(fixture.snapshot(), before);
+    }
+
+    #[test]
+    fn a_pickup_all_gathers_from_the_inventory_screen_but_never_its_result() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        // A stack in the result as V3c will make one, which the double click passes over.
+        fixture.container[0] = stack(STONE, 4);
+        fixture.container[3] = stack(STONE, 2);
+        fixture.put(45, stack(STONE, 3));
+        fixture.put(20, stack(STONE, 7));
+        fixture.menu.carried = stack(STONE, 1);
+        fixture.survival(10, 0, ClickKind::PickupAll);
+        assert_eq!(fixture.menu.carried, stack(STONE, 13));
+        assert_eq!(fixture.container[0], stack(STONE, 4));
+        assert_eq!(fixture.container[3], None);
+        assert_eq!(fixture.at(45), None);
+        assert_eq!(fixture.at(20), None);
+    }
+
+    #[test]
+    fn a_result_is_taken_whole_and_not_merged_into_a_cursor_it_overfills() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.container[0] = stack(STONE, 4);
+        // A right click takes it all (`ResultContainer.removeItem`).
+        fixture.survival(0, 1, ClickKind::Pickup);
+        assert_eq!(fixture.menu.carried, stack(STONE, 4));
+        assert_eq!(fixture.container[0], None);
+        // Onto a cursor of the same item it goes only if all of it fits.
+        fixture.container[0] = stack(STONE, 4);
+        fixture.menu.carried = stack(STONE, 62);
+        fixture.survival(0, 0, ClickKind::Pickup);
+        assert_eq!(fixture.container[0], stack(STONE, 4));
+        assert_eq!(fixture.menu.carried, stack(STONE, 62));
+        fixture.menu.carried = stack(STONE, 60);
+        fixture.survival(0, 0, ClickKind::Pickup);
+        assert_eq!(fixture.container[0], None);
+        assert_eq!(fixture.menu.carried, stack(STONE, 64));
+    }
+
+    #[test]
+    fn a_swap_puts_a_helmet_on_from_the_hotbar_and_from_the_off_hand() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.inventory.set(2, stack(HELMET, 1));
+        let clicked = fixture.survival(5, 2, ClickKind::Swap);
+        assert_eq!(fixture.at(5), stack(HELMET, 1));
+        assert_eq!(fixture.inventory.get(2), Some(None));
+        assert_eq!(clicked.equipped, vec![5]);
+        // Swapped back to the hotbar: the helmet comes off.
+        let clicked = fixture.survival(5, 2, ClickKind::Swap);
+        assert_eq!(fixture.at(5), None);
+        assert_eq!(fixture.inventory.get(2), Some(stack(HELMET, 1)));
+        assert_eq!(clicked.equipped, vec![5]);
+        // Button 40 swaps with the off hand, which the game writes through the
+        // inventory, not its slot: only the armour slot is reported.
+        fixture.inventory.set(2, None);
+        fixture.inventory.set(OFF_HAND, stack(HELMET, 1));
+        let clicked = fixture.survival(5, 40, ClickKind::Swap);
+        assert_eq!(fixture.at(5), stack(HELMET, 1));
+        assert_eq!(fixture.at(45), None);
+        assert_eq!(clicked.equipped, vec![5]);
+        // A helmet held swaps with the one worn, each into the other's place.
+        fixture.inventory.set(OFF_HAND, named(HELMET, 1, "spare"));
+        let clicked = fixture.survival(5, 40, ClickKind::Swap);
+        assert_eq!(fixture.at(5), named(HELMET, 1, "spare"));
+        assert_eq!(fixture.at(45), stack(HELMET, 1));
+        assert_eq!(clicked.equipped, vec![5]);
+        // And a chestplate held does not go onto the head.
+        fixture.inventory.set(OFF_HAND, stack(CHESTPLATE, 1));
+        let before = fixture.snapshot();
+        let clicked = fixture.survival(5, 40, ClickKind::Swap);
+        assert_eq!(fixture.snapshot(), before);
+        assert_eq!(clicked.equipped, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn a_swap_into_the_off_hand_slot_from_the_hotbar_is_reported() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.inventory.set(0, stack(SHIELD, 1));
+        let clicked = fixture.survival(45, 0, ClickKind::Swap);
+        assert_eq!(fixture.at(45), stack(SHIELD, 1));
+        assert_eq!(clicked.equipped, vec![45]);
+    }
+
+    #[test]
+    fn equipped_reports_a_helmet_put_on_and_taken_off_and_not_a_click_that_changes_nothing() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.menu.carried = stack(HELMET, 1);
+        assert_eq!(fixture.survival(5, 0, ClickKind::Pickup).equipped, vec![5]);
+        assert_eq!(fixture.survival(5, 0, ClickKind::Pickup).equipped, vec![5]);
+        assert_eq!(fixture.menu.carried, stack(HELMET, 1));
+        assert_eq!(fixture.at(5), None);
+        // An empty slot clicked with nothing carried, and an armour slot clicked with
+        // what it refuses.
+        fixture.menu.carried = None;
+        assert!(
+            fixture
+                .survival(5, 0, ClickKind::Pickup)
+                .equipped
+                .is_empty()
+        );
+        fixture.menu.carried = stack(STONE, 1);
+        assert!(
+            fixture
+                .survival(5, 0, ClickKind::Pickup)
+                .equipped
+                .is_empty()
+        );
+        // Half of the off hand's torches taken, and some added: the same item stays.
+        fixture.menu.carried = None;
+        fixture.put(45, stack(TORCH, 10));
+        assert!(
+            fixture
+                .survival(45, 1, ClickKind::Pickup)
+                .equipped
+                .is_empty()
+        );
+        assert_eq!(fixture.menu.carried, stack(TORCH, 5));
+        assert!(
+            fixture
+                .survival(45, 0, ClickKind::Pickup)
+                .equipped
+                .is_empty()
+        );
+        assert_eq!(fixture.at(45), stack(TORCH, 10));
+        // All of them taken: the off hand is emptied.
+        assert_eq!(
+            fixture.survival(45, 0, ClickKind::Pickup).equipped,
+            vec![45]
+        );
+        // A throw of the last item empties it too.
+        fixture.menu.carried = None;
+        fixture.put(45, stack(TORCH, 1));
+        let clicked = fixture.survival(45, 0, ClickKind::Throw);
+        assert_eq!(clicked.thrown, vec![ItemStack::new(TORCH, 1)]);
+        assert_eq!(clicked.equipped, vec![45]);
+        // No other menu reports anything.
+        let mut chest = Fixture::new(MenuKind::Rows3);
+        chest.put(0, stack(HELMET, 1));
+        assert!(chest.survival(0, 0, ClickKind::Pickup).equipped.is_empty());
+    }
+
+    #[test]
+    fn a_drag_over_the_armour_and_the_off_hand_reports_each_slot_it_fills() {
+        let mut fixture = Fixture::new(MenuKind::Inventory);
+        fixture.menu.carried = stack(items::CARVED_PUMPKIN, 4);
+        let clicked = fixture.drag(1, &[5, 45, 6], false);
+        assert_eq!(fixture.at(5), stack(items::CARVED_PUMPKIN, 1));
+        assert_eq!(fixture.at(45), stack(items::CARVED_PUMPKIN, 1));
+        assert_eq!(fixture.at(6), None);
+        assert_eq!(fixture.menu.carried, stack(items::CARVED_PUMPKIN, 2));
+        let mut equipped = clicked.equipped;
+        // The game's drag goes over a `HashSet`, whose order is not the client's.
+        equipped.sort_unstable();
+        assert_eq!(equipped, vec![5, 45]);
     }
 }
