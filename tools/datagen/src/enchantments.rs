@@ -5,8 +5,10 @@
 //! and `Enchantment$Cost`), and each item's enchantability (`minecraft:enchantable` in
 //! the generator's report of the item's components).
 //!
-//! Only these fields are read; an enchantment's effects, slots and anvil cost are the
-//! rules' and are not compiled. A set the reader cannot place (a name that is no item or
+//! Besides these, an enchantment's slots and its `minecraft:attributes` effects
+//! (`EnchantmentAttributeEffect`) are read, which its holder's attributes take while it
+//! is in one of those slots; its other effects and its anvil cost are the rules' and
+//! are not compiled. A set the reader cannot place (a name that is no item or
 //! enchantment, a tag that does not exist) or a cost of another shape fails the run, so
 //! that a jar that changes one is noticed.
 
@@ -38,6 +40,38 @@ pub struct Enchantment {
     pub exclusive_set: Option<NamedSet>,
     pub supported_items: ItemSet,
     pub primary_items: Option<ItemSet>,
+    /// The slot groups it works from, by `EquipmentSlotGroup`'s ordinal.
+    pub slots: Vec<u8>,
+    pub attributes: Vec<AttributeEffect>,
+}
+
+/// One of an enchantment's `minecraft:attributes` effects (`EnchantmentAttributeEffect`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttributeEffect {
+    /// The attribute, by its id.
+    pub attribute: usize,
+    /// The modifier's id, to which the slot's name is added (`idForSlot`).
+    pub id: String,
+    pub amount: LevelBased,
+    /// `AttributeModifier.Operation`'s ordinal.
+    pub operation: u8,
+}
+
+/// A `LevelBasedValue` of the shapes the attribute effects use, each a float's bits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LevelBased {
+    Constant(u32),
+    Linear {
+        base: u32,
+        per_level_above_first: u32,
+    },
+    LevelsSquared {
+        added: u32,
+    },
+    Fraction {
+        numerator: Box<LevelBased>,
+        denominator: Box<LevelBased>,
+    },
 }
 
 /// The enchantments by name, and the items that can be enchanted by id with their
@@ -55,6 +89,8 @@ pub struct Names<'a> {
     pub enchantments: &'a [String],
     pub item_tags: &'a [String],
     pub enchantment_tags: &'a [String],
+    /// The attributes, in the order of their ids.
+    pub attributes: &'a [String],
 }
 
 /// Reads the enchantments of `data` (`data/minecraft`) and the enchantability of each
@@ -162,7 +198,83 @@ fn enchantment(name: &str, json: &Json, names: &Names) -> Result<Enchantment> {
             .get("primary_items")
             .map(|set| item_set(set, names))
             .transpose()?,
+        slots: json
+            .member("slots")?
+            .array()?
+            .iter()
+            .map(|slot| {
+                let slot = slot.string()?;
+                crate::model::SLOT_GROUPS
+                    .iter()
+                    .position(|group| *group == slot)
+                    .map(|ordinal| ordinal as u8)
+                    .with_context(|| format!("{slot} is not a slot group"))
+            })
+            .collect::<Result<_>>()?,
+        attributes: match json
+            .get("effects")
+            .and_then(|effects| effects.get("minecraft:attributes"))
+        {
+            None => Vec::new(),
+            Some(effects) => effects
+                .array()?
+                .iter()
+                .map(|effect| attribute_effect(effect, names))
+                .collect::<Result<_>>()?,
+        },
     })
+}
+
+/// One `EnchantmentAttributeEffect`.
+fn attribute_effect(json: &Json, names: &Names) -> Result<AttributeEffect> {
+    crate::loot::only(json, &["amount", "attribute", "id", "operation"])?;
+    let attribute = json.member("attribute")?.string()?;
+    let operation = json.member("operation")?.string()?;
+    Ok(AttributeEffect {
+        attribute: names
+            .attributes
+            .iter()
+            .position(|known| known == attribute)
+            .with_context(|| format!("{attribute} is not an attribute"))?,
+        id: json.member("id")?.string()?.to_owned(),
+        amount: level_based(json.member("amount")?)?,
+        operation: crate::model::OPERATIONS
+            .iter()
+            .position(|known| *known == operation)
+            .with_context(|| format!("{operation} is not an operation"))? as u8,
+    })
+}
+
+/// A `LevelBasedValue`: a number alone is a constant (`LevelBasedValue.CODEC`); the
+/// other shapes are refused until a rule needs them.
+fn level_based(json: &Json) -> Result<LevelBased> {
+    if let Json::Object(_) = json {
+        let float = |key: &str| -> Result<u32> { Ok(json.member(key)?.float()?.to_bits()) };
+        return Ok(match crate::loot::kind(json)? {
+            "linear" => {
+                crate::loot::only(json, &["type", "base", "per_level_above_first"])?;
+                LevelBased::Linear {
+                    base: float("base")?,
+                    per_level_above_first: float("per_level_above_first")?,
+                }
+            }
+            "levels_squared" => {
+                crate::loot::only(json, &["type", "added"])?;
+                LevelBased::LevelsSquared {
+                    added: float("added")?,
+                }
+            }
+            "fraction" => {
+                crate::loot::only(json, &["type", "numerator", "denominator"])?;
+                LevelBased::Fraction {
+                    numerator: Box::new(level_based(json.member("numerator")?)?),
+                    denominator: Box::new(level_based(json.member("denominator")?)?),
+                }
+            }
+            other => bail!("a level-based value of the type {other}"),
+        });
+    }
+    Ok(LevelBased::Constant(json.float()?.to_bits()))
 }
 
 /// A `HolderSet` of enchantments: a tag, one name, or names listed.
@@ -239,7 +351,8 @@ pub fn emit(compiled: &Compiled) -> Result<String> {
         writeln!(
             body,
             "    Enchantment {{ name: {:?}, weight: {}, max_level: {}, min_cost: {}, \
-             max_cost: {}, exclusive_set: {}, supported_items: {}, primary_items: {} }},",
+             max_cost: {}, exclusive_set: {}, supported_items: {}, primary_items: {}, \
+             slots: &{:?}, attributes: &[{}] }},",
             enchantment.name,
             enchantment.weight,
             enchantment.max_level,
@@ -248,6 +361,13 @@ pub fn emit(compiled: &Compiled) -> Result<String> {
             optional(enchantment.exclusive_set.as_ref().map(named_text)),
             items_text(&enchantment.supported_items),
             optional(enchantment.primary_items.as_ref().map(items_text)),
+            enchantment.slots,
+            enchantment
+                .attributes
+                .iter()
+                .map(attribute_text)
+                .collect::<Vec<_>>()
+                .join(", "),
         )?;
     }
     writeln!(body, "];\n")?;
@@ -266,7 +386,15 @@ pub fn emit(compiled: &Compiled) -> Result<String> {
     }
     writeln!(body, "];")?;
 
-    let mut uses = vec!["use crate::enchanting::{Enchantment, EnchantmentCost};".to_owned()];
+    let mut enchanting = vec!["Enchantment", "EnchantmentCost"];
+    if body.contains("EnchantmentAttribute {") {
+        enchanting.insert(1, "EnchantmentAttribute");
+        enchanting.push("LevelBased");
+    }
+    let mut uses = vec![format!(
+        "use crate::enchanting::{{{}}};",
+        enchanting.join(", ")
+    )];
     let trading: Vec<&str> = ["ItemSet", "NamedSet"]
         .into_iter()
         .filter(|name| body.contains(&format!("{name}::")))
@@ -275,6 +403,42 @@ pub fn emit(compiled: &Compiled) -> Result<String> {
         uses.push(format!("use crate::trading::{{{}}};", trading.join(", ")));
     }
     Ok(format!("{}\n\n{body}", uses.join("\n")))
+}
+
+fn attribute_text(effect: &AttributeEffect) -> String {
+    format!(
+        "EnchantmentAttribute {{ attribute: {}, id: {:?}, amount: {}, operation: {} }}",
+        effect.attribute,
+        effect.id,
+        level_based_text(&effect.amount),
+        effect.operation
+    )
+}
+
+fn level_based_text(amount: &LevelBased) -> String {
+    match *amount {
+        LevelBased::Constant(value) => {
+            format!("LevelBased::Constant(f32::from_bits({value:#010x}))")
+        }
+        LevelBased::Linear {
+            base,
+            per_level_above_first,
+        } => format!(
+            "LevelBased::Linear {{ base: f32::from_bits({base:#010x}), per_level_above_first: \
+             f32::from_bits({per_level_above_first:#010x}) }}"
+        ),
+        LevelBased::LevelsSquared { added } => {
+            format!("LevelBased::LevelsSquared {{ added: f32::from_bits({added:#010x}) }}")
+        }
+        LevelBased::Fraction {
+            ref numerator,
+            ref denominator,
+        } => format!(
+            "LevelBased::Fraction {{ numerator: &{}, denominator: &{} }}",
+            level_based_text(numerator),
+            level_based_text(denominator)
+        ),
+    }
 }
 
 fn cost_text(cost: Cost) -> String {
@@ -315,6 +479,7 @@ mod tests {
         enchantments: Vec<String>,
         item_tags: Vec<String>,
         enchantment_tags: Vec<String>,
+        attributes: Vec<String>,
     }
 
     impl Lists {
@@ -324,6 +489,7 @@ mod tests {
                 enchantments: strings(&["minecraft:mending", "minecraft:sharpness"]),
                 item_tags: strings(&["#minecraft:enchantable/durability", "#minecraft:swords"]),
                 enchantment_tags: strings(&["#minecraft:exclusive_set/damage"]),
+                attributes: strings(&["minecraft:armor", "minecraft:mining_efficiency"]),
             }
         }
 
@@ -333,6 +499,7 @@ mod tests {
                 enchantments: &self.enchantments,
                 item_tags: &self.item_tags,
                 enchantment_tags: &self.enchantment_tags,
+                attributes: &self.attributes,
             }
         }
     }
@@ -347,7 +514,10 @@ mod tests {
         "max_cost": {"base": 21, "per_level_above_first": 11}, "max_level": 5,
         "min_cost": {"base": 1, "per_level_above_first": 11},
         "primary_items": ["minecraft:iron_sword"], "slots": ["mainhand"],
-        "supported_items": "#minecraft:swords", "weight": 10}"##;
+        "supported_items": "#minecraft:swords", "weight": 10,
+        "effects": {"minecraft:attributes": [{"amount": {"type": "minecraft:levels_squared",
+        "added": 1.0}, "attribute": "minecraft:mining_efficiency",
+        "id": "minecraft:enchantment.efficiency", "operation": "add_value"}]}}"##;
 
     fn reports() -> Vec<String> {
         vec![
@@ -387,6 +557,8 @@ mod tests {
                     exclusive_set: None,
                     supported_items: ItemSet::Tag("#minecraft:enchantable/durability".to_owned()),
                     primary_items: None,
+                    slots: vec![0],
+                    attributes: Vec::new(),
                 },
                 Enchantment {
                     name: "minecraft:sharpness".to_owned(),
@@ -405,13 +577,22 @@ mod tests {
                     )),
                     supported_items: ItemSet::Tag("#minecraft:swords".to_owned()),
                     primary_items: Some(ItemSet::Listed(vec![2])),
+                    slots: vec![1],
+                    attributes: vec![AttributeEffect {
+                        attribute: 1,
+                        id: "minecraft:enchantment.efficiency".to_owned(),
+                        amount: LevelBased::LevelsSquared {
+                            added: 1.0f32.to_bits()
+                        },
+                        operation: 0,
+                    }],
                 },
             ]
         );
         assert_eq!(compiled.enchantable, [(1, 1), (2, 14)]);
         let text = emit(&compiled).unwrap();
         assert!(text.starts_with(
-            "use crate::enchanting::{Enchantment, EnchantmentCost};\n\
+            "use crate::enchanting::{Enchantment, EnchantmentAttribute, EnchantmentCost, LevelBased};\n\
              use crate::trading::{ItemSet, NamedSet};\n\n"
         ));
         assert!(text.contains(
@@ -419,7 +600,10 @@ mod tests {
              min_cost: EnchantmentCost { base: 1, per_level_above_first: 11 }, max_cost: \
              EnchantmentCost { base: 21, per_level_above_first: 11 }, exclusive_set: \
              Some(NamedSet::Tag(\"#minecraft:exclusive_set/damage\")), supported_items: \
-             ItemSet::Tag(\"#minecraft:swords\"), primary_items: Some(ItemSet::Listed(&[2])) },\n"
+             ItemSet::Tag(\"#minecraft:swords\"), primary_items: Some(ItemSet::Listed(&[2])), \
+             slots: &[1], attributes: &[EnchantmentAttribute { attribute: 1, id: \
+             \"minecraft:enchantment.efficiency\", amount: LevelBased::LevelsSquared { added: \
+             f32::from_bits(0x3f800000) }, operation: 0 }] },\n"
         ));
         assert!(text.ends_with(
             "pub static ENCHANTABLE: [(u16, i32); 2] = [\n    (1, 1),\n    (2, 14),\n];\n"
@@ -457,6 +641,16 @@ mod tests {
         assert!(refused(
             SHARPNESS.replace(r#""weight": 10"#, r#""weight": 0"#)
         ));
+        assert!(refused(
+            SHARPNESS.replace("minecraft:mining_efficiency", "minecraft:luck")
+        ));
+        assert!(refused(
+            SHARPNESS.replace("minecraft:levels_squared", "minecraft:clamped")
+        ));
+        assert!(refused(
+            SHARPNESS.replace(r#"["mainhand"]"#, r#"["elbow"]"#)
+        ));
+        assert!(refused(SHARPNESS.replace("add_value", "add_everything")));
         // An enchantment missing from the registry's entries.
         assert!(
             compile(
@@ -494,6 +688,7 @@ mod tests {
         let enchantments = entries("enchantment", "");
         let item_tags = entries("tags/item", "#");
         let enchantment_tags = entries("tags/enchantment", "#");
+        let attributes = model::static_registry(&registries, "attribute").unwrap();
         let compiled = load(
             &data,
             &generated.join("reports/minecraft/components/item"),
@@ -502,10 +697,17 @@ mod tests {
                 enchantments: &enchantments,
                 item_tags: &item_tags,
                 enchantment_tags: &enchantment_tags,
+                attributes: &attributes,
             },
         )
         .unwrap();
         assert_eq!(compiled.enchantments.len(), 43);
+        let with_attributes = compiled
+            .enchantments
+            .iter()
+            .filter(|enchantment| !enchantment.attributes.is_empty())
+            .count();
+        assert_eq!(with_attributes, 8);
         assert_eq!(compiled.enchantable.len(), 77);
         let book = items
             .iter()

@@ -176,10 +176,11 @@ pub struct ModifierReport {
 }
 
 /// `AttributeModifier.Operation`'s serialised names, by ordinal.
-const OPERATIONS: [&str; 3] = ["add_value", "add_multiplied_base", "add_multiplied_total"];
+pub(crate) const OPERATIONS: [&str; 3] =
+    ["add_value", "add_multiplied_base", "add_multiplied_total"];
 
 /// `EquipmentSlotGroup`'s serialised names, by ordinal.
-const SLOT_GROUPS: [&str; 11] = [
+pub(crate) const SLOT_GROUPS: [&str; 11] = [
     "any", "mainhand", "offhand", "hand", "feet", "legs", "chest", "head", "armor", "body",
     "saddle",
 ];
@@ -780,6 +781,15 @@ impl GameData {
             },
         )?;
 
+        let fluids = static_registry(&registries, "fluid")?;
+        let block_entity_types = static_registry(&registries, "block_entity_type")?;
+        let extract = Extract::load(extract)?;
+
+        let attribute_names: Vec<String> = extract
+            .attributes
+            .iter()
+            .map(|attribute| attribute.name.clone())
+            .collect();
         let enchantments = crate::enchantments::load(
             &data,
             &reports.join("minecraft/components/item"),
@@ -788,12 +798,9 @@ impl GameData {
                 enchantments,
                 item_tags: &tag_names("item"),
                 enchantment_tags: &tag_names("enchantment"),
+                attributes: &attribute_names,
             },
         )?;
-
-        let fluids = static_registry(&registries, "fluid")?;
-        let block_entity_types = static_registry(&registries, "block_entity_type")?;
-        let extract = Extract::load(extract)?;
         // The ids the program wrote are the game's own; the tables name fluids and
         // block entity types by the report's ids, so the two have to be the same.
         ensure!(

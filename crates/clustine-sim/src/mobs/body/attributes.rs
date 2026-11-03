@@ -53,18 +53,8 @@ pub(crate) fn worn_modifiers(equipment: &Equipment, attribute: u16) -> Vec<Modif
             continue;
         };
         for modifier in clustine_data::ItemComponents::of(stack.item).modifiers {
-            let applies = match modifier.slot {
-                0 => true,
-                1 => slot == 0,
-                2 => slot == 1,
-                3 => slot <= 1,
-                // The feet to the head, at the slots 2 to 5.
-                group @ 4..=7 => slot == usize::from(group) - 2,
-                8 => (2..=6).contains(&slot),
-                9 => slot == 6,
-                10 => slot == 7,
-                _ => false,
-            };
+            let applies = u8::try_from(slot)
+                .is_ok_and(|slot| clustine_data::slot_group_holds(modifier.slot, slot));
             if applies && modifier.attribute == attribute {
                 worn.push(Modifier {
                     id: modifier.id.to_owned(),

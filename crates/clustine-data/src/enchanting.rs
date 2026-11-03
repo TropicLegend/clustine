@@ -2,8 +2,9 @@
 //! from the game's `data/minecraft/enchantment/*.json` and the items' `minecraft:enchantable`
 //! (`docs/groundwork/n10-plan.md`, decision 8): each enchantment's weight, levels, costs,
 //! exclusive set and the items it supports and is primary for, and each item's
-//! enchantability. The rules that pick enchantments are `clustine-sim`'s
-//! (`items/enchanting.rs`); the effects of an enchantment are the rules' own.
+//! enchantability; and the slots each works from with its `minecraft:attributes` effects.
+//! The rules that pick enchantments are `clustine-sim`'s (`items/enchanting.rs`); the
+//! other effects of an enchantment are the rules' own.
 //!
 //! The tags the sets name are the generated [`crate::TAGS`], each in its file's order with
 //! a nested tag expanded where it stands, as the game's tag loader builds a `HolderSet`;
@@ -31,6 +32,65 @@ impl EnchantmentCost {
     }
 }
 
+/// A `LevelBasedValue` of the shapes the attribute effects use.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LevelBased {
+    Constant(f32),
+    /// `base + per_level_above_first · (level − 1)`, in floats.
+    Linear {
+        base: f32,
+        per_level_above_first: f32,
+    },
+    /// `level² + added`.
+    LevelsSquared {
+        added: f32,
+    },
+    /// The numerator over the denominator, 0 where the denominator is.
+    Fraction {
+        numerator: &'static LevelBased,
+        denominator: &'static LevelBased,
+    },
+}
+
+impl LevelBased {
+    /// `calculate(level)`.
+    pub fn calculate(self, level: i32) -> f32 {
+        match self {
+            Self::Constant(value) => value,
+            Self::Linear {
+                base,
+                per_level_above_first,
+            } => base + per_level_above_first * level.wrapping_sub(1) as f32,
+            Self::LevelsSquared { added } => level.wrapping_mul(level) as f32 + added,
+            Self::Fraction {
+                numerator,
+                denominator,
+            } => {
+                let denominator = denominator.calculate(level);
+                if denominator == 0.0 {
+                    0.0
+                } else {
+                    numerator.calculate(level) / denominator
+                }
+            }
+        }
+    }
+}
+
+/// One of an enchantment's `minecraft:attributes` effects (`EnchantmentAttributeEffect`):
+/// a modifier its holder's attribute takes while the enchanted item is in one of the
+/// enchantment's slots.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnchantmentAttribute {
+    /// The attribute, by its id in [`crate::ATTRIBUTES`].
+    pub attribute: u16,
+    /// The modifier's id before the slot's name is added (`idForSlot`).
+    pub id: &'static str,
+    pub amount: LevelBased,
+    /// `AttributeModifier.Operation`'s ordinal.
+    pub operation: u8,
+}
+
 /// What enchanting reads of one enchantment (`Enchantment$EnchantmentDefinition` and the
 /// enchantment's exclusive set).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -46,9 +106,21 @@ pub struct Enchantment {
     pub supported_items: ItemSet,
     /// Where there is a set, the items an enchanting table offers it for.
     pub primary_items: Option<ItemSet>,
+    /// The slot groups it works from, by `EquipmentSlotGroup`'s ordinal (as
+    /// [`crate::ItemModifier::slot`]).
+    pub slots: &'static [u8],
+    pub attributes: &'static [EnchantmentAttribute],
 }
 
 impl Enchantment {
+    /// `matchingSlot(slot)`: whether it works from the `EquipmentSlot` of ordinal
+    /// `slot`.
+    pub fn matching_slot(&self, slot: u8) -> bool {
+        self.slots
+            .iter()
+            .any(|&group| crate::slot_group_holds(group, slot))
+    }
+
     /// `getMinLevel()`: always 1.
     pub const fn min_level(&self) -> i32 {
         1
@@ -197,6 +269,59 @@ mod tests {
         let names: Vec<&str> = enchantments().iter().map(|e| e.name).collect();
         assert_eq!(names, registry.entries);
         assert_eq!(enchantments().len(), 43);
+    }
+
+    /// The modifiers of `data/minecraft/enchantment/*.json`'s `minecraft:attributes`,
+    /// at each level, as `EnchantmentAttributeEffect.getModifier` makes them.
+    #[test]
+    fn the_attribute_effects_give_the_game_s_amounts_from_their_slots() {
+        let effect = |name: &str| {
+            let enchantment = enchantment(name).unwrap();
+            assert_eq!(enchantment.attributes.len(), 1, "{name}");
+            (enchantment, enchantment.attributes[0])
+        };
+        let (efficiency, mining) = effect("minecraft:efficiency");
+        assert_eq!(
+            crate::ATTRIBUTES[usize::from(mining.attribute)].name,
+            "minecraft:mining_efficiency"
+        );
+        assert_eq!(mining.id, "minecraft:enchantment.efficiency");
+        assert_eq!(mining.operation, 0);
+        let levels: Vec<f32> = (1..=5)
+            .map(|level| mining.amount.calculate(level))
+            .collect();
+        assert_eq!(levels, [2.0, 5.0, 10.0, 17.0, 26.0]);
+        assert!(efficiency.matching_slot(0));
+        assert!(!efficiency.matching_slot(1));
+
+        let (aqua_affinity, submerged) = effect("minecraft:aqua_affinity");
+        assert_eq!(
+            crate::ATTRIBUTES[usize::from(submerged.attribute)].name,
+            "minecraft:submerged_mining_speed"
+        );
+        assert_eq!(submerged.amount.calculate(1), 4.0);
+        assert_eq!(submerged.operation, 2);
+        assert!(aqua_affinity.matching_slot(5));
+        assert!(!aqua_affinity.matching_slot(0));
+
+        let (_, sweeping) = effect("minecraft:sweeping_edge");
+        assert_eq!(sweeping.amount.calculate(1), 0.5);
+        assert_eq!(sweeping.amount.calculate(3), 0.75);
+
+        // `armor`: the four humanoid slots and the body, not the hands or a saddle.
+        let (blast_protection, _) = effect("minecraft:blast_protection");
+        let worn: Vec<u8> = (0..8)
+            .filter(|&slot| blast_protection.matching_slot(slot))
+            .collect();
+        assert_eq!(worn, [2, 3, 4, 5, 6]);
+        let (_, depth_strider) = effect("minecraft:depth_strider");
+        assert_eq!(depth_strider.amount.calculate(3), 0.333_333_34 * 3.0);
+        assert!(
+            enchantment("minecraft:sharpness")
+                .unwrap()
+                .attributes
+                .is_empty()
+        );
     }
 
     /// `data/minecraft/enchantment/sharpness.json` and `mending.json`, read back.

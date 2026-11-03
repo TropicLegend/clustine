@@ -621,6 +621,30 @@ pub struct ItemModifier {
     pub slot: u8,
 }
 
+/// `EquipmentSlot`'s serialised names, by ordinal: the main hand, the off hand, the feet
+/// to the head, an animal's body and its saddle.
+pub const EQUIPMENT_SLOTS: [&str; 8] = [
+    "mainhand", "offhand", "feet", "legs", "chest", "head", "body", "saddle",
+];
+
+/// `EquipmentSlotGroup.test`: whether the group of ordinal `group` (as
+/// [`ItemModifier::slot`]) takes in the `EquipmentSlot` of ordinal `slot`.
+pub fn slot_group_holds(group: u8, slot: u8) -> bool {
+    match group {
+        0 => true,
+        1 => slot == 0,
+        2 => slot == 1,
+        3 => slot <= 1,
+        // The feet to the head, at the slots 2 to 5.
+        4..=7 => slot == group - 2,
+        // `ARMOR`: the humanoid armour slots and the body (`EquipmentSlot.isArmor`).
+        8 => (2..=6).contains(&slot),
+        9 => slot == 6,
+        10 => slot == 7,
+        _ => false,
+    }
+}
+
 /// An item's `minecraft:weapon`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Weapon {
