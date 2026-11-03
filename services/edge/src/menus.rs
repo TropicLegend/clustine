@@ -108,9 +108,12 @@ struct HeldClick {
     serial: u64,
     changed: Vec<(i16, Option<HashedStack>)>,
     carried: Option<HashedStack>,
-    /// Whether the client clicked with a stale state id, which has the game send the
-    /// window whole after the click.
-    stale: bool,
+    /// The state id the client clicked with. The game sends the window whole after a
+    /// click whose state id is not the window's when it runs the click
+    /// (`handleContainerClick` @180-193): here, when the region's answer to it comes,
+    /// since every packet the edge sent of the window before then had reached the game's
+    /// connection before the click (the V3c review's defect 1).
+    state_id: i32,
 }
 
 /// The window the client shows.
@@ -260,14 +263,13 @@ impl Menus {
             return None;
         }
         let serial = open.serial;
-        let stale = packet.state_id != open.state_id;
         held.insert(
             number,
             HeldClick {
                 serial,
                 changed: packet.changed,
                 carried: packet.carried,
-                stale,
+                state_id: packet.state_id,
             },
         );
         Some(PlayerInput::ContainerClick {
@@ -431,7 +433,7 @@ impl Menus {
             if held.serial != serial {
                 continue;
             }
-            stale |= held.stale;
+            stale |= held.state_id != open.state_id;
             for (slot, hashed) in held.changed {
                 if let Some(remote) = usize::try_from(slot)
                     .ok()
@@ -529,7 +531,7 @@ impl Menus {
         let mut stale = false;
         for number in answered {
             let held = self.inventory_held.remove(&number).expect("listed above");
-            stale |= held.stale;
+            stale |= held.state_id != inventory.state_id;
             for (slot, hashed) in held.changed {
                 if let Some(remote) = usize::try_from(slot)
                     .ok()
@@ -700,6 +702,7 @@ fn menu_id(kind: MenuKind) -> i32 {
         MenuKind::Merchant { .. } => menu::MERCHANT,
         // Window 0 is the client's own and never opened by `open_screen`.
         MenuKind::Inventory => menu::GENERIC_9X3,
+        MenuKind::Crafting => menu::CRAFTING,
     }
 }
 

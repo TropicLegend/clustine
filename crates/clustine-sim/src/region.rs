@@ -2836,6 +2836,21 @@ impl Region {
                     player.inventory.set(usize::from(*slot), stack.clone());
                 }
             }
+            // A creative player's slot of window 0's grid (`handleSetCreativeModeSlot`'s
+            // `setByPlayer`, whose grid change runs `slotChangedCraftingGrid`): the
+            // grid's result worked out again, which window 0's report sends.
+            PlayerInput::SetCraftingSlot { slot, stack } => {
+                let known = stack.as_ref().is_none_or(|stack| {
+                    stack.count > 0
+                        && usize::try_from(stack.item).is_ok_and(|item| item < ITEMS.len())
+                });
+                let at = usize::from(*slot);
+                if known && at < 4 && player.mode.current.abilities().instabuild {
+                    player.crafting.grid[at] = stack.clone();
+                    player.crafting.result = crate::crafting::craft(2, 2, &player.crafting.grid)
+                        .map(|(_, result)| result);
+                }
+            }
             // A use with the off hand within a use with the off hand: passed over above.
             PlayerInput::WithOffHand(_) => {}
             PlayerInput::SwapHands => {

@@ -1303,6 +1303,7 @@ mod tests {
                     carried: None,
                     drag: None,
                     trade: None,
+                    grid: None,
                 },
             }
         }

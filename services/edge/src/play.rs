@@ -302,10 +302,9 @@ async fn pump(
                     }
                     ServerboundPlay::SetCreativeModeSlot(packet) => {
                         // A slot of the inventory screen sets that slot of the
-                        // inventory, and a negative one throws the stack out of the
-                        // screen. One of the crafting grid is passed over (named: the
-                        // creative screen shows no grid; V3c may take it). The fan-out
-                        // drops either from a player who is not creative.
+                        // inventory or of the crafting grid, and a negative one throws
+                        // the stack out of the screen. The fan-out drops each from a
+                        // player who is not creative.
                         let input = if packet.slot < 0 {
                             creative_throw(packet.stack, &mut drops, Instant::now())
                         } else {
@@ -712,9 +711,14 @@ fn in_hand(hand: i32, used: PlayerInput) -> PlayerInput {
 /// one. The armour is shown from the head down, so the order of its slots is reversed
 /// ([`Inventory::from_container`]).
 fn creative_slot(slot: i16, stack: Option<protocol::ItemStack>) -> Option<PlayerInput> {
+    let stack = stack.as_ref().map(crate::stack_wire::client_stack);
+    // The 2×2 grid's slots, 1 to 4 (V3c); the result, 0, is not taken.
+    if (1..=4).contains(&slot) {
+        let slot = u8::try_from(slot - 1).expect("a grid slot fits a byte");
+        return Some(PlayerInput::SetCraftingSlot { slot, stack });
+    }
     let slot = Inventory::from_container(slot)?;
     let slot = u8::try_from(slot).expect("an inventory slot fits a byte");
-    let stack = stack.as_ref().map(crate::stack_wire::client_stack);
     Some(PlayerInput::SetInventorySlot { slot, stack })
 }
 
@@ -945,10 +949,20 @@ mod tests {
         assert_eq!(set_by(44), Some(8));
         // The off hand.
         assert_eq!(set_by(45), Some(40));
-        // The crafting grid and its result are passed over, and so is what is beyond
-        // the screen; a throw out of it, a negative slot, is no setting of a slot.
-        for passed_over in [0, 1, 2, 3, 4, -1, -999, 46, i16::MAX] {
+        // The result is passed over, and so is what is beyond the screen; a throw out of
+        // it, a negative slot, is no setting of a slot.
+        for passed_over in [0, -1, -999, 46, i16::MAX] {
             assert_eq!(set_by(passed_over), None, "slot {passed_over}");
+        }
+        // The 2×2 grid's slots set the grid's, row by row (V3c).
+        for (container, grid) in [(1, 0), (2, 1), (3, 2), (4, 3)] {
+            assert_eq!(
+                creative_slot(container, None),
+                Some(PlayerInput::SetCraftingSlot {
+                    slot: grid,
+                    stack: None
+                })
+            );
         }
         // Emptying a slot empties it.
         assert_eq!(

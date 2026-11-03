@@ -10,7 +10,7 @@
 //! (section 7 item 3). Until they are, the menu stays open, is not checked, and its
 //! clicks are refused with an empty answer.
 
-use clustine_blocks::data::is_class;
+use clustine_blocks::data::{is_block, is_class};
 use clustine_data::{BlockClass, BlockState, ENTITY_TYPES, entity_types};
 use clustine_world::{BlockPos, EntityData, EntityField, EntityId, PlayerId};
 
@@ -115,6 +115,11 @@ impl Region {
         if is_class(state, BlockClass::HopperBlock) {
             return Some((MenuKind::Hopper, single));
         }
+        // `CraftingTableBlock.useWithoutItem`: `openMenu` of its `CraftingMenu` (V3c);
+        // the smithing table, a subclass, is not this block.
+        if is_block(state, clustine_data::blocks::CRAFTING_TABLE) {
+            return Some((MenuKind::Crafting, MenuOf::CraftingTable { at: pos }));
+        }
         None
     }
 
@@ -127,6 +132,7 @@ impl Region {
             || is_class(state, BlockClass::ShulkerBoxBlock)
             || is_class(state, BlockClass::DispenserBlock)
             || is_class(state, BlockClass::HopperBlock)
+            || is_block(state, clustine_data::blocks::CRAFTING_TABLE)
     }
 
     /// The use of the container block at `pos` by `player`: their menu opens if the
@@ -391,6 +397,8 @@ impl Region {
             drag: None,
             // A merchant's window has its payments and result of its own.
             trade: matches!(of, MenuOf::Merchant(_)).then(Box::default),
+            // A crafting table's grid and result are its menu's own.
+            grid: matches!(of, MenuOf::CraftingTable { .. }).then(Box::default),
         });
         self.journal.players.insert(id);
         self.report_whole(id, output);
@@ -448,6 +456,11 @@ impl Region {
                 let trade = self.players.get(&id)?.menu.as_ref()?.trade.as_deref()?;
                 let [first, second] = trade.payments.clone();
                 Some(vec![first, second, trade.result.clone()])
+            }
+            // A crafting table's: its menu's result and grid.
+            MenuOf::CraftingTable { .. } => {
+                let grid = self.players.get(&id)?.menu.as_ref()?.grid.as_deref()?;
+                Some(grid.to_vec())
             }
             // The inventory screen's own: the result, then the grid row by row.
             MenuOf::Inventory => {
@@ -561,6 +574,22 @@ impl Region {
                     self.merchant_payments_changed(id, key, output);
                 }
             }
+            MenuOf::CraftingTable { .. } => {
+                let Some(grid) = self
+                    .players
+                    .get_mut(&id)
+                    .and_then(|player| player.menu.as_mut())
+                    .and_then(|menu| menu.grid.as_deref_mut())
+                else {
+                    return;
+                };
+                if grid.as_slice() != slots {
+                    for (place, stack) in grid.iter_mut().zip(slots) {
+                        *place = stack.clone();
+                    }
+                    self.journal.players.insert(id);
+                }
+            }
             MenuOf::Inventory => {
                 let Some(player) = self.players.get_mut(&id) else {
                     return;
@@ -617,7 +646,10 @@ impl Region {
             MenuOf::Merchant(key) | MenuOf::Entity(key) => self
                 .find_entity(key)
                 .map(|(_, entity)| (entity.uuid.as_u128(), entity.kind)),
-            MenuOf::Ender { .. } | MenuOf::Block { .. } | MenuOf::Inventory => None,
+            MenuOf::Ender { .. }
+            | MenuOf::Block { .. }
+            | MenuOf::Inventory
+            | MenuOf::CraftingTable { .. } => None,
         };
         self.reported.insert(
             id,
@@ -732,7 +764,10 @@ impl Region {
                 .push((id, PlayerEvent::MenuClosed { serial, applied }));
             return;
         };
-        if menu.serial != serial {
+        // A spectator's click is answered with the window whole and runs nothing
+        // (`handleContainerClick` @38-64; the V3c review's defect 4).
+        let spectator = player.mode.current == clustine_world::GameMode::Spectator;
+        if menu.serial != serial || spectator {
             self.report_whole(id, output);
             return;
         }
@@ -844,11 +879,28 @@ impl Region {
             return;
         };
         let before = player.inventory.clone();
-        let left = menus::put_back(
-            &mut player.inventory,
-            usize::from(player.selected_slot),
-            &mut menu,
-        );
+        let selected = usize::from(player.selected_slot);
+        let mut left: Vec<ItemStack> = menus::put_back(&mut player.inventory, selected, &mut menu)
+            .into_iter()
+            .collect();
+        // A crafting table's grid after the cursor (`CraftingMenu.removed`:
+        // `clearContainer`), its result cleared.
+        for stack in menu
+            .grid
+            .take()
+            .into_iter()
+            .flat_map(|grid| grid.into_iter().skip(1))
+        {
+            let mut holder = Menu {
+                carried: stack,
+                ..menu.clone()
+            };
+            left.extend(menus::put_back(
+                &mut player.inventory,
+                selected,
+                &mut holder,
+            ));
+        }
         // A merchant's payments back to the player after the carried stack, and its
         // trading ended, whatever closed it (`MerchantMenu.removed`, `trading.rs`).
         if let MenuOf::Merchant(merchant) = menu.of
@@ -883,7 +935,7 @@ impl Region {
                 .player_events
                 .push((id, PlayerEvent::InventorySlot { slot, stack }));
         }
-        if let Some(stack) = left {
+        for stack in left {
             let thrown = super::entities::Thrown {
                 player: id,
                 stack,
@@ -908,7 +960,13 @@ impl Region {
             return;
         };
         self.reported.remove(&id);
-        if let Some(stack) = menu.carried.clone().filter(|_| throw) {
+        // The cursor, then a crafting table's grid (`clearContainer`), its result cleared.
+        let grid = menu
+            .grid
+            .iter()
+            .flat_map(|grid| grid.iter().skip(1).flatten().cloned());
+        let dropped: Vec<ItemStack> = menu.carried.clone().into_iter().chain(grid).collect();
+        for stack in dropped.into_iter().filter(|_| throw) {
             let thrown = super::entities::Thrown {
                 player: id,
                 stack,
@@ -1025,6 +1083,19 @@ impl Region {
             }
             // `InventoryMenu.stillValid` is always true.
             MenuOf::Inventory => Validity::Valid,
+            // `CraftingMenu.stillValid`: `AbstractContainerMenu.stillValid(access, player,
+            // CRAFTING_TABLE)`, the block still a crafting table and within the block
+            // interaction range and its slack, as a container's (the V3 review's finding
+            // 18).
+            MenuOf::CraftingTable { at } => {
+                let table = self
+                    .own_block(at)
+                    .is_some_and(|state| is_block(state, clustine_data::blocks::CRAFTING_TABLE));
+                if !table || box_distance_sqr(eyes, at) >= block_reach {
+                    return Validity::Invalid;
+                }
+                Validity::Valid
+            }
         }
     }
 
@@ -1104,7 +1175,7 @@ impl Region {
 fn block_positions(of: MenuOf) -> Vec<BlockPos> {
     match of {
         MenuOf::Block { at, other } => std::iter::once(at).chain(other).collect(),
-        MenuOf::Ender { at } => vec![at],
+        MenuOf::Ender { at } | MenuOf::CraftingTable { at } => vec![at],
         MenuOf::Entity(_) | MenuOf::Merchant(_) | MenuOf::Inventory => Vec::new(),
     }
 }
@@ -1139,6 +1210,7 @@ fn title_of(of: MenuOf, kind: MenuKind, region: &Region) -> String {
         MenuOf::Ender { .. } => "container.enderchest",
         // Never opened by `open_screen`, so never sent.
         MenuOf::Inventory => "container.crafting",
+        MenuOf::CraftingTable { .. } => "container.crafting",
         // A villager's by its profession, a trader's by its name (`trading.rs`).
         MenuOf::Merchant(key) => return region.merchant_title(key),
         MenuOf::Entity(key) => {
@@ -1164,7 +1236,8 @@ fn title_of(of: MenuOf, kind: MenuKind, region: &Region) -> String {
                 MenuKind::Rows3
                 | MenuKind::Mount { .. }
                 | MenuKind::Merchant { .. }
-                | MenuKind::Inventory => "container.chest",
+                | MenuKind::Inventory
+                | MenuKind::Crafting => "container.chest",
             }
         }
     };

@@ -535,6 +535,7 @@ impl Region {
                 carried: Some(stack),
                 drag: None,
                 trade: None,
+                grid: None,
             };
             let selected = usize::from(own.selected_slot);
             if let Some(left) = menus::put_back(&mut own.inventory, selected, &mut holder) {

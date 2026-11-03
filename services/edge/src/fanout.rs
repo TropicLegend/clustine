@@ -726,7 +726,9 @@ fn has_no_place(input: &PlayerInput) -> bool {
 fn allowed(mode: clustine_world::GameMode, input: PlayerInput) -> Option<PlayerInput> {
     let abilities = mode.abilities();
     match input {
-        PlayerInput::SetInventorySlot { .. } | PlayerInput::Throw { .. }
+        PlayerInput::SetInventorySlot { .. }
+        | PlayerInput::SetCraftingSlot { .. }
+        | PlayerInput::Throw { .. }
             if !abilities.instabuild =>
         {
             None
@@ -4656,9 +4658,16 @@ impl Fanout {
         };
         // A creative slot is what the client shows of window 0 (`setRemoteSlot`), so
         // that the region's report of it sends nothing back.
-        if let PlayerInput::SetInventorySlot { slot, stack } = &input
+        let shown = match &input {
+            PlayerInput::SetInventorySlot { slot, stack } => {
+                Inventory::to_container(usize::from(*slot)).map(|at| (at, stack))
+            }
+            // The grid's slots are window 0's 1 to 4.
+            PlayerInput::SetCraftingSlot { slot, stack } => Some((i16::from(*slot) + 1, stack)),
+            _ => None,
+        };
+        if let Some((at, stack)) = shown
             && let Some(view) = self.players.get_mut(&player)
-            && let Some(at) = Inventory::to_container(usize::from(*slot))
         {
             let at = usize::try_from(at).expect("window 0's slots are not negative");
             view.menus.creative_slot(at, stack.clone());
@@ -5952,6 +5961,9 @@ impl Fanout {
                 flying_speed: 0.05,
                 field_of_view_modifier: 0.1,
             }),
+            // `PlayerList.placeNewPlayer` @407-424: after the held slot (which the
+            // window-0 packets carry here), the recipes the client needs (V3c).
+            update_recipes_packet(),
             encoded(&SynchronizePlayerPosition {
                 teleport_id,
                 x: pose.position.x,
@@ -7733,6 +7745,51 @@ impl PlayerView {
             _ => Vec::new(),
         }
     }
+}
+
+/// `ClientboundUpdateRecipesPacket` as the game sends it at a join: the recipe property
+/// sets and the stonecutter's selectable recipes (`RecipeManager.finalizeRecipeLoading`),
+/// the same for every player, so made once.
+fn update_recipes_packet() -> Bytes {
+    static PACKET: std::sync::OnceLock<Bytes> = std::sync::OnceLock::new();
+    PACKET
+        .get_or_init(|| {
+            use clustine_protocol::packets::play::{
+                HolderSet, PropertySet, SlotDisplay, StonecutterRecipe, UpdateRecipes,
+            };
+            let property_sets = clustine_data::recipes::property_sets()
+                .into_iter()
+                .map(|(key, items)| PropertySet {
+                    key: key.to_owned(),
+                    items,
+                })
+                .collect();
+            let stonecutter = clustine_data::recipes::stonecutter_entries()
+                .into_iter()
+                .map(|entry| StonecutterRecipe {
+                    input: match entry.input.tag {
+                        Some(tag) => HolderSet::Tag(tag.to_owned()),
+                        None => HolderSet::Items(
+                            entry
+                                .input
+                                .items
+                                .iter()
+                                .map(|item| i32::from(*item))
+                                .collect(),
+                        ),
+                    },
+                    display: SlotDisplay::ItemStack {
+                        item: i32::from(entry.item),
+                        count: i32::from(entry.count),
+                    },
+                })
+                .collect();
+            encoded(&UpdateRecipes {
+                property_sets,
+                stonecutter,
+            })
+        })
+        .clone()
 }
 
 /// The packet that tells a client what one slot of its inventory holds now, after the

@@ -356,6 +356,9 @@ pub struct Menu {
     /// the trade picked last (`docs/groundwork/n10-plan.md`, section 8.2); none for any
     /// other menu.
     pub trade: Option<Box<TradeSlots>>,
+    /// A crafting table's own slots (`ResultContainer` and `TransientCraftingContainer`):
+    /// the result, then the 3×3 grid row by row (V3c); none for any other menu.
+    pub grid: Option<Box<[Option<ItemStack>; 10]>>,
 }
 
 /// What a merchant's window holds of its own: the two payments, the result, and the
@@ -385,6 +388,8 @@ pub enum MenuOf {
     /// The player's own inventory screen (window 0): only ever the menu a click of it
     /// runs over, never the player's open menu.
     Inventory,
+    /// A crafting table at `at`, whose grid is the menu's own (V3c).
+    CraftingTable { at: BlockPos },
 }
 
 /// A drag of the carried stack over slots (the game's quick craft), between its start
@@ -688,6 +693,7 @@ mod tests {
                     slots: vec![53, 0, 27],
                 }),
                 trade: None,
+                grid: None,
             },
             Menu {
                 serial: u64::MAX,
@@ -698,6 +704,7 @@ mod tests {
                 carried: None,
                 drag: None,
                 trade: None,
+                grid: None,
             },
             Menu {
                 serial: 0,
@@ -709,6 +716,7 @@ mod tests {
                     slots: Vec::new(),
                 }),
                 trade: None,
+                grid: None,
             },
         ];
         for menu in menus {

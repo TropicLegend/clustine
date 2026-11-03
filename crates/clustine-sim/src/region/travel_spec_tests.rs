@@ -546,10 +546,12 @@ fn a_target_beyond_the_border_is_clamped_inside_it() {
     assert_eq!(travel.target, at(29_999_983, 42, 44));
 }
 
-/// 16.7 (D5): the player's menu is closed at the firing as at a leave
-/// (`menu_leaving`): the stack they carried on the cursor is thrown where they stood.
+/// 16.7 (D5), as corrected in V3c: the player's menu is closed at the firing, and the
+/// stack they carried on the cursor goes back into their inventory rather than being
+/// thrown (`AbstractContainerMenu.dropOrPlaceInInventory` @16-74: a player removed with
+/// `CHANGED_DIMENSION` has it placed back).
 #[test]
-fn a_menu_open_at_the_firing_is_closed_as_at_a_leave() {
+fn a_menu_open_at_the_firing_is_closed_with_its_cursor_put_back() {
     let chest = at(-11, -60, -11);
     let ender = state("minecraft:ender_chest[facing=north,waterlogged=false]");
     let mut region = overworld(all(vec![
@@ -564,24 +566,23 @@ fn a_menu_open_at_the_firing_is_closed_as_at_a_leave() {
         carried: Some(ItemStack::new(items::DIAMOND, 3)),
         drag: None,
         trade: None,
+        grid: None,
     });
     let fired = fire(&mut region, id);
     let (_, transfer, _) = departed(&fired, id).expect("let go");
-    // Not carried on into the transfer, but thrown.
-    assert!(
-        !transfer
-            .inventory
-            .0
-            .iter()
-            .flatten()
-            .any(|stack| stack.item == items::DIAMOND)
-    );
+    let kept: i32 = transfer
+        .inventory
+        .0
+        .iter()
+        .flatten()
+        .filter(|stack| stack.item == items::DIAMOND)
+        .map(|stack| stack.count)
+        .sum();
+    assert_eq!(kept, 3, "the carried stack was not put back");
     let thrown = super::super::tnt::tests::records(&region)
         .into_iter()
-        .any(|entity| {
-            matches!(&entity.data, EntityData::Item { stack, .. } if stack.item == items::DIAMOND && stack.count == 3)
-        });
-    assert!(thrown, "the carried stack was not thrown");
+        .any(|entity| matches!(&entity.data, EntityData::Item { stack, .. } if stack.item == items::DIAMOND));
+    assert!(!thrown, "the carried stack was thrown");
 }
 
 /// 16.7 (D9): an edge's reset after a firing reports no second removal of the player;

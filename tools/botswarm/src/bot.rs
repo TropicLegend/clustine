@@ -1801,6 +1801,8 @@ impl Bot {
             ClientboundPlay::ClientboundKeepAlive(_) => {
                 self.stats.keep_alives_answered += 1;
             }
+            // The bots craft nothing by the recipe book.
+            ClientboundPlay::UpdateRecipes(_) => {}
             ClientboundPlay::SynchronizePlayerPosition(packet) => {
                 if self.behaviour.confirm_teleports {
                     self.confirm_teleport(&packet).await?;

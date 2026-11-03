@@ -521,7 +521,7 @@ pub enum RestoreError {
 /// names or kinds on the wire, so bytes of one shape can read as another).
 /// `the_bytes_of_a_state_and_of_a_delta_are_as_written_down` fails when a shape
 /// changes, and says so.
-pub const STATE_FORMAT: u8 = 34;
+pub const STATE_FORMAT: u8 = 35;
 
 /// What the store is handed for `value`, a `RegionState` or a `StateDelta`: a zero byte,
 /// [`STATE_FORMAT`], and the value as postcard writes it. The zero tells it from what
@@ -3916,7 +3916,8 @@ impl RegionRunner {
                 | PlayerInput::PaddleBoat { .. }
                 | PlayerInput::PickItemFromEntity { .. }
                 | PlayerInput::Order(_)
-                | PlayerInput::ReleaseUse => return false,
+                | PlayerInput::ReleaseUse
+                | PlayerInput::SetCraftingSlot { .. } => return false,
                 // A click and a close are about the chunks of the menu's container: held
                 // while one is on its way, so that a click after a merge waits for the
                 // chest rather than being refused (`docs/groundwork/n6-plan.md`, section 8
@@ -8669,17 +8670,18 @@ mod tests {
     /// 4.5 of the same plan), thirteen bytes more a player in a state and a delta, none
     /// of them set here; a transfer in an outbox carries the dig and the count. Format
     /// 34 keeps each player's inventory screen: its grid, result, cursor and drag, seven
-    /// bytes more a player when all are empty (section 4.7).
+    /// bytes more a player when all are empty (section 4.7). Format 35 gives an open
+    /// menu the crafting table's grid, none of them open here.
     #[test]
     fn the_bytes_of_a_state_and_of_a_delta_are_as_written_down() {
         let (state, delta) = a_state_and_a_delta();
         let hex =
             |bytes: Vec<u8>| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
-        assert_eq!(STATE_FORMAT, 34);
+        assert_eq!(STATE_FORMAT, 35);
         assert_eq!(
             hex(stored(&state)),
             concat!(
-                "002202018080808010030110000000000000000000000000000000020204416c6578000000000000",
+                "002302018080808010030110000000000000000000000000000000020204416c6578000000000000",
                 "2d400000000000004ec0000000000000e03f00000000000000000129000000000000000000000000",
                 "0000000000000000000000000000000000000000000000000000000000001b000000000000000000",
                 "00000000000000000000000000000000000002000700000000000000000000000000000000000000",
@@ -8703,7 +8705,7 @@ mod tests {
         assert_eq!(
             hex(stored(&delta)),
             concat!(
-                "00220200000210000000000000000000000000000000010010000000000000000000000000000000",
+                "00230200000210000000000000000000000000000000010010000000000000000000000000000000",
                 "02010204416c65780000000000002d400000000000004ec0000000000000e03f0000000000000000",
                 "01290000000000000000000000000000000000000000000000000000000000000000000000000000",
                 "000000001b0000000000000000000000000000000000000000000000000000000200070000000000",

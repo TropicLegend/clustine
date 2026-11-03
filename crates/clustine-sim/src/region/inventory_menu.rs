@@ -172,6 +172,12 @@ impl Region {
         if player.menu.is_some() {
             return;
         }
+        // A spectator's is answered with the window whole and runs nothing
+        // (`handleContainerClick` @38-64).
+        if player.mode.current == clustine_world::GameMode::Spectator {
+            self.report_inventory_whole(id, output);
+            return;
+        }
         let Some(mut container) = self.container_slots(id, MenuOf::Inventory, MenuKind::Inventory)
         else {
             return;
@@ -186,6 +192,7 @@ impl Region {
             carried: player.crafting.carried.clone(),
             drag: player.crafting.drag.clone(),
             trade: None,
+            grid: None,
         };
         let mut inventory = player.inventory.clone();
         let clicked = {
@@ -299,6 +306,7 @@ impl Region {
                 carried: Some(stack),
                 drag: None,
                 trade: None,
+                grid: None,
             };
             thrown.extend(menus::put_back(&mut player.inventory, selected, &mut menu));
         }

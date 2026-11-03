@@ -2823,6 +2823,8 @@ pub mod menu {
     pub const GENERIC_9X6: i32 = 5;
     pub const GENERIC_3X3: i32 = 6;
     pub const CRAFTER_3X3: i32 = 7;
+    /// The crafting table's (`crafting`).
+    pub const CRAFTING: i32 = 12;
     pub const HOPPER: i32 = 16;
     /// A villager's or a wandering trader's trades (`merchant`).
     pub const MERCHANT: i32 = 19;
@@ -4662,6 +4664,7 @@ packet_set! {
         ContainerSetData,
         SetCursorItem,
         ClientboundContainerClose,
+        UpdateRecipes,
         Explode,
         LevelParticles,
         SetHeldSlot,

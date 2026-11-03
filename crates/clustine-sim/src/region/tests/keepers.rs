@@ -821,6 +821,7 @@ fn a_golem_waits_by_a_chest_a_player_has_open_and_puts_into_it_once_it_is_shut()
         carried: None,
         drag: None,
         trade: None,
+        grid: None,
     });
     region.start_open(goal, &mut TickOutput::default());
     let near = |region: &Region| {

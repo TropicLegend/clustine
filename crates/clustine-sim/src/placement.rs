@@ -294,13 +294,15 @@ fn use_block(click: &Click, state: BlockState, blocks: &dyn Blocks) -> Clicked {
         return Clicked::ByRule { position, face };
     }
     // A container opens a menu, which the region keeps (`docs/groundwork/n6-plan.md`,
-    // decision 2); the click is the block's whether it opens or not.
+    // decision 2), and so does a crafting table (V3c); the click is the block's whether
+    // it opens or not.
     if data::is(state, BlockClass::ChestBlock)
         || data::is(state, BlockClass::EnderChestBlock)
         || data::is(state, BlockClass::BarrelBlock)
         || data::is(state, BlockClass::ShulkerBoxBlock)
         || data::is(state, BlockClass::DispenserBlock)
         || data::is(state, BlockClass::HopperBlock)
+        || state == clustine_data::blocks::CRAFTING_TABLE
     {
         return Clicked::ByRule { position, face };
     }

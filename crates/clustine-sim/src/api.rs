@@ -1080,6 +1080,12 @@ pub enum PlayerInput {
     /// change of level, a death and the credits as the player's mode does. Added at the
     /// end, so that what is stored of inputs reads as it did.
     Order(Order),
+    /// A creative player's client set the slot `slot` (0 to 3, row by row) of their
+    /// inventory screen's 2×2 grid (`set_creative_mode_slot` of window 0's slots 1 to 4,
+    /// which `handleSetCreativeModeSlot` takes as any other: V3c). Taken only from a
+    /// player with `instabuild`, as [`Self::SetInventorySlot`]. Added at the end, so that
+    /// what is stored of inputs reads as it did.
+    SetCraftingSlot { slot: u8, stack: Option<ItemStack> },
 }
 
 /// What a client says of the block it breaks ([`PlayerInput::Destroy`]).
@@ -1101,6 +1107,7 @@ impl PlayerInput {
             self,
             Self::SelectSlot { .. }
                 | Self::SetInventorySlot { .. }
+                | Self::SetCraftingSlot { .. }
                 | Self::SwapHands
                 | Self::SetFlying { .. }
                 | Self::Appearance(_)
@@ -1149,6 +1156,9 @@ pub enum MenuKind {
     /// main inventory (9-35), the hotbar (36-44) and the off hand (45: inventory slot
     /// 40), 46 in all (V3, `docs/groundwork/v-plan.md`, section 4.7).
     Inventory,
+    /// A crafting table's (`CraftingMenu`): the result (0) and the 3×3 grid (1-9, row by
+    /// row), then the inventory as every menu lays it out, 46 in all (V3c).
+    Crafting,
 }
 
 impl MenuKind {
@@ -1162,6 +1172,7 @@ impl MenuKind {
             Self::Mount { columns, .. } => 2 + usize::from(columns) * 3,
             Self::Merchant { .. } => 3,
             Self::Inventory => 5,
+            Self::Crafting => 10,
         }
     }
 

@@ -102,7 +102,10 @@ impl Region {
         // `Player.remove` with `CHANGED_DIMENSION`: window 0's grid and cursor go back
         // into the inventory first (the V3 review's finding 4).
         self.inventory_menu_removed(id, output);
-        self.menu_leaving(id, true, output);
+        // Any other menu as `doCloseContainer` closes it for a player who stays: what it
+        // holds goes back into the inventory (`dropOrPlaceInInventory` with
+        // `CHANGED_DIMENSION`; the V3c review's defect 3).
+        self.close_menu(id, output);
         let Some(player) = self.players.remove(&id) else {
             return;
         };
@@ -205,7 +208,10 @@ impl Region {
         // `Player.remove` with `CHANGED_DIMENSION`: window 0's grid and cursor go back
         // into the inventory first (the V3 review's finding 4).
         self.inventory_menu_removed(id, output);
-        self.menu_leaving(id, true, output);
+        // Any other menu as `doCloseContainer` closes it for a player who stays: what it
+        // holds goes back into the inventory (`dropOrPlaceInInventory` with
+        // `CHANGED_DIMENSION`; the V3c review's defect 3).
+        self.close_menu(id, output);
         let Some(player) = self.players.remove(&id) else {
             return;
         };
