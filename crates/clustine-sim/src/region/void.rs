@@ -15,6 +15,9 @@
 //!   asked for the respawn (`respawning.rs`); an ask before that ends the body at once.
 //!   While dead, every input but `PerformRespawn` is dropped.
 //!
+//! - **Not before the client has loaded**: since the join, a respawn or a change of
+//!   level, until the client says so or 60 ticks have passed (`loading.rs`).
+//!
 //! Named: nothing else hurts a player yet; the death message is not told to other
 //! players (there is no chat); the cooldown is kept in memory and starts afresh in a
 //! region the player is handed to.
@@ -44,10 +47,6 @@ const HALF_COOLDOWN: u8 = 10;
 /// body goes 19 ticks after it.
 const BODY_TICKS: u64 = 19;
 
-/// How long after a respawn the void hurts nobody while their client loads
-/// (`ServerPlayer.isInvulnerableTo` with `hasClientLoaded`, its 60 ticks).
-pub(super) const RESPAWN_PROTECTION: u64 = 60;
-
 /// The game's death message for the void.
 const OUT_OF_WORLD_MESSAGE: &str = "death.attack.outOfWorld";
 
@@ -60,8 +59,9 @@ pub(crate) struct Hurting {
     last: f32,
     /// The tick the player died in, while their body stays.
     died_at: Option<u64>,
-    /// The tick until which a respawned player is not hurt, their client loading.
-    pub(super) protected_until: u64,
+    /// Whether their client has loaded since their join, respawn or change of level,
+    /// before which nothing hurts them (`loading.rs`).
+    pub(super) loading: super::loading::Loading,
 }
 
 impl Region {
@@ -86,7 +86,9 @@ impl Region {
                 }
                 continue;
             }
-            if player.pose.position.y < bottom && tick >= player.hurting.protected_until {
+            // `isInvulnerableTo` refuses even the void's hurt to a player whose client
+            // has not loaded (`loading.rs`).
+            if player.pose.position.y < bottom && self.client_loaded(id) {
                 self.hurt_by_the_void(id, output);
             }
         }

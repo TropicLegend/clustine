@@ -912,7 +912,9 @@ pub enum PlayerInput {
     /// The player selected another hotbar slot, from 0 to 8.
     SelectSlot { slot: u8 },
     /// A creative-mode player put a stack into a slot of their inventory, numbered as
-    /// [`Inventory`] numbers them, or emptied it.
+    /// [`Inventory`] numbers them, or emptied it. From a player whose mode has no
+    /// `instabuild` it does nothing (`handleSetCreativeModeSlot @16`), which the edge
+    /// and the region each ask.
     SetInventorySlot { slot: u8, stack: Option<ItemStack> },
     /// The player used the item in their hand without a block it uses on: a bucket or
     /// a lily pad, which find what they reach by a ray along `rotation` (yaw, pitch),
@@ -925,7 +927,8 @@ pub enum PlayerInput {
     },
     /// The player began or stopped flying. The region keeps it, hands it on with the
     /// player and tells the world store with their place; nobody else is shown it. See
-    /// `docs/adr/0020-one-stay-per-player.md`, section 13.
+    /// `docs/adr/0020-one-stay-per-player.md`, section 13. A player whose mode may not
+    /// fly does not fly, whatever the client says (`handlePlayerAbilities @13-44`).
     SetFlying { flying: bool },
     /// The player swapped what they hold in the main hand with what they hold in the
     /// off hand (the game's `SWAP_ITEM_WITH_OFFHAND`, the key F). Added at the end, so
@@ -1025,6 +1028,12 @@ pub enum PlayerInput {
     /// lets them where they can (`Player.tryToStartFallFlying`), which the others see
     /// as their pose.
     StartFallFlying,
+    /// The player's client has left its loading screen (`player_loaded`, which a client
+    /// sends after its join, a respawn and a change of level, once it has the chunk it
+    /// stands in): from then on they can be hurt (`ServerPlayer.isInvulnerableTo`;
+    /// `docs/groundwork/v-plan.md`, section 4.1). Added at the end, so that what is
+    /// stored of inputs reads as it did.
+    Loaded,
 }
 
 impl PlayerInput {

@@ -86,6 +86,7 @@ mod knots;
 mod leashes;
 mod lends;
 mod light;
+mod loading;
 mod menu_play;
 mod minecarts;
 mod mob_attacks;
@@ -1881,7 +1882,10 @@ impl Region {
 
     /// Puts a player into the region whose stay begins here, and tells them and
     /// everyone who watches.
-    fn enter(&mut self, id: PlayerId, player: Player, attempt: u64, output: &mut TickOutput) {
+    fn enter(&mut self, id: PlayerId, mut player: Player, attempt: u64, output: &mut TickOutput) {
+        // The client loads its first level, and nothing hurts the player before it has
+        // (`ServerGamePacketListenerImpl.<init> @90`; `loading.rs`).
+        player.hurting.loading.restart(self.tick);
         output.player_events.push((
             id,
             PlayerEvent::Spawned {
@@ -2760,13 +2764,15 @@ impl Region {
             }
             PlayerInput::ReleaseUse => self.release_use(id, output),
             PlayerInput::SetInventorySlot { slot, stack } => {
-                // Only stacks of items that exist are kept, and only in slots the
-                // inventory has.
+                // Only from a player with `instabuild` (`handleSetCreativeModeSlot @16`,
+                // `hasInfiniteMaterials`): the edge asked as well, but their mode may
+                // have changed since it looked. Only stacks of items that exist are
+                // kept, and only in slots the inventory has.
                 let known = stack.as_ref().is_none_or(|stack| {
                     stack.count > 0
                         && usize::try_from(stack.item).is_ok_and(|item| item < ITEMS.len())
                 });
-                if known {
+                if known && player.mode.current.abilities().instabuild {
                     player.inventory.set(usize::from(*slot), stack.clone());
                 }
             }
@@ -2793,7 +2799,14 @@ impl Region {
                     }
                 }
             }
-            PlayerInput::SetFlying { flying } => player.flying = *flying,
+            // `handlePlayerAbilities @13-44`: flying is `isFlying && mayfly`, and a
+            // client that says it flies where it may not is not cut off. Asked again
+            // here, as for a creative slot.
+            PlayerInput::SetFlying { flying } => {
+                player.flying = *flying && player.mode.current.abilities().may_fly;
+            }
+            // `handleAcceptPlayerLoad` (`loading.rs`).
+            PlayerInput::Loaded => player.hurting.loading.mark_loaded(),
             PlayerInput::Drop { all, crouching } => {
                 // `ServerPlayer.drop`: one of what is held, or all of it, out of the
                 // slot; an empty hand throws nothing.
@@ -2950,7 +2963,11 @@ impl Region {
             }
             PlayerInput::Throw { stack } => {
                 // Out of the creative inventory: nothing is taken from the player's,
-                // and a throw refused leaves nothing to put back.
+                // and a throw refused leaves nothing to put back. Only from a player
+                // with `instabuild`, as a creative slot.
+                if !player.mode.current.abilities().instabuild {
+                    return;
+                }
                 let thrown = entities::Thrown {
                     player: id,
                     stack: stack.clone(),
@@ -4518,6 +4535,7 @@ mod tests {
     mod lends;
     mod lends_by_the_record;
     mod light;
+    mod loading;
     mod melting;
     mod menus;
     mod minecarts;

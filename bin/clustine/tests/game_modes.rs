@@ -2,7 +2,8 @@
 //! is given the world's (`--gamemode`), keeps it across leaving whatever the world's
 //! becomes, and is given the world's again where it is forced (`--force-gamemode`). The
 //! client is told it in the login, with the abilities it gives, and a survival newcomer
-//! starts with nothing, as the game's does.
+//! starts with nothing, as the game's does. What a survival client asks of creative, a
+//! stack out of the creative inventory and flying, is refused.
 
 mod common;
 
@@ -10,6 +11,8 @@ use std::time::Duration;
 
 use clustine::Config;
 use clustine_botswarm::Bot;
+use clustine_data::items;
+use clustine_protocol::item::ItemStack;
 use clustine_protocol::packets::play::{abilities, game_mode};
 use clustine_world::GameMode;
 
@@ -107,5 +110,57 @@ async fn a_player_keeps_their_mode_across_leaving_unless_the_world_s_is_forced()
         first_abilities(&walker),
         abilities::INVULNERABLE | abilities::MAY_FLY | abilities::INSTANT_BREAK,
     );
+    server.stop().await;
+}
+
+/// What a survival player's client asks of creative is refused, by the edge and by the
+/// region (`handleSetCreativeModeSlot @16`, `handlePlayerAbilities @13-44`): a stack
+/// taken from the creative inventory is not theirs and their flying is not kept, which
+/// the place they leave with shows when they come back. A creative player's are kept.
+#[tokio::test]
+async fn a_survival_player_s_creative_slot_and_flying_are_refused_and_a_creative_player_s_kept() {
+    let directory = tempfile::tempdir().unwrap();
+    let on_disk = |mode: GameMode, forced: bool| Config {
+        world: Some(directory.path().to_owned()),
+        game_mode: mode,
+        force_game_mode: forced,
+        ..config()
+    };
+    let stone = || ItemStack::new(items::STONE, 1);
+
+    // In survival: a stone into the hotbar, and flying, both kept as far as the region
+    // goes before the server stops.
+    let (server, address) = start_with(on_disk(GameMode::Survival, false)).await;
+    let mut walker = Bot::join(&address, "Walker").await.unwrap();
+    walker.wait_until(PATIENCE, Bot::is_loaded).await.unwrap();
+    walker.put_in_hotbar(0, stone()).await.unwrap();
+    walker.set_flying(true).await.unwrap();
+    walker.stand_until_kept(PATIENCE).await.unwrap();
+    server.stop().await;
+    drop(walker);
+
+    // Made creative by force, which keeps a creative flyer flying: they come back with
+    // neither, and now take the stone and fly.
+    let (server, address) = start_with(on_disk(GameMode::Creative, true)).await;
+    let mut walker = Bot::join(&address, "Walker").await.unwrap();
+    assert_eq!(walker.info.login.spawn.game_mode, game_mode::CREATIVE);
+    let kept = walker.entered(PATIENCE).await.unwrap();
+    assert!(!kept.flying, "the survival player's flying was kept");
+    assert_eq!(
+        kept.hotbar[0], None,
+        "the survival player's creative slot was kept"
+    );
+    walker.wait_until(PATIENCE, Bot::is_loaded).await.unwrap();
+    walker.put_in_hotbar(0, stone()).await.unwrap();
+    walker.set_flying(true).await.unwrap();
+    walker.stand_until_kept(PATIENCE).await.unwrap();
+    server.stop().await;
+    drop(walker);
+
+    let (server, address) = start_with(on_disk(GameMode::Creative, false)).await;
+    let mut walker = Bot::join(&address, "Walker").await.unwrap();
+    let kept = walker.entered(PATIENCE).await.unwrap();
+    assert!(kept.flying);
+    assert_eq!(kept.hotbar[0], Some(stone()));
     server.stop().await;
 }

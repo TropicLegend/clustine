@@ -303,7 +303,8 @@ async fn pump(
                     ServerboundPlay::SetCreativeModeSlot(packet) => {
                         // A slot of the inventory screen sets that slot of the
                         // inventory, and a negative one throws the stack out of the
-                        // screen. The crafting grid is the client's own business.
+                        // screen. The crafting grid is the client's own business. The
+                        // fan-out drops either from a player who is not creative.
                         let input = if packet.slot < 0 {
                             creative_throw(packet.stack, &mut drops, Instant::now())
                         } else {
@@ -316,7 +317,8 @@ async fn pump(
                     ServerboundPlay::ServerboundPlayerAbilities(packet) => {
                         // The one thing a client says with it is whether it flies; the
                         // region keeps that, so that whoever comes back comes back as
-                        // they left (ADR-0020, section 13).
+                        // they left (ADR-0020, section 13). Where their mode may not
+                        // fly, the fan-out passes it on as not flying.
                         let flying = packet.is_flying();
                         send_input(shared, client, PlayerInput::SetFlying { flying }).await?;
                     }
@@ -349,9 +351,12 @@ async fn pump(
                         let item = packet.item;
                         menu_command(shared, client, MenuCommand::SelectTrade { item }).await?;
                     }
-                    ServerboundPlay::ClientTickEnd(_)
-                    | ServerboundPlay::PlayerLoaded(_)
-                    | ServerboundPlay::Unhandled { .. } => {}
+                    // The client has left its loading screen: from now on its player can
+                    // be hurt (`handleAcceptPlayerLoad`; the region's `loading.rs`).
+                    ServerboundPlay::PlayerLoaded(_) => {
+                        send_input(shared, client, PlayerInput::Loaded).await?;
+                    }
+                    ServerboundPlay::ClientTickEnd(_) | ServerboundPlay::Unhandled { .. } => {}
                 }
             }
             packet = packets.recv() => {

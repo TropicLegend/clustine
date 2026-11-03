@@ -714,6 +714,29 @@ fn has_no_place(input: &PlayerInput) -> bool {
     input.has_no_place()
 }
 
+/// `input` as a player in `mode` may make it, or none where the mode refuses it: a
+/// creative slot or throw only with `instabuild` (`handleSetCreativeModeSlot @16`), and
+/// flying only with `mayfly` (`handlePlayerAbilities @13-44`), where a client that says
+/// it flies is not cut off but does not fly. The region asks again, since the mode may
+/// change between this look and its tick (`docs/groundwork/v-plan.md`, section 4.1).
+/// The connection's throttler of creative throws (`play.rs`) has counted a refused
+/// throw already, where the game asks the mode first: only a client that sends
+/// creative slots in survival, which a real one does not, is the slower for it.
+fn allowed(mode: clustine_world::GameMode, input: PlayerInput) -> Option<PlayerInput> {
+    let abilities = mode.abilities();
+    match input {
+        PlayerInput::SetInventorySlot { .. } | PlayerInput::Throw { .. }
+            if !abilities.instabuild =>
+        {
+            None
+        }
+        PlayerInput::SetFlying { flying } => Some(PlayerInput::SetFlying {
+            flying: flying && abilities.may_fly,
+        }),
+        input => Some(input),
+    }
+}
+
 /// The edge's link to a region.
 struct Link {
     sender: link::Sender<EdgeMessage>,
@@ -4513,6 +4536,13 @@ impl Fanout {
         if travelling && !has_no_place(&input) {
             return;
         }
+        let Some(input) = self
+            .players
+            .get(&player)
+            .and_then(|view| allowed(view.mode.current, input))
+        else {
+            return;
+        };
         self.player_input_unchecked(player, input).await;
     }
 
@@ -8664,6 +8694,80 @@ mod tests {
                 chunks: vec![next]
             }
         );
+    }
+
+    /// The inputs `region` is sent next, as many as `count`, by number.
+    async fn next_inputs(
+        edge: &mut Harness,
+        region: RegionId,
+        count: usize,
+    ) -> Vec<(u64, PlayerInput)> {
+        let mut inputs = Vec::new();
+        while inputs.len() < count {
+            if let (_, EdgeToWorker::Input { number, input, .. }) = edge.next_numbered(region).await
+            {
+                inputs.push((number, input));
+            }
+        }
+        inputs
+    }
+
+    /// `handleSetCreativeModeSlot @16` and `handlePlayerAbilities @13-44`: of a survival
+    /// player the edge passes on no creative slot or throw, and flying as not flying.
+    /// The client's `player_loaded` goes on as an input.
+    #[tokio::test]
+    async fn a_survival_player_s_creative_slots_are_dropped_and_their_flying_passed_on_as_none() {
+        let mut edge = Harness::start().await;
+        let _packets = edge.join(player(1)).await;
+        let (_, join) = edge.next_numbered(WEST).await;
+        assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
+        let mut spawned = edge.spawned(player(1), EntityId(5));
+        if let WorkerToEdge::ToPlayer {
+            event: PlayerEvent::Spawned { mode, .. },
+            ..
+        } = &mut spawned
+        {
+            *mode = clustine_world::PlayerMode::new(clustine_world::GameMode::Survival);
+        }
+        edge.tell(WEST, spawned);
+        edge.settle(WEST).await;
+
+        let stone = clustine_world::ItemStack::new(1, 1);
+        let slot = PlayerInput::SetInventorySlot {
+            slot: 36,
+            stack: Some(stone.clone()),
+        };
+        let throw = PlayerInput::Throw { stack: stone };
+        for input in [
+            slot,
+            throw,
+            PlayerInput::SetFlying { flying: true },
+            PlayerInput::Loaded,
+        ] {
+            edge.input(player(1), input).await;
+        }
+        assert_eq!(
+            next_inputs(&mut edge, WEST, 2).await,
+            [
+                (1, PlayerInput::SetFlying { flying: false }),
+                (2, PlayerInput::Loaded)
+            ]
+        );
+    }
+
+    /// Of a creative player the same are passed on as said.
+    #[tokio::test]
+    async fn a_creative_player_s_creative_slots_and_flying_are_passed_on() {
+        let mut edge = Harness::start().await;
+        let _packets = edge.joined(player(1), EntityId(5)).await;
+        let slot = PlayerInput::SetInventorySlot {
+            slot: 36,
+            stack: Some(clustine_world::ItemStack::new(1, 1)),
+        };
+        let fly = PlayerInput::SetFlying { flying: true };
+        edge.input(player(1), slot.clone()).await;
+        edge.input(player(1), fly.clone()).await;
+        assert_eq!(next_inputs(&mut edge, WEST, 2).await, [(1, slot), (2, fly)]);
     }
 
     #[tokio::test]

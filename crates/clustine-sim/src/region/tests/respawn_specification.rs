@@ -551,8 +551,8 @@ fn a_player_back_in_the_void_within_the_cooldown_waits_for_its_half_before_the_n
 
 /// 19.5 item 2 and `ServerPlayer.isInvulnerableTo` (n9 3014–3030): within the 60 ticks
 /// after a respawn before the client has loaded (`CLIENT_LOADED_TIMEOUT_TIME`, SGPL 13;
-/// `hasClientLoaded`, SGPL 6770–6790) the void takes nothing. The edge passes on no
-/// `PlayerLoaded`, so the timer alone ends it.
+/// `hasClientLoaded`, SGPL 6770–6790) the void takes nothing. No `PlayerLoaded` comes
+/// in this test, so the timer alone would end it.
 #[test]
 fn a_player_moved_into_the_void_just_after_a_respawn_is_not_hurt_before_their_client_has_loaded() {
     let mut home = region(Land::whole(Dimension::Overworld), 0, nothing);

@@ -619,12 +619,15 @@ impl Region {
         let Some(mut player) = self.players.remove(&id) else {
             return;
         };
+        // A respawn's or a portal's client shows a new level and loads it, and is hurt
+        // by nothing before it has (`loading.rs`; a join's begins in `enter`). A
+        // gateway's stays in its level, and its client loads nothing.
+        if respawn.is_some() || !gateway {
+            player.hurting.loading.restart(self.tick);
+        }
         // A stay that never had an input applied carries its join's attempt: its edge
         // was never told an entity for it, so it was never in the world. A stay a
         // portal sent on lost its attempt at the firing (`travel.rs`).
-        if respawn.is_some() {
-            player.hurting.protected_until = self.tick + super::void::RESPAWN_PROTECTION;
-        }
         match transfer.attempt {
             Some(attempt) => self.enter(id, player, attempt, output),
             None => {

@@ -3922,7 +3922,8 @@ impl RegionRunner {
                 | PlayerInput::LeaveBed
                 | PlayerInput::RidingJump { .. }
                 | PlayerInput::Appearance(_)
-                | PlayerInput::StartFallFlying => return false,
+                | PlayerInput::StartFallFlying
+                | PlayerInput::Loaded => return false,
             },
             EdgeToWorker::Remote(action) => match &action.step {
                 RemoteStep::Break { position } => vec![chunk(*position)],
