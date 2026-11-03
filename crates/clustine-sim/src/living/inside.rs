@@ -10,6 +10,7 @@ use clustine_data::{BlockClass, BlockState, sounds};
 use clustine_world::BlockPos;
 
 use super::{Damage, Living};
+use crate::mobs::body::hurt::DamageType;
 use crate::physics::body::Body;
 use crate::physics::item::{Draws, Inside, check_inside_blocks, handed_back, tick_movements};
 use crate::physics::{Vec3, World};
@@ -24,6 +25,11 @@ pub(super) enum Effect {
     LavaIgnite = 3,
     Extinguish = 4,
 }
+
+/// The damage types of the blocks' hurts that only a player's body is asked for yet.
+const HOT_FLOOR: DamageType = DamageType("minecraft:hot_floor");
+const SWEET_BERRY_BUSH: DamageType = DamageType("minecraft:sweet_berry_bush");
+const CACTUS: DamageType = DamageType("minecraft:cactus");
 
 const APPLY_ORDER: [Effect; 5] = [
     Effect::Freeze,
@@ -136,6 +142,9 @@ impl Living {
             self.step_on(pos, state);
         }
         let was_on_fire = self.is_on_fire();
+        // `isFreezing()`, which only a player's tick reads here: the others' thaw is
+        // silent, as before.
+        let was_freezing = self.player_hurts.is_some() && self.frozen > 0;
         let fire_before = self.fire_ticks;
         let mut collector = Collector::default();
         check_inside_blocks(
@@ -154,14 +163,15 @@ impl Living {
             }
             self.run(action);
         }
-        if was_on_fire && !self.is_on_fire() {
+        let thawed = was_freezing && self.frozen <= 0;
+        if (was_on_fire && !self.is_on_fire()) || thawed {
             // `playEntityOnFireExtinguishedSound`, its pitch of two of its own draws.
             let pitch = 1.6 + (draws.next_float() - draws.next_float()) * 0.4;
             self.play(sounds::ENTITY_GENERIC_EXTINGUISH_FIRE, 0.7, pitch);
         }
         let ignited = self.fire_ticks > fire_before;
         if !self.is_on_fire() && !ignited {
-            self.fire_ticks = 0;
+            self.fire_ticks = -self.fire_immune_ticks;
         }
     }
 
@@ -179,13 +189,16 @@ impl Living {
             || is_class(state, BlockClass::SculkSensorBlock)
         {
             self.ore.push(pos);
+        } else if is_class(state, BlockClass::MagmaBlock) && !self.careful {
+            // `MagmaBlock.stepOn @0-26`: `hotFloor` of 1 to a living body that does not
+            // step carefully, which breaks no stand and is asked only of a player yet.
+            self.hurt_as_player(HOT_FLOOR, 1.0);
         }
-        // A magma block's `hotFloor` hit breaks no stand.
     }
 
     /// `BlockState.entityInside` of what a living body meets, `in_block` the block at
     /// its feet (`getInBlockState`). A cactus's and a berry bush's hits break no stand,
-    /// and are not asked.
+    /// and are asked only of a player's body (`hurt_as_player`).
     fn entity_inside(
         &mut self,
         state: BlockState,
@@ -202,9 +215,9 @@ impl Living {
             collector.apply(Effect::FireIgnite);
             collector.run_after(Effect::FireIgnite, Action::Hurt(Damage::InFire, damage));
         } else if is_class(state, BlockClass::CampfireBlock) {
-            // **Inferred**: `CampfireBlock.entityInside` is not in the dump; a lit
-            // campfire hurts a living body in it at once with its fire damage (1, a
-            // soul campfire's 2), lighting nothing, as the reference servers have it.
+            // `CampfireBlock.entityInside @0-38` (read in the 26.3 jar for V4): a lit
+            // campfire hurts a living body in it at once with its `fireDamage` (1, a
+            // soul campfire's 2), sneaking or not, lighting nothing.
             if flag(state, "lit") {
                 let damage =
                     if clustine_blocks::data::is_block(state, clustine_data::blocks::SOUL_CAMPFIRE)
@@ -222,6 +235,21 @@ impl Living {
             }
         } else if is_class(state, BlockClass::SweetBerryBushBlock) {
             self.make_stuck([f64::from(0.8_f32), 0.75, f64::from(0.8_f32)]);
+            // `SweetBerryBushBlock.entityInside @66-177`: a bush past its first age
+            // hurts a body that moved sideways by 0.003 or more on either axis, by its
+            // client's last move for a player (`getKnownMovement`); asked only of a
+            // player yet.
+            let grown = clustine_blocks::data::number(state, "age").unwrap_or(0) != 0;
+            let [x, _, z] = self.known_movement;
+            let moved = x * x + z * z > 0.0
+                && (x.abs() >= 0.003_000_000_026_077_032 || z.abs() >= 0.003_000_000_026_077_032);
+            if grown && moved {
+                self.hurt_as_player(SWEET_BERRY_BUSH, 1.0);
+            }
+        } else if is_class(state, BlockClass::CactusBlock) {
+            // `CactusBlock.entityInside @0-10`: `cactus` of 1, at once; asked only of a
+            // player yet.
+            self.hurt_as_player(CACTUS, 1.0);
         } else if is_class(state, BlockClass::PowderSnowBlock) {
             // **Inferred**: `PowderSnowBlock` is not in the dump. A living body is held
             // only where the powder snow is the block at its feet, and is put in it
@@ -259,7 +287,9 @@ impl Living {
             // fire (a zombified piglin, a magma cube, the Nether's others).
             Action::Effect(Effect::FireIgnite | Effect::LavaIgnite) if self.fire_immune() => {}
             Action::Effect(Effect::FireIgnite) => {
-                // `BaseFireBlock.fireIgnite`.
+                // `BaseFireBlock.fireIgnite`. Named difference: a player already burning
+                // gets 1 or 2 ticks more of the level's random first (@27-56), which is
+                // not kept; their fire runs from 160 as anything's does.
                 if self.fire_ticks < 0 {
                     self.fire_ticks += 1;
                 }

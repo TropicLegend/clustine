@@ -25,6 +25,7 @@ use clustine_blocks::data::is_class;
 use clustine_data::{BlockClass, sounds};
 use clustine_world::BlockPos;
 
+use crate::mobs::body::hurt::DamageType;
 use crate::physics::body::{Body, Movement};
 use crate::physics::fluids::{self, InFluids};
 use crate::physics::item::{Draws, Region as Holds, Sound};
@@ -274,6 +275,23 @@ pub(crate) struct Living {
     /// (`docs/groundwork/n9-plan.md`, section 5.2).
     pub(crate) slow_falling: bool,
     pub(crate) levitation: Option<u8>,
+    /// A player's body (`region/player_sources.rs`): what hurts it in its tick, by the
+    /// game's damage type and in the order met, for the region to take through the
+    /// player's hurt, the blocks' hurts that no other body is asked for yet among them
+    /// (a cactus's, a berry bush's, a magma block's). `None` for every other body, whose
+    /// hurts go as its kind's.
+    pub(crate) player_hurts: Option<Vec<(DamageType, f32)>>,
+    /// `getFireImmuneTicks()`: where the fire ticks rest, below 0, once it is out of
+    /// fire (`applyEffectsFromBlocks @151-157`): a player's 20 (`Player
+    /// .getFireImmuneTicks`), every other body's 0.
+    pub(crate) fire_immune_ticks: i32,
+    /// The value of its `oxygen_bonus` attribute (Respiration's): under water it keeps
+    /// its air for a tick on a draw of at least `1 / (bonus + 1)`
+    /// (`LivingEntity.decreaseAirSupply @0-51`). No mob of Clustine's has any.
+    pub(crate) oxygen_bonus: f64,
+    /// `getKnownMovement()` of a body its client moves (a player's last move of the
+    /// tick, `lastKnownClientMovement`), which a berry bush reads; nothing for the rest.
+    pub(crate) known_movement: physics::Vec3,
 }
 
 impl Living {
@@ -325,6 +343,10 @@ impl Living {
             stuck_in_webs: true,
             slow_falling: false,
             levitation: None,
+            player_hurts: None,
+            fire_immune_ticks: 0,
+            oxygen_bonus: 0.0,
+            known_movement: [0.0; 3],
         }
     }
 
@@ -394,6 +416,12 @@ impl Living {
         if !self.alive() {
             return false;
         }
+        // A player's hurts are taken by the region, after the step that met them, in
+        // the order met (`region/player_sources.rs`).
+        if let Some(hurts) = &mut self.player_hurts {
+            hurts.push((damage.into(), amount));
+            return true;
+        }
         match &mut self.kind {
             Kind::Mob { hurts, .. } => {
                 // The mob's body takes it in its tick (`mobs::tick`), after the step that
@@ -433,6 +461,18 @@ impl Living {
                 }
                 false
             }
+        }
+    }
+
+    /// A hurt of the type `kind` that only a player's body is asked for yet (a cactus's, a
+    /// berry bush's, a magma block's): noted for the region to take, as [`Self::hurt`]
+    /// notes a player's; nothing for any other body.
+    pub(crate) fn hurt_as_player(&mut self, kind: DamageType, amount: f32) {
+        if !self.alive() {
+            return;
+        }
+        if let Some(hurts) = &mut self.player_hurts {
+            hurts.push((kind, amount));
         }
     }
 
@@ -477,6 +517,16 @@ impl Living {
 
     /// `LivingEntity.baseTick()`.
     pub(crate) fn base_tick<R: Holds + ?Sized>(&mut self, world: &R) {
+        self.base_tick_drawing(world, None);
+    }
+
+    /// `LivingEntity.baseTick()`, the draws of Respiration's kept air (`oxygen_bonus`)
+    /// taken from `draws`; a body with no bonus draws nothing.
+    pub(crate) fn base_tick_drawing<R: Holds + ?Sized>(
+        &mut self,
+        world: &R,
+        draws: Option<&mut crate::region::Random>,
+    ) {
         // `Entity.baseTick`.
         self.was_in_powder_snow = self.in_powder_snow;
         self.in_powder_snow = false;
@@ -514,9 +564,15 @@ impl Living {
         let at_eyes = world.state(physics::containing(eyes));
         if self.eye_in_water(world) && !is_class(at_eyes, BlockClass::BubbleColumnBlock) {
             if !self.breathes_under_water && !self.water_breathing {
-                // `decreaseAirSupply`, with no oxygen bonus, which nothing in Clustine
-                // gives and which alone would draw.
-                self.air -= 1;
+                // `decreaseAirSupply`: one less, unless the oxygen bonus keeps it, which
+                // alone draws.
+                let kept = self.oxygen_bonus > 0.0
+                    && draws.is_some_and(|draws| {
+                        draws.next_double() >= 1.0 / (self.oxygen_bonus + 1.0)
+                    });
+                if !kept {
+                    self.air -= 1;
+                }
                 if self.air <= -20 {
                     // `shouldTakeDrowningDamage`: the bubbles (entity event 67) and a
                     // drowning hit, which only a mob takes.

@@ -104,6 +104,7 @@ mod pistons;
 mod placing;
 mod player_damage;
 mod player_effects;
+mod player_sources;
 pub(crate) mod pois;
 mod portal_spawns;
 mod portals;
@@ -1441,6 +1442,7 @@ impl Region {
         // effects. A mob's hit in the entities comes before them, as in the game.
         self.void_tick(&mut output);
         self.tick_player_effects(&mut output);
+        self.players_body_tick(&mut output);
         // The players push the carts they stand in and pick up what lies around them,
         // as the game's connections tick after its levels, block entities and all
         // (`minecarts.rs`, `items.rs`): `LivingEntity.aiStep` pushes before the
@@ -4740,6 +4742,7 @@ mod tests {
     mod pigs;
     mod pistons;
     mod player_effects;
+    mod player_sources;
     mod pois;
     #[path = "../portals_specification.rs"]
     mod portals_specification;
