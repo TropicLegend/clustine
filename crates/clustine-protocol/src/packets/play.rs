@@ -2153,6 +2153,39 @@ impl Decode for BlockEvent {
     }
 }
 
+/// How far someone has broken a block (`ClientboundBlockDestructionPacket`): `entity_id`
+/// names the breaker, by which the client keeps each breaker's cracks apart, and
+/// `progress` is the stage from 0 to 9; anything else takes the cracks away. The game
+/// writes the stage as a byte.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockDestruction {
+    pub entity_id: i32,
+    pub position: Position,
+    pub progress: u8,
+}
+
+impl Packet for BlockDestruction {
+    const ID: i32 = clientbound::BLOCK_DESTRUCTION;
+}
+
+impl Encode for BlockDestruction {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        w.put_position(self.position);
+        w.put_u8(self.progress);
+    }
+}
+
+impl Decode for BlockDestruction {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            entity_id: r.var_int()?,
+            position: r.position()?,
+            progress: r.u8()?,
+        })
+    }
+}
+
 /// A sound played at a place (`ClientboundSoundPacket`), named by its id in the sound
 /// event registry, as the game names one it has registered. The place is in eighths
 /// of a block, as the game sends it.
@@ -4484,6 +4517,7 @@ packet_set! {
         SectionBlocksUpdate,
         LevelEvent,
         BlockEvent,
+        BlockDestruction,
         BlockEntityData,
         Sound,
         SetContainerContent,
@@ -4950,6 +4984,19 @@ mod tests {
             },
             Set::decode,
             Set::BlockEvent,
+        );
+        assert_round_trip(
+            BlockDestruction {
+                entity_id: 300,
+                position: Position {
+                    x: -7,
+                    y: -62,
+                    z: 1_000,
+                },
+                progress: 255,
+            },
+            Set::decode,
+            Set::BlockDestruction,
         );
         assert_round_trip(
             BlockEntityData {

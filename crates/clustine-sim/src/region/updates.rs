@@ -31,7 +31,8 @@ use clustine_data::{BlockClass, BlockState, Face, blocks};
 use std::collections::{BTreeMap, BTreeSet};
 
 use clustine_world::{
-    BlockPos, ChunkPos, Due, Effect, Effected, FiledEffect, PlayerId, Seam, SeamKind, Ticked,
+    BlockPos, ChunkPos, Due, Effect, Effected, FiledEffect, ItemStack, PlayerId, Seam, SeamKind,
+    Ticked,
 };
 
 use super::Region;
@@ -353,7 +354,8 @@ impl Region {
     /// A player breaks the block at `pos` (`ServerPlayerGameMode.destroyBlock` in
     /// creative): the others see it break (`playerWillDestroy`), a door or a tall
     /// plant broken at its upper half loses its lower half without a drop, and the
-    /// block gives way to its fluid (`removeBlock`).
+    /// block gives way to its fluid (`removeBlock`). A survival player's break is
+    /// `digging.rs`'.
     pub(crate) fn break_by_player(
         &mut self,
         pos: BlockPos,
@@ -366,13 +368,51 @@ impl Region {
         if state.props().is_air() {
             return;
         }
-        self.head_broken_by_player(pos, state, output);
-        if is_class(state, BlockClass::DoorBlock) || is_class(state, BlockClass::DoublePlantBlock) {
+        self.player_will_destroy(pos, state, player, None, output);
+        self.set_block(pos, fluid_block(state), output);
+        // `Block.playerDestroy`, which the game calls only where the break makes drops:
+        // never for a creative player (`digging.rs` has a survival player's).
+    }
+
+    /// `Block.playerWillDestroy` of `state` at `pos` and the overrides Clustine has,
+    /// for `player`: `survival` is `None` for a player whose drops are prevented
+    /// (`preventsBlockDrops`, a creative player's break and one another region passed
+    /// on), else the tool in their main hand and whether it is the right one for the
+    /// block (`hasCorrectToolForDrops`).
+    pub(crate) fn player_will_destroy(
+        &mut self,
+        pos: BlockPos,
+        state: BlockState,
+        player: Option<PlayerId>,
+        survival: Option<(Option<&ItemStack>, bool)>,
+        output: &mut TickOutput,
+    ) {
+        let prevents_drops = survival.is_none();
+        // `PistonHeadBlock.playerWillDestroy`: only where drops are prevented; else the
+        // base goes, with its drop, when the head's removal tells it.
+        if prevents_drops {
+            self.head_broken_by_player(pos, state, output);
+        }
+        // `DoorBlock.playerWillDestroy` (n7d DoorBlock @0-41): where drops are prevented
+        // or the tool is not the right one (an iron door by hand), the lower half goes
+        // without a drop.
+        if is_class(state, BlockClass::DoorBlock) && survival.is_none_or(|(_, correct)| !correct) {
             self.prevent_drop_from_bottom_part(pos, state, player, output);
+        }
+        // `DoublePlantBlock.playerWillDestroy`: where drops are prevented the lower half
+        // goes without a drop; else the half broken drops by its table with the tool, at
+        // once, its `playerDestroy` dropping nothing after (the class is not among the
+        // dumps: named, from the game's source as SteelMC and earlier versions have it).
+        if is_class(state, BlockClass::DoublePlantBlock) {
+            match survival {
+                None => self.prevent_drop_from_bottom_part(pos, state, player, output),
+                Some((tool, _)) => self.drop_resources_by_player(state, pos, tool, output),
+            }
         }
         // `AbstractBedBlock.playerWillDestroy`: a bed broken at its foot in creative
         // loses its head first, without a drop, as others see.
-        if is_class(state, BlockClass::AbstractBedBlock)
+        if prevents_drops
+            && is_class(state, BlockClass::AbstractBedBlock)
             && state.property("part") == Some("foot")
             && let Some(towards) = clustine_blocks::growth::bed_other_half(state)
         {
@@ -410,11 +450,6 @@ impl Region {
         let source = player.and_then(|player| self.player_source(player));
         let context = super::vibrations::Context::of(source, Some(state));
         self.vibrate_at(super::vibrations::Vibration::BLOCK_DESTROY, pos, context);
-        self.set_block(pos, fluid_block(state), output);
-        // `Block.playerDestroy`, which the game calls only where the break makes drops:
-        // never for a creative player, and for nobody until survival's breaking (V2,
-        // `materials.rs`: a survival player's break is a creative one's until then).
-        self.ice_broken_by_player(pos, state, false, output);
     }
 
     /// `DoublePlantBlock.preventDropFromBottomPart`: the lower half of what is broken at

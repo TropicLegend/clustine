@@ -1165,6 +1165,7 @@ impl Script {
         let person = self.people.get_mut(&who).expect("the player has joined");
         let from = person.region;
         let transfer = PlayerTransfer {
+            digging: Default::default(),
             appearance: Default::default(),
             posture: Default::default(),
             forwards: 0,

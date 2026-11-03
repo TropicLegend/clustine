@@ -110,6 +110,8 @@ impl Effect {
     /// Swiftness.
     pub(crate) const SPEED: Self = Self(0);
     pub(crate) const SLOWNESS: Self = Self(1);
+    pub(crate) const HASTE: Self = Self(2);
+    pub(crate) const MINING_FATIGUE: Self = Self(3);
     pub(crate) const STRENGTH: Self = Self(4);
     pub(crate) const INSTANT_HEALTH: Self = Self(5);
     pub(crate) const INSTANT_DAMAGE: Self = Self(6);

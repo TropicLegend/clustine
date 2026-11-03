@@ -23,17 +23,18 @@ use clustine_protocol::item as protocol;
 use clustine_protocol::item::ItemStack as WireStack;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
-    AcknowledgeBlockChange, AddTransientBlock, Animate, AttributeSnapshot, BlockEvent, BlockUpdate,
-    ChangeDifficulty, ChunkBatchFinished, ChunkBatchStart, ClientboundMoveVehicle, ClockState,
-    Cooldown, DamageEvent, DeathLocation, Disconnect, EntityDataValue, EntityEvent, GameEvent,
-    LevelEvent, Login, PlayerAbilities, PlayerCombatKill, PlayerInfoEntry, PlayerInfoRemove,
-    PlayerInfoUpdate, PositionPath, RemoveEntities, RemoveMobEffect, Respawn, SectionBlocksUpdate,
-    SetCenterChunk, SetContainerContent, SetDefaultSpawnPosition, SetEntityData, SetEntityLink,
-    SetEquipment, SetExperience, SetHeadRotation, SetHealth, SetHeldSlot, SetPassengers,
-    SetPlayerInventory, SetTime, Sound, SpawnEntity, SpawnInfo, SwingAnimation, SyncEntityPosition,
-    SynchronizePlayerPosition, SystemChat, TakeItemEntity, UnloadChunk, UpdateAttributes,
-    UpdateMobEffect, abilities, angle, entity_data, game_event, inventory as protocol_inventory,
-    level_event, player_info, pose, relative,
+    AcknowledgeBlockChange, AddTransientBlock, Animate, AttributeSnapshot, BlockDestruction,
+    BlockEvent, BlockUpdate, ChangeDifficulty, ChunkBatchFinished, ChunkBatchStart,
+    ClientboundMoveVehicle, ClockState, Cooldown, DamageEvent, DeathLocation, Disconnect,
+    EntityDataValue, EntityEvent, GameEvent, LevelEvent, Login, PlayerAbilities, PlayerCombatKill,
+    PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, PositionPath, RemoveEntities,
+    RemoveMobEffect, Respawn, SectionBlocksUpdate, SetCenterChunk, SetContainerContent,
+    SetDefaultSpawnPosition, SetEntityData, SetEntityLink, SetEquipment, SetExperience,
+    SetHeadRotation, SetHealth, SetHeldSlot, SetPassengers, SetPlayerInventory, SetTime, Sound,
+    SpawnEntity, SpawnInfo, SwingAnimation, SyncEntityPosition, SynchronizePlayerPosition,
+    SystemChat, TakeItemEntity, UnloadChunk, UpdateAttributes, UpdateMobEffect, abilities, angle,
+    entity_data, game_event, inventory as protocol_inventory, level_event, player_info, pose,
+    relative,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -902,6 +903,9 @@ type Changed = BTreeMap<(LevelChunk, i32), BTreeMap<BlockPos, BlockState>>;
 const LEVEL_EVENTS_WITHIN: f64 = 64.0;
 /// How far a block event is seen, as the game's `ServerLevel.runBlockEvents` sends it.
 const BLOCK_EVENTS_WITHIN: f64 = 64.0;
+/// How far a block's cracks are seen (`ServerLevel.destroyBlockProgress`'s 1024, the
+/// square of 32).
+const DESTRUCTION_WITHIN: f64 = 32.0;
 
 /// The middle of the block at `position`.
 fn block_centre(position: BlockPos) -> (f64, f64, f64) {
@@ -4388,6 +4392,14 @@ impl Fanout {
                 self.show_near(dimension, position, level_event::LAVA_FIZZ, 0, None)
                     .await;
             }
+            RegionEvent::BlockDestruction {
+                breaker,
+                position,
+                stage,
+            } => {
+                self.show_destruction(dimension, breaker, position, stage)
+                    .await;
+            }
             RegionEvent::ArmSwung {
                 entity,
                 off_hand,
@@ -6956,6 +6968,43 @@ impl Fanout {
             .await;
     }
 
+    /// `ServerLevel.destroyBlockProgress` (n5 @0-144): the breaker's cracks in the block
+    /// at `position`, the stage written as a byte, to the players whose feet are less
+    /// than 32 blocks from the block's corner, but the breaker. Named: as the edge's other
+    /// events of blocks, only to those who have the block's chunk, where the game sends
+    /// to every player of the level that near.
+    async fn show_destruction(
+        &mut self,
+        dimension: Dimension,
+        breaker: EntityId,
+        position: BlockPos,
+        stage: i32,
+    ) {
+        let packet = encoded(&BlockDestruction {
+            entity_id: self.wire.of(breaker),
+            position: Position {
+                x: position.x,
+                y: position.y,
+                z: position.z,
+            },
+            // `writeByte`: the low eight bits.
+            progress: stage as u8,
+        });
+        let corner = (
+            f64::from(position.x),
+            f64::from(position.y),
+            f64::from(position.z),
+        );
+        let chunk = LevelChunk::new(dimension, position.chunk());
+        let except = self
+            .players
+            .iter()
+            .find(|(_, view)| view.entity == Some(breaker))
+            .map(|(player, _)| *player);
+        self.send_near(chunk, corner, DESTRUCTION_WITHIN, except, packet)
+            .await;
+    }
+
     /// Sends `packet` to the players who have the chunk `chunk` and stand within
     /// `range` of `at`, but `except`.
     async fn send_near(
@@ -8600,6 +8649,7 @@ mod tests {
     /// The player as the western region lets them go, standing in the eastern one.
     fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
         PlayerTransfer {
+            digging: Default::default(),
             appearance: Default::default(),
             posture: Default::default(),
             forwards: 0,
@@ -11692,6 +11742,7 @@ mod scenarios {
     /// A player as a region lets them go, standing in `chunk`.
     fn transfer(entity: EntityId, last_input: u64, chunk: ChunkPos) -> PlayerTransfer {
         PlayerTransfer {
+            digging: Default::default(),
             appearance: Default::default(),
             posture: Default::default(),
             forwards: 0,

@@ -962,6 +962,7 @@ impl Witness {
                         | RegionEvent::PlayerData { .. }
                         | RegionEvent::PlayerGameMode { .. }
                         | RegionEvent::Sleeping { .. }
+                        | RegionEvent::BlockDestruction { .. }
                         | RegionEvent::BlockEventsBegin => {}
                         RegionEvent::EntityGone { entity, .. } => {
                             self.entities.remove(entity);
@@ -5400,6 +5401,8 @@ fn restore_error(world: &mut World) -> clustine_worker::RestoreError {
 /// A player of `edge` as a region keeps them.
 fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
     clustine_sim::PlayerState {
+        game_origin: 0,
+        dig: Default::default(),
         appearance: Default::default(),
         posture: Default::default(),
         health: 20.0,

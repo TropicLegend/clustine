@@ -33,6 +33,7 @@ mod block_events;
 mod boats;
 mod bone_meal;
 mod brains;
+mod breaking;
 mod breeding;
 mod changes;
 pub(crate) mod clouds;
@@ -45,6 +46,7 @@ mod cushions;
 mod custom_spawners;
 mod daylight_detector;
 mod difficulty;
+mod digging;
 mod diodes;
 mod dispensers;
 mod dried_ghasts;
@@ -507,6 +509,9 @@ struct Player {
     /// What their equipment adds to their attributes at the last look (`worn.rs`), in
     /// memory only.
     worn: worn::Worn,
+    /// See [`PlayerState::game_origin`] and [`PlayerState::dig`] (`digging.rs`).
+    game_origin: i64,
+    dig: crate::state::Dig,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -1346,6 +1351,8 @@ impl Region {
         // and `LivingEntity.tick`'s use of an item (`using.rs`).
         self.watch_main_hands(&main_hands);
         self.watch_worn(&mut output);
+        // `ServerPlayerGameMode.tick`, with the player's other parts (`digging.rs`).
+        self.dig_tick(&mut output);
         self.tick_player_effects(&mut output);
         self.tick_cooldowns(&mut output);
         self.tick_uses(&mut output);
@@ -2169,6 +2176,10 @@ impl Region {
             posture: transfer.posture,
             eyes: Default::default(),
             worn: Default::default(),
+            // Counted on from where the last region left it, its inputs of this tick
+            // reading the count it ended its tick with (`digging.rs`).
+            game_origin: digging::origin_after(self.tick, transfer.digging.game_ticks),
+            dig: transfer.digging.dig,
             cooldowns: transfer
                 .cooldowns
                 .iter()
@@ -2338,6 +2349,8 @@ impl Region {
                     // arrival and their departure are in this tick's commit, and meet
                     // in its holder in either order, as a crossing's do (N5).
                     let transfer = PlayerTransfer {
+                        // A new `ServerPlayerGameMode` (`digging.rs`).
+                        digging: Default::default(),
                         forwards: 0,
                         health,
                         dead,
@@ -2456,6 +2469,9 @@ impl Region {
             posture: Default::default(),
             eyes: Default::default(),
             worn: Default::default(),
+            // A new `ServerPlayerGameMode`, whose count begins at 0 (`digging.rs`).
+            game_origin: digging::origin_after(self.tick, 0),
+            dig: Default::default(),
         };
         self.enter(id, player, attempt, output);
     }
@@ -3036,32 +3052,18 @@ impl Region {
                     player.acknowledge(sequence);
                 }
             }
+            // What an older build kept of a start (`digging.rs`).
             PlayerInput::Dig { position, sequence } => {
-                let (position, sequence) = (*position, *sequence);
-                let knowledge = self.land.knowledge(position.chunk());
-                if player.can_reach(position) && knowledge != Knowledge::Held {
-                    // Within reach, but a block of a chunk this region does not hold:
-                    // the region that does decides, and the player hears that it was
-                    // handled when it has been. The region does not ask the store who
-                    // that is because of a click; it names whom it believes, if anyone.
-                    let action = RemoteAction {
-                        player: id,
-                        entity,
-                        sequence,
-                        step: RemoteStep::Break { position },
-                    };
-                    let to = knowledge.holder();
-                    self.send(edge, Durable::Remote { action, to }, output);
-                    return;
-                }
-                // Acknowledged whatever comes of it, so the client stops guessing.
-                player.acknowledge(sequence);
-                // Every player's break is instant and drops nothing, as a creative
-                // player's is, until survival's breaking (V2, `materials.rs`).
-                if player.can_reach(position) {
-                    self.break_by_player(position, Some(id), output);
-                }
+                let start = crate::api::DestroyAction::Start;
+                let face = crate::api::Face::Bottom;
+                self.destroy_input(id, start, *position, face, *sequence, output);
             }
+            PlayerInput::Destroy {
+                action,
+                position,
+                face,
+                sequence,
+            } => self.destroy_input(id, *action, *position, *face, *sequence, output),
             PlayerInput::UseItemOn {
                 position,
                 face,
@@ -4200,6 +4202,8 @@ impl Player {
             in_credits: self.in_credits,
             appearance: self.appearance,
             posture: self.posture,
+            game_origin: self.game_origin,
+            dig: self.dig,
         }
     }
 
@@ -4250,6 +4254,8 @@ impl Player {
             posture: state.posture,
             eyes: Default::default(),
             worn: Default::default(),
+            game_origin: state.game_origin,
+            dig: state.dig,
         }
     }
 
@@ -4358,6 +4364,11 @@ impl Player {
             unit: None,
             appearance: self.appearance,
             posture: self.posture,
+            // As counted at the end of the tick, as the attack's is.
+            digging: crate::state::Digging {
+                game_ticks: digging::game_ticks(self.game_origin, tick),
+                dig: self.dig,
+            },
             cooldowns: self
                 .cooldowns
                 .into_iter()
@@ -4542,6 +4553,7 @@ mod tests {
     mod containers;
     mod conversions;
     mod daylight_detector;
+    mod digging;
     mod diodes;
     mod effects;
     mod end_mobs_specification;
@@ -6760,6 +6772,7 @@ mod tests {
         hotbar[0] = None;
         hotbar[6] = Some(GLASS);
         PlayerTransfer {
+            digging: Default::default(),
             appearance: Default::default(),
             posture: Default::default(),
             forwards: 0,
@@ -7357,6 +7370,12 @@ mod tests {
                 departed(
                     1,
                     PlayerTransfer {
+                        // The count of the ticks since the join, which the region the
+                        // player goes on to counts on from.
+                        digging: crate::state::Digging {
+                            game_ticks: 5,
+                            dig: Default::default(),
+                        },
                         appearance: Default::default(),
                         posture: Default::default(),
                         forwards: 0,
@@ -7614,6 +7633,11 @@ mod tests {
             last_input: 41,
             // Handed on once more than when they came.
             hops: transfer.hops + 1,
+            // Counted on from where the transfer left it, over the five ticks here.
+            digging: crate::state::Digging {
+                game_ticks: transfer.digging.game_ticks + 5,
+                ..transfer.digging
+            },
             ..transfer
         };
         assert_eq!(told(&output), [departed(1, handed_on)]);
@@ -7695,6 +7719,11 @@ mod tests {
         // No input of theirs was applied, so the stay still carries the attempt of
         // its join. It has been handed on once.
         let transfer = PlayerTransfer {
+            // The count of the one tick of the join.
+            digging: crate::state::Digging {
+                game_ticks: 1,
+                dig: Default::default(),
+            },
             appearance: Default::default(),
             posture: Default::default(),
             forwards: 0,

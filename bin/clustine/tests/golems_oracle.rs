@@ -209,7 +209,7 @@ async fn build(bot: &mut Bot, case: &Case, corner: (i32, i32, i32)) -> Result<Bu
                     }
                 }
             }
-            Heard::BlockEvent { .. } | Heard::Sound { .. } => {}
+            Heard::BlockEvent { .. } | Heard::Sound { .. } | Heard::BlockDestruction { .. } => {}
         }
     }
     let packets = bot.packets.as_deref().unwrap_or_default();

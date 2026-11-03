@@ -17,9 +17,11 @@
 //! - A survival player is **invulnerable until V4**: no hurt reaches them and no mob
 //!   takes them as a target (`entity_effects.rs`, `region/mobs.rs`, the region's
 //!   `hurt_reaches_players`), though their abilities say otherwise to their client.
-//! - A survival player's **break is instant until V2**, with no drops (`updates.rs`), and
-//!   their hits break armour stands, vehicles and hanging things at once, as a creative
-//!   player's (`EntityUse::Attack`'s `creative`).
+//! - A survival player's break of a block is the game's dig (`digging.rs`), but where the
+//!   block is another region's: that break is still instant and drops nothing, and wears
+//!   nothing (V2, across a line). Their hits break armour stands, vehicles and hanging
+//!   things at once, as a creative player's (`EntityUse::Attack`'s `creative`), until
+//!   V2 breaks entities as the game's `hurtServer` does.
 
 use clustine_world::{Abilities, EntityId, ItemStack, OFF_HAND, PlayerId};
 

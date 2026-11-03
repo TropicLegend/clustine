@@ -81,6 +81,14 @@ pub(super) struct Eyes {
     fall_fly_ticks: u32,
 }
 
+impl Eyes {
+    /// `isEyeInFluid(#water)` as the last fluid update left it, which a player's dig
+    /// reads (`digging.rs`).
+    pub(super) fn in_water(&self) -> bool {
+        self.in_water
+    }
+}
+
 /// The width, height and eye height of a player in `pose` (`Avatar.POSES`, its static
 /// initialiser 21–174; the sleeping pose's are `LivingEntity.SLEEPING_DIMENSIONS`).
 fn dimensions(pose: PlayerPose) -> (f32, f32, f32) {

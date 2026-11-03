@@ -13,8 +13,8 @@
 //!
 //! A left click on a note block plays it only in survival: the game's
 //! `ServerPlayerGameMode.handleBlockBreakAction` destroys the block at once for a
-//! player who builds instantly, without its `attack`, and every Clustine player's break
-//! is instant until survival's breaking (V2, `materials.rs`).
+//! player who builds instantly, without its `attack`, and a survival player's START
+//! attacks it (`digging.rs`).
 
 use clustine_blocks::data::{flag, is_class, number, relative, set, set_flag};
 use clustine_blocks::note::{self, Instrument};
@@ -69,7 +69,7 @@ impl Region {
 
     /// `NoteBlock.playNote`: the note's block event, where a head gives the sound or
     /// nothing above muffles it.
-    fn play_note(&mut self, pos: BlockPos, state: BlockState) {
+    pub(super) fn play_note(&mut self, pos: BlockPos, state: BlockState) {
         let instrument = Instrument::of_note_block(state);
         let above = self
             .block(relative(pos, Face::Up))

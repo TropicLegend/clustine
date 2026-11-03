@@ -641,6 +641,8 @@ impl Place {
                         things.push((*when, Thing::LevelEvent { event, at, data }));
                     }
                 }
+                // A creative player's break makes no cracks.
+                Heard::BlockDestruction { .. } => {}
             }
         }
         things

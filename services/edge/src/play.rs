@@ -20,7 +20,7 @@ use clustine_protocol::packets::play::{
     movement_flags, player_action, player_command, player_input,
 };
 use clustine_sim::api::{
-    Appearance, Face, HOTBAR_SLOTS, Inventory, Keys, PlayerInput, VehicleMove,
+    Appearance, DestroyAction, Face, HOTBAR_SLOTS, Inventory, Keys, PlayerInput, VehicleMove,
 };
 use clustine_world::{BlockPos, PlayerId, Vec3};
 use tokio::sync::mpsc;
@@ -483,18 +483,13 @@ async fn acted(
     sneaking: bool,
 ) -> Result<(), ConnectionError> {
     match action.status {
-        // In creative mode, starting to break a block breaks it.
-        player_action::START_DESTROY_BLOCK => {
-            let input = PlayerInput::Dig {
-                position: BlockPos::new(action.position.x, action.position.y, action.position.z),
-                sequence: action.sequence,
-            };
-            send_input(shared, client, input).await
-        }
-        // The other ways of breaking a block only exist in survival mode. The client
-        // still counts them among its guesses and waits to hear they were handled.
-        player_action::ABORT_DESTROY_BLOCK | player_action::STOP_DESTROY_BLOCK => {
-            handled(shared, client, action.sequence).await
+        // Breaking a block, each of its four steps the region's to judge and to
+        // acknowledge after it acted (`docs/groundwork/v-plan.md`, section 4.5).
+        player_action::START_DESTROY_BLOCK
+        | player_action::STOP_DESTROY_BLOCK
+        | player_action::ABORT_DESTROY_BLOCK
+        | player_action::CHANGE_DESTROY_DIRECTION => {
+            send_input(shared, client, destroyed(&action)).await
         }
         // F: the region swaps the hands and tells the client, which does not foresee it.
         player_action::SWAP_ITEM_WITH_OFFHAND => {
@@ -509,6 +504,32 @@ async fn acted(
             send_input(shared, client, PlayerInput::ReleaseUse).await
         }
         _ => Ok(()),
+    }
+}
+
+/// What a client's step of breaking a block says to the region: the face as the game
+/// reads it, `Direction.from3DDataValue` of the byte (its value modulo 6).
+fn destroyed(action: &PlayerAction) -> PlayerInput {
+    let kind = match action.status {
+        player_action::START_DESTROY_BLOCK => DestroyAction::Start,
+        player_action::STOP_DESTROY_BLOCK => DestroyAction::Stop,
+        player_action::ABORT_DESTROY_BLOCK => DestroyAction::Abort,
+        _ => DestroyAction::ChangeDirection,
+    };
+    let face = match action.face % 6 {
+        face::BOTTOM => Face::Bottom,
+        face::TOP => Face::Top,
+        face::NORTH => Face::North,
+        face::SOUTH => Face::South,
+        face::WEST => Face::West,
+        _ => Face::East,
+    };
+    let position = action.position;
+    PlayerInput::Destroy {
+        action: kind,
+        position: BlockPos::new(position.x, position.y, position.z),
+        face,
+        sequence: action.sequence,
     }
 }
 

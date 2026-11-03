@@ -764,6 +764,7 @@ fn a_player_whose_place_another_region_holds_is_let_go_to_it_without_being_place
     }
     let second = EntityId(2);
     let transfer = PlayerTransfer {
+        digging: Default::default(),
         appearance: Default::default(),
         posture: Default::default(),
         forwards: 0,

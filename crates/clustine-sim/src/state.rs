@@ -138,6 +138,57 @@ pub struct Posture {
     pub fall_flying: bool,
 }
 
+/// What the game's `ServerPlayerGameMode` keeps of a survival player's dig, field for
+/// field (n5 `ServerPlayerGameMode`, its constructor @0-60: `destroyPos` and
+/// `delayedDestroyPos` `BlockPos.ZERO`, `destroyDirection` `DOWN`, `lastSentState` -1;
+/// `docs/groundwork/v-plan.md`, section 4.5). `start` and `delayed_start` are the
+/// player's `gameTicks` of the moment. It goes wherever the player goes, so that a dig
+/// survives a crossing, a merge and a split; it is not in the place, so a crash in
+/// mid-dig loses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Dig {
+    /// `isDestroyingBlock`.
+    pub is_destroying: bool,
+    /// `destroyPos`.
+    pub destroy_pos: BlockPos,
+    /// `destroyDirection`, the face the level events of the dig name.
+    pub direction: crate::api::Face,
+    /// `destroyProgressStart`.
+    pub start: i32,
+    /// `hasDelayedDestroy`.
+    pub has_delayed: bool,
+    /// `delayedDestroyPos`.
+    pub delayed_pos: BlockPos,
+    /// `delayedTickStart`.
+    pub delayed_start: i32,
+    /// `lastSentState`.
+    pub last_sent: i32,
+}
+
+impl Default for Dig {
+    fn default() -> Self {
+        Self {
+            is_destroying: false,
+            destroy_pos: BlockPos::new(0, 0, 0),
+            direction: crate::api::Face::Bottom,
+            start: 0,
+            has_delayed: false,
+            delayed_pos: BlockPos::new(0, 0, 0),
+            delayed_start: 0,
+            last_sent: -1,
+        }
+    }
+}
+
+/// A player's dig as a transfer carries it: their `gameTicks` as the region that lets
+/// them go counted it at the end of its tick, and the dig, whose ticks are of that
+/// count.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Digging {
+    pub game_ticks: i32,
+    pub dig: Dig,
+}
+
 /// A player's most health (`Player`'s `MAX_HEALTH` of 20).
 pub const PLAYER_MAX_HEALTH: f32 = 20.0;
 
@@ -232,6 +283,12 @@ pub struct PlayerState {
     /// How their client asked to be drawn, and their pose as the region decided it.
     pub appearance: crate::api::Appearance,
     pub posture: Posture,
+    /// The region's tick in whose end the player's `gameTicks` was 0: the count is the
+    /// region's tick less this (`docs/groundwork/v-plan.md`, section 4.5), so that a
+    /// state changes only when the dig does. A merge moves it onto the survivor's ticks.
+    pub game_origin: i64,
+    /// Their dig.
+    pub dig: Dig,
 }
 
 /// A level of an effect as a region's state keeps it: the effect by name, its amplifier,

@@ -90,22 +90,20 @@ impl Region {
     /// `IceBlock.playerDestroy` (n8 IceBlock.txt 15-90) for `state` broken by a player at
     /// `pos`, which the break has already left as air. The game calls it only where the
     /// break makes drops (`ServerPlayerGameMode.destroyBlock` returns before it for a
-    /// creative player, `preventsBlockDrops`), which `makes_drops` says; every player's
-    /// break is a creative one's until survival's breaking (V2, `materials.rs`), so in
-    /// practice ice broken leaves air everywhere until then. Where water evaporates the ice is only removed
-    /// (`removeBlock` of what is air already, which changes nothing). Elsewhere it becomes
-    /// water, with every update, where the block below is in
-    /// `ice_melts_when_destroyed_above` or is a liquid. The tool's Silk Touch
-    /// (`prevents_ice_melting`) would keep it as air too, but stacks carry no
-    /// enchantments yet.
+    /// creative player, `preventsBlockDrops`, and passes it by for a block not removed
+    /// or a tool not the right one), and the tool's Silk Touch (`prevents_ice_melting`)
+    /// keeps the ice from melting: `melts` says whether both allow it (`digging.rs`).
+    /// Where water evaporates the ice is only removed (`removeBlock` of what is air
+    /// already, which changes nothing). Elsewhere it becomes water, with every update,
+    /// where the block below is in `ice_melts_when_destroyed_above` or is a liquid.
     pub(crate) fn ice_broken_by_player(
         &mut self,
         pos: BlockPos,
         state: BlockState,
-        makes_drops: bool,
+        melts: bool,
         output: &mut TickOutput,
     ) {
-        if !makes_drops || !clustine_blocks::data::is_class(state, BlockClass::IceBlock) {
+        if !melts || !clustine_blocks::data::is_class(state, BlockClass::IceBlock) {
             return;
         }
         if self.water_evaporates() {

@@ -252,6 +252,7 @@ mod tests {
 
     fn transfer() -> PlayerTransfer {
         PlayerTransfer {
+            digging: Default::default(),
             appearance: Default::default(),
             posture: Default::default(),
             forwards: 0,

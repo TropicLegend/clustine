@@ -408,6 +408,8 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
     let mut bar = hotbar();
     bar[(n % 8 + 1) as usize] = Some(ItemStack::new(items::STONE, n % 60 + 1));
     PlayerState {
+        game_origin: 0,
+        dig: Default::default(),
         appearance: Default::default(),
         posture: Default::default(),
         health: 20.0,
@@ -2576,6 +2578,7 @@ impl Pair {
                     using: None,
                     cooldowns: Vec::new(),
                     rested: 0,
+                    game_origin: 0,
                     ..player
                 };
                 assert!(
@@ -2599,6 +2602,7 @@ impl Pair {
                     using: None,
                     cooldowns: Vec::new(),
                     rested: 0,
+                    game_origin: 0,
                     ..player
                 };
                 (id, plain)

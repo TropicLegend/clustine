@@ -57,7 +57,7 @@ pub use region::{
     RANDOM_TICK_SPEED, Region, RegionConfig, Sides, Splitting,
 };
 pub use state::{
-    Drag, DragKind, EdgeDelta, EdgeState, EnteringState, Menu, MenuOf, PLAYER_MAX_HEALTH,
-    PlayerPose, PlayerRiding, PlayerState, Posture, RegionState, StateDelta, VehicleCheck,
-    WaitingState, WaitingTraveller,
+    Dig, Digging, Drag, DragKind, EdgeDelta, EdgeState, EnteringState, Menu, MenuOf,
+    PLAYER_MAX_HEALTH, PlayerPose, PlayerRiding, PlayerState, Posture, RegionState, StateDelta,
+    VehicleCheck, WaitingState, WaitingTraveller,
 };

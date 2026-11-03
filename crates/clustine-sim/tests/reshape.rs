@@ -374,6 +374,7 @@ fn place_against(against: BlockPos, target: BlockPos, placer: Vec3) -> RemoteSte
 /// A player as another region lets them go, standing at `position`.
 fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        digging: Default::default(),
         appearance: Default::default(),
         posture: Default::default(),
         forwards: 0,
@@ -415,6 +416,7 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
 /// (ADR-0020, section 6).
 fn transfer_of(state: &PlayerState) -> PlayerTransfer {
     PlayerTransfer {
+        digging: Default::default(),
         appearance: Default::default(),
         posture: Default::default(),
         forwards: 0,
@@ -455,6 +457,8 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
 /// A player as a region has them right after taking in `transfer` through `edge`.
 fn taken_in(transfer: &PlayerTransfer, edge: EdgeId) -> PlayerState {
     PlayerState {
+        game_origin: 0,
+        dig: Default::default(),
         appearance: Default::default(),
         posture: Default::default(),
         health: 20.0,
@@ -566,20 +570,22 @@ fn silent(output: &TickOutput) -> bool {
     output.events.is_empty() && output.player_events.is_empty() && output.durable.is_empty()
 }
 
-/// The player's state in `region`, with the tick their time since rest counts from left
-/// out: it is the tick the region placed or took in their stay, which these tests do not
-/// judge (the region's own tests check it).
+/// The player's state in `region`, with the tick their time since rest counts from and
+/// the origin of their `gameTicks` left out: each is of the tick the region placed or
+/// took in their stay, which these tests do not judge (the region's own tests check
+/// them).
 fn state_of(region: &Region, id: PlayerId) -> PlayerState {
     PlayerState {
         rested: 0,
+        game_origin: 0,
         ..region
             .player_state(id)
             .expect("the player is in the region")
     }
 }
 
-/// `entries` with the time since rest of the transfers they carry left out, as
-/// [`state_of`] leaves it out.
+/// `entries` with the time since rest and the count of the transfers they carry left
+/// out, as [`state_of`] leaves them out.
 fn unrested(entries: &[(EdgeId, u64, Durable)]) -> Vec<(EdgeId, u64, Durable)> {
     entries
         .iter()
@@ -591,6 +597,7 @@ fn unrested(entries: &[(EdgeId, u64, Durable)]) -> Vec<(EdgeId, u64, Durable)> {
                     to,
                 } => {
                     transfer.time_since_rest = 0;
+                    transfer.digging.game_ticks = 0;
                     Durable::Departed {
                         player,
                         transfer,
@@ -2439,6 +2446,8 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
     let mut bar = hotbar();
     bar[(n % 8 + 1) as usize] = Some(ItemStack::new(items::STONE, n % 60 + 1));
     PlayerState {
+        game_origin: 0,
+        dig: Default::default(),
         appearance: Default::default(),
         posture: Default::default(),
         health: 20.0,
@@ -2631,6 +2640,9 @@ fn absorbed_as_the_record_says(
     // Since ADR-0020 the later stay is the one with the higher entity id, and of the
     // same entity the one with more hand-overs (its section 6). The entering stays are
     // this region's alone: what the other state has of them is dropped (its section 9).
+    // The origin of an absorbed player's `gameTicks` is moved onto the survivor's ticks,
+    // whose last is the one before `M` (`digging.rs`).
+    let moved_by = i64::try_from(tick).unwrap() - 1 - i64::try_from(theirs.tick).unwrap();
     for (id, theirs) in &theirs.players {
         if reset_away.contains(&theirs.edge) {
             continue;
@@ -2638,7 +2650,9 @@ fn absorbed_as_the_record_says(
         let stays = (state.players.get(id))
             .is_some_and(|own| (own.entity_id, own.hops) >= (theirs.entity_id, theirs.hops));
         if !stays {
-            state.players.insert(*id, theirs.clone());
+            let mut moved = theirs.clone();
+            moved.game_origin += moved_by;
+            state.players.insert(*id, moved);
         }
     }
 
@@ -2764,6 +2778,20 @@ fn quiet_edges(since: u64) -> [(EdgeId, EdgeState); 2] {
     ]
 }
 
+/// The players of the absorbed state `theirs` as a merge whose state is `merged` leaves
+/// them: the origin of each one's `gameTicks` moved onto the survivor's ticks
+/// (`digging.rs`), the survivor's last being the one before the merged state's.
+fn on_our_ticks(merged: &RegionState, theirs: &RegionState) -> BTreeMap<PlayerId, PlayerState> {
+    let by = i64::try_from(merged.tick).unwrap() - 1 - i64::try_from(theirs.tick).unwrap();
+    (theirs.players.iter())
+        .map(|(id, player)| {
+            let mut moved = player.clone();
+            moved.game_origin += by;
+            (*id, moved)
+        })
+        .collect()
+}
+
 #[test]
 fn absorbing_a_state_with_other_players_gives_a_state_with_all_of_them_as_they_were() {
     let ours = a_state(
@@ -2793,7 +2821,7 @@ fn absorbing_a_state_with_other_players_gives_a_state_with_all_of_them_as_they_w
         "the tick is the one after the region's last"
     );
     let mut everyone = ours.players.clone();
-    everyone.extend(theirs.players.clone());
+    everyone.extend(on_our_ticks(&merged, &theirs));
     assert_eq!(everyone.len(), 4);
     assert_eq!(merged.players, everyone);
     assert_eq!(
@@ -2829,7 +2857,11 @@ fn of_a_player_in_both_states_the_stay_with_the_higher_entity_id_stays() {
             &quiet_edges(9),
         );
         let merged = survivor(ours).absorb(REGION_B, &theirs);
-        let later = if ours_is_later { here } else { there };
+        let later = if ours_is_later {
+            here
+        } else {
+            on_our_ticks(&merged, &theirs)[&player(1)].clone()
+        };
         assert_eq!(later.entity_id, entity(6));
         assert_eq!(merged.players.len(), 2);
         assert_eq!(merged.players[&player(1)], later);
@@ -2865,7 +2897,10 @@ fn a_merge_keeps_two_players_who_have_one_entity_id_and_its_own_of_two_stays_wit
     assert_eq!(merged.players.len(), 3);
     assert_eq!(merged.players[&player(1)], ours.players[&player(1)]);
     assert_eq!(merged.players[&player(2)], ours.players[&player(2)]);
-    assert_eq!(merged.players[&player(3)], theirs.players[&player(3)]);
+    assert_eq!(
+        merged.players[&player(3)],
+        on_our_ticks(&merged, &theirs)[&player(3)]
+    );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2971,7 +3006,7 @@ fn an_edge_only_the_absorbed_region_knows_is_known_since_the_merge_with_the_entr
         &[(1, absorbed(REGION_B, 9, 8, &[3])), (2, done(2, 1))],
     );
     assert_eq!(merged.edges, [(E, expected)].into());
-    assert_eq!(merged.players, theirs.players);
+    assert_eq!(merged.players, on_our_ticks(&merged, &theirs));
 }
 
 #[test]
@@ -3021,7 +3056,10 @@ fn an_edge_the_absorbed_region_knows_with_a_lower_start_is_as_one_it_did_not_kno
         merged.players,
         [
             (player(1), ours.players[&player(1)].clone()),
-            (player(3), theirs.players[&player(3)].clone()),
+            (
+                player(3),
+                on_our_ticks(&merged, &theirs)[&player(3)].clone()
+            ),
         ]
         .into()
     );
@@ -3086,8 +3124,14 @@ fn an_edge_the_survivor_knows_with_a_lower_start_is_reset_and_then_as_one_only_t
     assert_eq!(
         merged.players,
         [
-            (player(2), theirs.players[&player(2)].clone()),
-            (player(4), theirs.players[&player(4)].clone()),
+            (
+                player(2),
+                on_our_ticks(&merged, &theirs)[&player(2)].clone()
+            ),
+            (
+                player(4),
+                on_our_ticks(&merged, &theirs)[&player(4)].clone()
+            ),
             (player(5), ours.players[&player(5)].clone()),
         ]
         .into()
@@ -6200,6 +6244,8 @@ impl Pair {
                     using: None,
                     cooldowns: Vec::new(),
                     rested: 0,
+                    // So does the count a dig goes by (`digging.rs`, named there).
+                    game_origin: 0,
                     ..player
                 };
                 assert!(
@@ -6223,6 +6269,8 @@ impl Pair {
                     using: None,
                     cooldowns: Vec::new(),
                     rested: 0,
+                    // So does the count a dig goes by (`digging.rs`, named there).
+                    game_origin: 0,
                     ..player
                 };
                 (id, plain)

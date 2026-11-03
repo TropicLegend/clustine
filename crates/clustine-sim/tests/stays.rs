@@ -353,6 +353,7 @@ fn walk_to(position: Vec3) -> PlayerInput {
 /// A player as another region lets them go, standing at `position` with [`kept`].
 fn transfer(entity: EntityId, hops: u32, attempt: Option<u64>, position: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        digging: Default::default(),
         appearance: Default::default(),
         posture: Default::default(),
         forwards: 0,
@@ -789,6 +790,12 @@ fn an_entering_stay_whose_place_nobody_holds_is_placed_there_as_the_player_left(
     };
     let output = tick(&mut region, &anothers);
     let let_go = PlayerTransfer {
+        // A new stay's count, of the tick that placed them and the one that lets
+        // them go.
+        digging: clustine_sim::Digging {
+            game_ticks: 2,
+            dig: Default::default(),
+        },
         appearance: Default::default(),
         posture: Default::default(),
         forwards: 0,
@@ -847,6 +854,7 @@ fn an_entering_stay_whose_place_another_region_holds_is_let_go_there_without_bei
     assert!(output.player_events.is_empty() && output.events.is_empty());
     assert!(output.claims.is_empty());
     let let_go = PlayerTransfer {
+        digging: Default::default(),
         appearance: Default::default(),
         posture: Default::default(),
         forwards: 0,
@@ -1159,6 +1167,8 @@ fn the_first_tick_after_a_merge_and_after_a_split_names_every_stay() {
     other.tick = 9;
     other.edges = region.state().edges;
     let theirs = PlayerState {
+        game_origin: 0,
+        dig: Default::default(),
         appearance: Default::default(),
         posture: Default::default(),
         health: 20.0,
@@ -1630,6 +1640,8 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
     let region = entering();
     let mut state = region.state();
     let earlier = PlayerState {
+        game_origin: 0,
+        dig: Default::default(),
         appearance: Default::default(),
         posture: Default::default(),
         health: 20.0,
@@ -1736,6 +1748,8 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
 #[test]
 fn a_merge_keeps_of_two_copies_of_a_stay_the_one_with_more_hops() {
     let copy = |hops: u32, edge: EdgeId, position: Vec3| PlayerState {
+        game_origin: 0,
+        dig: Default::default(),
         appearance: Default::default(),
         posture: Default::default(),
         health: 20.0,
@@ -1789,7 +1803,11 @@ fn a_merge_keeps_of_two_copies_of_a_stay_the_one_with_more_hops() {
         let merged = survivor.absorb(OTHER, &other);
         // With as many, the survivor's own stays.
         let expected = if theirs > ours {
-            copy(theirs, F, NEARBY)
+            // On the survivor's ticks (`digging.rs`).
+            let mut moved = copy(theirs, F, NEARBY);
+            moved.game_origin +=
+                i64::try_from(merged.tick).unwrap() - 1 - i64::try_from(other.tick).unwrap();
+            moved
         } else {
             copy(ours, E, SPAWN)
         };
@@ -1909,6 +1927,8 @@ fn every_ended_of_a_tick_is_numbered_below_every_departed_of_it() {
     tick(&mut region, &changes(stays));
     let mut state = region.state();
     let earlier = PlayerState {
+        game_origin: 0,
+        dig: Default::default(),
         appearance: Default::default(),
         posture: Default::default(),
         health: 20.0,

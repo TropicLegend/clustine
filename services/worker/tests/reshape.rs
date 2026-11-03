@@ -1459,6 +1459,7 @@ fn arrive(id: PlayerId, transfer: &PlayerTransfer) -> EdgeToWorker {
 /// along.
 fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
     PlayerTransfer {
+        digging: Default::default(),
         appearance: Default::default(),
         posture: Default::default(),
         forwards: 0,
@@ -2853,7 +2854,11 @@ fn merged_of(ours: &RegionState, theirs: &RegionState) -> RegionState {
     let mut merged = ours.clone();
     merged.tick = ours.tick + 1;
     for (id, player) in &theirs.players {
-        merged.players.insert(*id, player.clone());
+        // The origin of their `gameTicks` on the survivor's ticks (`digging.rs`).
+        let mut player = player.clone();
+        player.game_origin +=
+            i64::try_from(ours.tick).unwrap() - i64::try_from(theirs.tick).unwrap();
+        merged.players.insert(*id, player);
     }
     let other = &theirs.edges[&E];
     let edge = merged.edges.get_mut(&E).expect("region 0 knows the edge");
@@ -3582,6 +3587,7 @@ fn a_region_whose_owner_died_is_absorbed_once_its_state_has_been_checkpointed_in
     // earlier tick than the runner's was.
     let read = absorbable(&handle, restored).expect("what the store has is readable");
     assert_eq!((&read.players, &read.edges), (&state.players, &state.edges));
+    let read_tick = read.tick;
     let outcome = ask(
         &mut pair.a,
         Reshape::Absorb {
@@ -3596,10 +3602,12 @@ fn a_region_whose_owner_died_is_absorbed_once_its_state_has_been_checkpointed_in
     );
     drop(handle);
     assert_eq!(pair.world.list().absorbed, vec![(B, A)]);
-    assert_eq!(
-        pair.a.region().state().players[&player(2)],
-        state.players[&player(2)]
-    );
+    // As it was, on the survivor's ticks (`digging.rs`).
+    let mut expected = state.players[&player(2)].clone();
+    expected.game_origin += i64::try_from(pair.a.region().state().tick).unwrap()
+        - 1
+        - i64::try_from(read_tick).unwrap();
+    assert_eq!(pair.a.region().state().players[&player(2)], expected);
 }
 
 /// Section 3.2: a merged state that is longer than a request may be is not sent.
@@ -5991,21 +5999,26 @@ fn assert_the_same(live: &Run, restored: &Run) {
     // their stay in, plus what their place carried: a region restored from the record
     // places its stays again in a tick of its own, later than the one that lived, and
     // the count goes on from there, as an effect's does after a join
-    // (`docs/groundwork/n9-plan.md`, section 5.4). It is left out here.
+    // (`docs/groundwork/n9-plan.md`, section 5.4). It is left out here, and so is the
+    // origin of the player's `gameTicks`, which a placing begins again (`digging.rs`).
     let unrested = |text: String| {
-        let mut out = String::with_capacity(text.len());
-        let mut rest = text.as_str();
-        while let Some(at) = rest.find("rested: ") {
-            let (before, after) = rest.split_at(at + "rested: ".len());
-            out.push_str(before);
-            let digits = after
-                .find(|c: char| !c.is_ascii_digit())
-                .unwrap_or(after.len());
-            out.push('_');
-            rest = &after[digits..];
+        let mut text = text;
+        for field in ["rested: ", "game_origin: "] {
+            let mut out = String::with_capacity(text.len());
+            let mut rest = text.as_str();
+            while let Some(at) = rest.find(field) {
+                let (before, after) = rest.split_at(at + field.len());
+                out.push_str(before);
+                let digits = after
+                    .find(|c: char| !c.is_ascii_digit() && c != '-')
+                    .unwrap_or(after.len());
+                out.push('_');
+                rest = &after[digits..];
+            }
+            out.push_str(rest);
+            text = out;
         }
-        out.push_str(rest);
-        out
+        text
     };
     for (((one, other), live_given), restored_given) in live
         .states

@@ -520,6 +520,9 @@ pub struct PlayerTransfer {
     /// pose, which go on with them as the game's entity data would.
     pub appearance: Appearance,
     pub posture: crate::state::Posture,
+    /// Their dig and the count it is of, which go on in the next region
+    /// (`docs/groundwork/v-plan.md`, section 4.5).
+    pub digging: crate::state::Digging,
 }
 
 /// The number of spawning categories counted: `MobCategory` but `MISC`, in its order.
@@ -1049,11 +1052,35 @@ pub enum PlayerInput {
     /// `docs/groundwork/v-plan.md`, section 4.1). Added at the end, so that what is
     /// stored of inputs reads as it did.
     Loaded,
+    /// The player's client began, stopped or gave up breaking the block at `position`
+    /// from its side `face`, or turned to another side of it (`player_action`'s
+    /// `START_DESTROY_BLOCK`, `STOP_DESTROY_BLOCK`, `ABORT_DESTROY_BLOCK` and
+    /// `CHANGE_DESTROY_DIRECTION`; `ServerPlayerGameMode.handleBlockBreakAction`,
+    /// `docs/groundwork/v-plan.md`, section 4.5). The region acknowledges `sequence`
+    /// after it has acted, as `handlePlayerAction @299-307` does, or the region that
+    /// holds the block does where the break is that region's. An older [`Self::Dig`] is
+    /// read as a start. Added at the end, so that what is stored of inputs reads as it
+    /// did.
+    Destroy {
+        action: DestroyAction,
+        position: BlockPos,
+        face: Face,
+        sequence: i32,
+    },
     /// An operator's order for the player, which the edge passes in for them (no client
     /// sent it): it is not acknowledged, and it has no place, so that it waits through a
     /// change of level, a death and the credits as the player's mode does. Added at the
     /// end, so that what is stored of inputs reads as it did.
     Order(Order),
+}
+
+/// What a client says of the block it breaks ([`PlayerInput::Destroy`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DestroyAction {
+    Start,
+    Stop,
+    Abort,
+    ChangeDirection,
 }
 
 impl PlayerInput {
@@ -2193,6 +2220,18 @@ pub enum RegionEvent {
         chunk: ChunkPos,
         values: Vec<(u8, crate::shown::DataShown)>,
     },
+    /// How far the player entity `breaker` has broken the block at `position`, from 0
+    /// to 9, or that they have stopped (-1, or anything outside 0 to 9 a client takes
+    /// so): the game's `ServerLevel.destroyBlockProgress` (n5 @0-144), which sends
+    /// `ClientboundBlockDestructionPacket` to every player of the level but the breaker
+    /// whose feet are less than 32 blocks from the block's corner. The edge writes the
+    /// stage as a byte, as the game does. Added at the end, so that what is stored of
+    /// events reads as it did.
+    BlockDestruction {
+        breaker: EntityId,
+        position: BlockPos,
+        stage: i32,
+    },
     /// An operator changed the game mode of `player`, whose entity is in `chunk`, to the
     /// mode of id `mode`: the edges that list them tell their players
     /// (`PlayerInfoUpdate`'s `UPDATE_GAME_MODE`).
@@ -2276,6 +2315,7 @@ impl RegionEvent {
             | Self::BlockEvent { position, .. }
             | Self::LevelEvent { position, .. }
             | Self::BlockDestroyed { position, .. }
+            | Self::BlockDestruction { position, .. }
             | Self::Fizzed { position } => [position.chunk(); 2],
             Self::Sound { position, .. } => [ChunkPos::containing(position.x, position.z); 2],
             // The chunk of its centre: a player within 64 blocks of it has the chunk in

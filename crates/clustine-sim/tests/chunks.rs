@@ -306,6 +306,7 @@ fn own(id: PlayerId, entity: EntityId, sequence: i32, step: RemoteStep) -> Remot
 /// A player as another region lets them go, standing at `position`.
 fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        digging: Default::default(),
         appearance: Default::default(),
         posture: Default::default(),
         forwards: 0,
@@ -347,6 +348,7 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
 /// (ADR-0020, section 6).
 fn transfer_of(state: &PlayerState) -> PlayerTransfer {
     PlayerTransfer {
+        digging: Default::default(),
         appearance: Default::default(),
         posture: Default::default(),
         forwards: 0,
@@ -452,8 +454,8 @@ fn entries(output: &TickOutput) -> Vec<Durable> {
         .collect()
 }
 
-/// `entry` with the time since rest of a transfer it carries left out: it counts the
-/// ticks a test ran, which these tests do not judge.
+/// `entry` with the time since rest and the count a dig goes by of a transfer it
+/// carries left out: each counts the ticks a test ran, which these tests do not judge.
 fn unrested(entry: Durable) -> Durable {
     match entry {
         Durable::Departed {
@@ -462,6 +464,7 @@ fn unrested(entry: Durable) -> Durable {
             to,
         } => {
             transfer.time_since_rest = 0;
+            transfer.digging.game_ticks = 0;
             Durable::Departed {
                 player,
                 transfer,

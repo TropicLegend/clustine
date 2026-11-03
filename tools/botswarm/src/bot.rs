@@ -67,6 +67,14 @@ pub enum Heard {
         at: (i32, i32, i32),
         data: i32,
     },
+    /// A `block_destruction`: the cracks of the block at `at` that the entity `breaker`
+    /// breaks, the stage as the byte it came as (255 and the others outside 0 to 9 take
+    /// them away).
+    BlockDestruction {
+        breaker: i32,
+        at: (i32, i32, i32),
+        stage: u8,
+    },
 }
 
 /// The length of a client tick.
@@ -1107,6 +1115,28 @@ impl Bot {
         Ok(self.sequence)
     }
 
+    /// Takes one step of breaking the block at `x`, `y`, `z` from its side `side` the way
+    /// a survival client does (`status`: one of `player_action`'s `START_DESTROY_BLOCK`,
+    /// `STOP_DESTROY_BLOCK`, `ABORT_DESTROY_BLOCK` and `CHANGE_DESTROY_DIRECTION`), and
+    /// returns the sequence number the server will acknowledge.
+    pub async fn destroy_step(
+        &mut self,
+        status: i32,
+        (x, y, z): (i32, i32, i32),
+        side: u8,
+    ) -> Result<i32> {
+        self.sequence += 1;
+        self.connection
+            .write(&PlayerAction {
+                status,
+                position: Position { x, y, z },
+                face: side,
+                sequence: self.sequence,
+            })
+            .await?;
+        Ok(self.sequence)
+    }
+
     /// Clicks the slot `slot` of the window shown (`container_click`) with `button` and
     /// the kind of click `input`, saying what the client guesses the slots it changed
     /// (`changed`) and the cursor (`carried`) hold now, as a vanilla client does; the bot
@@ -2137,6 +2167,14 @@ impl Bot {
                     action: packet.action,
                     param: packet.param,
                     block: packet.block,
+                });
+            }
+            ClientboundPlay::BlockDestruction(packet) => {
+                let position = packet.position;
+                self.hear(Heard::BlockDestruction {
+                    breaker: packet.entity_id,
+                    at: (position.x, position.y, position.z),
+                    stage: packet.progress,
                 });
             }
             ClientboundPlay::Sound(packet) => self.hear(Heard::Sound {

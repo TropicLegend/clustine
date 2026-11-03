@@ -192,7 +192,8 @@ impl Region {
                 // by which an effect would otherwise end early or late
                 // (`docs/groundwork/n9-plan.md`, section 5.4, decision 8; S13 part A's
                 // finding). The survivor's last tick is the one before the merge's.
-                // Their attack strength's reset and the tick their time since rest
+                // The origin of their `gameTicks` is moved too, so that a dig under way
+                // goes on as it was (`digging.rs`). Their attack strength's reset and the tick their time since rest
                 // counts from are kept as the ticks they were, the lag theirs to gain
                 // (a named difference of `docs/groundwork/n7-plan.md`, 7.7.2), so that
                 // a region split and merged again is as one that never was.
@@ -504,8 +505,8 @@ impl Region {
     }
 }
 
-/// `player` with their effects' ends and their cooldowns moved by `by` ticks: what a
-/// merge does to an absorbed region's player.
+/// `player` with their effects' ends, their cooldowns and the origin of their
+/// `gameTicks` moved by `by` ticks: what a merge does to an absorbed region's player.
 fn on_ticks_moved_by(player: &PlayerState, by: i128) -> PlayerState {
     let moved = |tick: u64| u64::try_from((i128::from(tick) + by).max(0)).unwrap_or(u64::MAX);
     let mut player = player.clone();
@@ -516,6 +517,9 @@ fn on_ticks_moved_by(player: &PlayerState, by: i128) -> PlayerState {
     for effect in &mut player.effects {
         effect.end = effect.end.map(moved);
     }
+    // Their `gameTicks` goes on from where it was, so that a dig under way loses and
+    // gains nothing by the merge (`digging.rs`).
+    player.game_origin = i64::try_from(i128::from(player.game_origin) + by).unwrap_or(i64::MAX);
     player
 }
 
@@ -588,6 +592,8 @@ mod tests {
         let mut hotbar = [const { None }; HOTBAR_SLOTS];
         hotbar[entity as usize % HOTBAR_SLOTS] = Some(ItemStack::new(1, entity));
         PlayerState {
+            game_origin: 0,
+            dig: Default::default(),
             appearance: Default::default(),
             posture: Default::default(),
             health: 20.0,
@@ -641,6 +647,7 @@ mod tests {
     /// The stay as a region hands it to another.
     fn transfer_of(stay: PlayerState) -> PlayerTransfer {
         PlayerTransfer {
+            digging: Default::default(),
             appearance: Default::default(),
             posture: Default::default(),
             forwards: 0,
@@ -778,6 +785,42 @@ mod tests {
         edge(start, 1, 0, 0, &[])
     }
 
+    /// A dig under way in the absorbed region goes on in the merged one from the count
+    /// it had (`digging.rs`): its start and its stage are the dig's, and the count the
+    /// next inputs read is the one the absorbed region's last tick ended with, though
+    /// the two regions' ticks are far apart.
+    #[test]
+    fn a_dig_under_way_goes_on_after_a_merge_from_the_count_it_had() {
+        let here = state(
+            10,
+            0,
+            6,
+            vec![(1, stay(1, E, at(0, 0)))],
+            vec![(E, quiet(4))],
+        );
+        let mut digger = stay(4, E, at(3, 0));
+        digger.game_origin = 40;
+        digger.dig = crate::state::Dig {
+            is_destroying: true,
+            destroy_pos: BlockPos::new(50, -61, 3),
+            direction: crate::api::Face::North,
+            start: 55,
+            last_sent: 2,
+            ..Default::default()
+        };
+        let there = state(99, 1, 2, vec![(2, digger.clone())], vec![(E, quiet(4))]);
+        let merged = region(here, &[HOME], &[]).absorb(ABSORBED, &there);
+        let moved = &merged.players[&player(2)];
+        assert_eq!(moved.dig, digger.dig);
+        // 59 at the end of the absorbed region's tick 99, and so at the end of the
+        // survivor's tick 10, the one before the merged region's first.
+        assert_eq!(crate::region::digging::game_ticks(40, 99), 59);
+        assert_eq!(
+            crate::region::digging::game_ticks(moved.game_origin, merged.tick - 1),
+            59
+        );
+    }
+
     #[test]
     fn a_merged_state_has_the_players_of_both_and_the_later_of_two_stays() {
         let here = state(
@@ -815,8 +858,16 @@ mod tests {
         let expected: BTreeMap<_, _> = [
             (player(1), here.players[&player(1)].clone()),
             (player(2), here.players[&player(2)].clone()),
-            (player(3), there.players[&player(3)].clone()),
-            (player(4), there.players[&player(4)].clone()),
+            // The other's on the survivor's ticks: its last tick, 99, is the
+            // survivor's 10.
+            (
+                player(3),
+                on_ticks_moved_by(&there.players[&player(3)], -89),
+            ),
+            (
+                player(4),
+                on_ticks_moved_by(&there.players[&player(4)], -89),
+            ),
         ]
         .into();
         assert_eq!(merged.players, expected);
@@ -964,7 +1015,11 @@ mod tests {
         let mut here = here;
         here.players.insert(player(15), stay(99, stale_here, HOME));
         let merged = region(here, &[HOME], &[]).absorb(ABSORBED, &there);
-        assert_eq!(merged.players[&player(15)], stay(15, stale_here, at(5, 0)));
+        let moved = merged.tick as i128 - 1 - there.tick as i128;
+        assert_eq!(
+            merged.players[&player(15)],
+            on_ticks_moved_by(&stay(15, stale_here, at(5, 0)), moved)
+        );
     }
 
     /// A region pinned to the chunks with x below 2 that has come to know a chunk in

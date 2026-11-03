@@ -609,6 +609,13 @@ impl Region {
         }
         let mut player = self.player_of(waiting.edge, &transfer);
         player.travel = None;
+        // A respawn, after a death, the credits or the End's portal out, is a new
+        // `ServerPlayer` with a new `ServerPlayerGameMode` (`PlayerList.respawn`): its
+        // count begins again and no dig is under way (`digging.rs`).
+        if respawn.is_some() {
+            player.game_origin = super::digging::origin_after(self.tick, 0);
+            player.dig = Default::default();
+        }
         // The inputs kept while they waited are theirs before anything is told of the
         // placing, so that it tells what they made of themselves: flying, the slot they
         // hold.

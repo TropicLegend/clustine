@@ -13,13 +13,12 @@
 //! A drop needs its chunk loaded, not ticking: an item laid in a chunk that does not
 //! tick lies there until it does. Into a full chunk ([`MAX_CHUNK_ENTITIES`]), or where
 //! the region has no key left, a drop is lost, as a throw would not happen. What the
-//! game does beside the loot is left out and named: the experience of ores (an infested
-//! block's silverfish, `spawnAfterBreak`, is `infested.rs`'), the block entity a table would
+//! game does beside the loot is left out and named: the block entity a table would
 //! copy from (`clustine_blocks::loot` names what it gives instead), and what a
 //! container broken by a rule held, which the game spills beside its loot
 //! (`Containers.dropContents`).
 
-use clustine_blocks::loot::{LootDraws, block_drops};
+use clustine_blocks::loot::{Broken, LootDraws, block_drops, block_drops_as};
 use clustine_data::{BlockState, EntityTypeInfo, ITEMS, blocks, entity_types};
 use clustine_world::{BlockPos, ChunkPos, Entity, EntityData, ItemStack};
 
@@ -57,6 +56,44 @@ fn next_double(random: &mut Random, min: f64, max: f64) -> f64 {
     }
 }
 
+/// The experience the block of `state` gives when a player breaks it with the right
+/// tool, the bounds of its `IntProvider` (inclusive), where it gives any: the ores'
+/// `DropExperienceBlock`s as `Blocks`' static initialiser makes them (n6 Blocks,
+/// `lambda$static$21` to `$27`, `$42`, `$43`, `$78`, `$79`, `$193`, `$194`, `$252`,
+/// `$376`, `$377`: gold, iron and copper 0, coal 0 to 2, nether gold 0 to 1, lapis
+/// and quartz 2 to 5, diamond and emerald 3 to 7), redstone ore 1 to 5
+/// (`RedStoneOreBlock.spawnAfterBreak` @21-23) and the sculk sensors 5
+/// (`SculkSensorBlock.spawnAfterBreak` @21). The spawner (15 to 43), sculk (1), the
+/// sculk catalyst and the sculk shrieker (5 each) are the game's source's: their
+/// classes are not among the dumps (named).
+pub(crate) fn experience_range(state: BlockState) -> Option<(i32, i32)> {
+    use clustine_blocks::data::is_block;
+    let range = [
+        (blocks::COAL_ORE, (0, 2)),
+        (blocks::DEEPSLATE_COAL_ORE, (0, 2)),
+        (blocks::NETHER_GOLD_ORE, (0, 1)),
+        (blocks::LAPIS_ORE, (2, 5)),
+        (blocks::DEEPSLATE_LAPIS_ORE, (2, 5)),
+        (blocks::DIAMOND_ORE, (3, 7)),
+        (blocks::DEEPSLATE_DIAMOND_ORE, (3, 7)),
+        (blocks::EMERALD_ORE, (3, 7)),
+        (blocks::DEEPSLATE_EMERALD_ORE, (3, 7)),
+        (blocks::NETHER_QUARTZ_ORE, (2, 5)),
+        (blocks::REDSTONE_ORE, (1, 5)),
+        (blocks::DEEPSLATE_REDSTONE_ORE, (1, 5)),
+        (blocks::SCULK_SENSOR, (5, 5)),
+        (blocks::CALIBRATED_SCULK_SENSOR, (5, 5)),
+        (blocks::SPAWNER, (15, 43)),
+        (blocks::SCULK, (1, 1)),
+        (blocks::SCULK_CATALYST, (5, 5)),
+        (blocks::SCULK_SHRIEKER, (5, 5)),
+    ];
+    range
+        .into_iter()
+        .find(|(block, _)| is_block(state, *block))
+        .map(|(_, range)| range)
+}
+
 /// The item of the block of `state` (`Block.asItem`), where it has one: the item that
 /// places it, or places it on a wall.
 pub(crate) fn item_of_block(state: BlockState) -> Option<i32> {
@@ -89,6 +126,91 @@ impl Region {
         self.block_streams.insert(pos, random);
         // `state.spawnAfterBreak(level, pos, EMPTY, true)`, after the drops.
         self.infested_broken(pos, state, output);
+    }
+
+    /// `Block.dropResources(state, level, pos, blockEntity, player, tool)` of a block a
+    /// survival player broke with `tool` in their main hand (`None` for a bare hand):
+    /// its table evaluated with the player as `this_entity` and the tool
+    /// (`Broken`), each stack popped out where the block was, then
+    /// [`Region::spawn_after_break`] with the tool. The block entity a table would copy
+    /// from is not given (named in `clustine_blocks::loot`).
+    pub(crate) fn drop_resources_by_player(
+        &mut self,
+        state: BlockState,
+        pos: BlockPos,
+        tool: Option<&ItemStack>,
+        output: &mut TickOutput,
+    ) {
+        let mut random = self
+            .block_streams
+            .remove(&pos)
+            .unwrap_or_else(|| Random::of_block(self.seed(), pos, self.tick, DROPS));
+        let broken = Broken {
+            this_entity: true,
+            explosion_radius: None,
+            tool,
+        };
+        let stacks = block_drops_as(state, pos, broken, &mut Loot(&mut random), &mut |at| {
+            self.block(at).unwrap_or(blocks::AIR)
+        });
+        for stack in stacks {
+            self.pop_resource(pos, stack, &mut random, output);
+        }
+        self.block_streams.insert(pos, random);
+        self.spawn_after_break(pos, state, tool, output);
+    }
+
+    /// `state.spawnAfterBreak(level, pos, tool, true)` of a block a player broke with
+    /// `tool`: an infested block's silverfish, unless the tool's enchantments are in
+    /// `prevents_infested_spawns` (`InfestedBlock.spawnAfterBreak`, n9 @0-38; Silk Touch
+    /// alone is), and the experience of an ore and of the blocks that give it
+    /// ([`experience_range`]; `Block.tryDropExperience` @0-31), none with Silk Touch
+    /// (`EnchantmentHelper.processBlockExperience`: its `block_experience` effect sets it
+    /// to 0, the only enchantment of the game with one). The experience is drawn from
+    /// the block's stream, as its drops are, where the game draws the level's random.
+    pub(crate) fn spawn_after_break(
+        &mut self,
+        pos: BlockPos,
+        state: BlockState,
+        tool: Option<&ItemStack>,
+        output: &mut TickOutput,
+    ) {
+        let silk_touch = tool.is_some_and(|tool| {
+            crate::items::enchantments::level(tool, "minecraft:silk_touch") > 0
+        });
+        if !silk_touch {
+            self.infested_broken(pos, state, output);
+        }
+        let Some((low, high)) = experience_range(state) else {
+            return;
+        };
+        let mut random = self
+            .block_streams
+            .remove(&pos)
+            .unwrap_or_else(|| Random::of_block(self.seed(), pos, self.tick, DROPS));
+        // `IntProvider.sample`: `ConstantInt` draws nothing, `UniformInt` its
+        // `randomBetweenInclusive`.
+        let sampled = if low == high {
+            low
+        } else {
+            random.next_int_between(low, high)
+        };
+        let amount = if silk_touch { 0 } else { sampled };
+        // `popExperience`: `ExperienceOrb.award` at the block's centre, in orbs of the
+        // game's values, each merged by a draw of 40 (`tryMergeToExisting`) or new.
+        let centre = [
+            f64::from(pos.x) + 0.5,
+            f64::from(pos.y) + 0.5,
+            f64::from(pos.z) + 0.5,
+        ];
+        let mut left = amount;
+        while left > 0 {
+            let value = crate::mobs::body::hurt::experience_value(left);
+            left -= value;
+            let draw = random.next_int(40);
+            self.award_orb(centre, value, draw, output);
+        }
+        self.block_streams.insert(pos, random);
     }
 
     /// `Block.popResource(level, pos, stack)` by an entity's rule (an armour stand's
