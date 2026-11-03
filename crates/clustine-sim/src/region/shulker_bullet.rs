@@ -592,6 +592,7 @@ impl Region {
     /// motion, with levitation for 200 ticks where it takes (`addEffect`).
     fn bullet_hurt(&self, bullet: &Entity, data: &ShulkerBullet) -> HurtBy {
         let cause = data.owner.map(|owner| clustine_world::Causer {
+            name: None,
             key: owner.key,
             kind: owner.kind,
             position: self
@@ -601,9 +602,11 @@ impl Region {
             living: true,
         });
         HurtBy {
+            weapon: None,
             damage_type: "minecraft:mob_projectile".to_owned(),
             cause,
             direct: Some(clustine_world::Causer {
+                name: None,
                 key: bullet.key,
                 kind: bullet.kind,
                 position: bullet.position.map(Double),

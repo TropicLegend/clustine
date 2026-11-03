@@ -487,6 +487,47 @@ pub(crate) fn logged_place(place: &Place) -> LoggedPlace {
         crafting_grid: place.crafting.grid.clone(),
         crafting_result: place.crafting.result.clone(),
         carried: place.crafting.carried.clone(),
+        vitals: logged_vitals(&place.vitals),
+    }
+}
+
+/// What a place keeps of the body as the log keeps it (V4).
+pub(crate) fn logged_vitals(vitals: &clustine_rpc::Vitals) -> clustine_format::LoggedVitals {
+    clustine_format::LoggedVitals {
+        food: vitals.food.food,
+        saturation: vitals.food.saturation,
+        exhaustion: vitals.food.exhaustion,
+        food_timer_from: vitals.food.timer_from,
+        air: vitals.air,
+        fire: vitals.fire,
+        frozen: vitals.frozen,
+        fall_distance: vitals.fall_distance,
+        absorption: vitals.absorption,
+        impulse: vitals
+            .impulse
+            .map(|impulse| (impulse.at, impulse.grace_until)),
+    }
+}
+
+/// The body as a place gives it to a region: what the log keeps, the rest as a rejoin
+/// begins it.
+fn vitals(logged: &clustine_format::LoggedVitals) -> clustine_rpc::Vitals {
+    clustine_rpc::Vitals {
+        food: clustine_rpc::FoodData {
+            food: logged.food,
+            saturation: logged.saturation,
+            exhaustion: logged.exhaustion,
+            timer_from: logged.food_timer_from,
+        },
+        air: logged.air,
+        fire: logged.fire,
+        frozen: logged.frozen,
+        fall_distance: logged.fall_distance,
+        absorption: logged.absorption,
+        impulse: logged
+            .impulse
+            .map(|(at, grace_until)| clustine_rpc::Impulse { at, grace_until }),
+        ..clustine_rpc::Vitals::default()
     }
 }
 
@@ -544,6 +585,7 @@ pub(crate) fn place(logged: &LoggedPlace) -> Place {
             carried: logged.carried.clone(),
             drag: None,
         },
+        vitals: Box::new(vitals(&logged.vitals)),
     }
 }
 

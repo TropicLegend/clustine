@@ -164,6 +164,7 @@ pub(super) fn entering_place(
         time_since_rest,
         raid_omen_position: None,
         crafting: Default::default(),
+        vitals: Default::default(),
     }
 }
 

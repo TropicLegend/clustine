@@ -181,6 +181,7 @@ fn a_tick_reports_the_chunks_whose_counts_changed_and_a_chunk_let_go_as_nothing(
     // The zombie is killed by a hurt filed with the region, and goes when its death is
     // over: its chunk is reported again, with nothing in it.
     let killing = clustine_world::HurtBy {
+        weapon: None,
         damage_type: "minecraft:generic".to_owned(),
         cause: None,
         direct: None,

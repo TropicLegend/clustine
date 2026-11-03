@@ -880,6 +880,7 @@ fn nothing_through_an_unknown_edge_is_taken_on() {
         kept: Vec::new(),
         raid_omen_position: None,
         crafting: Default::default(),
+        vitals: Default::default(),
     };
     let before = region.state();
     let output = tick(

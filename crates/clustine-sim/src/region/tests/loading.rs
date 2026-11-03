@@ -39,7 +39,7 @@ fn hurt(output: &TickOutput) -> Option<f32> {
         .player_events
         .iter()
         .find_map(|(id, event)| match event {
-            PlayerEvent::Health { health } if *id == player(1) => Some(*health),
+            PlayerEvent::Health { health, .. } if *id == player(1) => Some(*health),
             _ => None,
         })
 }

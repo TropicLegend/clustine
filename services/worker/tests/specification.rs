@@ -988,6 +988,8 @@ impl Witness {
                 | PlayerEvent::BlockShown { .. }
                 | PlayerEvent::HeldSlot { .. }
                 | PlayerEvent::Health { .. }
+                | PlayerEvent::Knocked { .. }
+                | PlayerEvent::OwnData(_)
                 | PlayerEvent::GlobalLevelEvent { .. }
                 | PlayerEvent::Experience(_)
                 | PlayerEvent::Message { .. }
@@ -5445,6 +5447,7 @@ fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
         menu: None,
         raid_omen_position: None,
         crafting: Default::default(),
+        vitals: Default::default(),
     }
 }
 

@@ -1669,6 +1669,7 @@ pub(crate) fn melee_hit(ai: &mut Ai<'_, '_>, target: &Looked) {
     });
     let at = ai.position();
     let attacker = clustine_world::Causer {
+        name: None,
         key: ai.tick.key,
         kind: ai.tick.kind,
         position: at.map(clustine_world::Double),
@@ -1676,6 +1677,7 @@ pub(crate) fn melee_hit(ai: &mut Ai<'_, '_>, target: &Looked) {
         living: true,
     };
     let hurt = clustine_world::HurtBy {
+        weapon: None,
         damage_type: "minecraft:mob_attack".to_owned(),
         cause: Some(attacker.clone()),
         direct: Some(attacker),

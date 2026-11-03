@@ -163,6 +163,9 @@ pub enum EntityUse {
         /// entity's run of wire ids less one (the dragon's head is 0); none for the
         /// entity itself (`docs/groundwork/p-plan.md`, section 19.5 item 10).
         part: Option<u8>,
+        /// What the attacker held (V4): a shield it meets is disabled by its
+        /// `disable_blocking_for_seconds`, and a death names it if it has a custom name.
+        weapon: Option<ItemStack>,
     },
     /// `interact`: the player, whether creative, what they hold in the hand used, where
     /// on the entity the click landed, whether they sneak, and where they stand; and
@@ -362,6 +365,9 @@ pub struct Causer {
     pub position: [Double; 3],
     pub player: Option<Uuid>,
     pub living: bool,
+    /// Its name as a death message gives it: a player's name, or an entity's custom
+    /// name (V4).
+    pub name: Option<String>,
 }
 
 /// A hurt as it crosses a line, and what its lander does by its outcome
@@ -396,6 +402,10 @@ pub struct HurtBy {
     /// The attacker and its `lived` at the hit, which with the target key the hit's
     /// stream (`Random::of_hit`) the extras draw from; none where no extra draws.
     pub hit: Option<(EntityId, u32)>,
+    /// What the causer held in its main hand (`DamageSource.getWeaponItem`): an axe
+    /// disables a shield for its `disable_blocking_for_seconds`, and a death message
+    /// names a weapon with a custom name (V4).
+    pub weapon: Option<ItemStack>,
 }
 
 /// What an attacker's type adds to a hit that took (section 8.2): drawn, where they draw,

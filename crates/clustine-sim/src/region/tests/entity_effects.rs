@@ -31,6 +31,7 @@ fn effect(name: &str, amplifier: i32, duration: i32) -> EffectInstance {
 /// A hurt by `amount` of a skeleton's arrow, nothing following it.
 fn arrow_hurt(amount: f32) -> HurtBy {
     let skeleton = Causer {
+        name: None,
         key: EntityId(900),
         kind: u16::try_from(entity_types::SKELETON).unwrap(),
         position: [Double(9.5), Double(-60.0), Double(0.5)],
@@ -38,6 +39,7 @@ fn arrow_hurt(amount: f32) -> HurtBy {
         living: true,
     };
     HurtBy {
+        weapon: None,
         damage_type: "minecraft:arrow".to_owned(),
         cause: Some(skeleton.clone()),
         direct: Some(Causer {
@@ -287,6 +289,7 @@ fn what_a_region_sends_to_a_player_goes_out_addressed_to_them_and_counts_at_the_
 /// A mob's melee hit (`Local::Strike`) as its attacker's region lands it.
 fn strike_of(amount: f32, extras: Vec<HitExtra>) -> Box<HurtBy> {
     let zombie = Causer {
+        name: None,
         key: EntityId(900),
         kind: u16::try_from(entity_types::ZOMBIE).unwrap(),
         position: [Double(4.5), Double(-60.0), Double(0.5)],

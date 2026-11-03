@@ -342,6 +342,7 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
         kept: Vec::new(),
         raid_omen_position: None,
         crafting: Default::default(),
+        vitals: Default::default(),
     }
 }
 
@@ -385,6 +386,7 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
         kept: Vec::new(),
         raid_omen_position: None,
         crafting: Default::default(),
+        vitals: Default::default(),
     }
 }
 

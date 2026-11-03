@@ -1185,6 +1185,7 @@ mod tests {
                     stay: 258,
                     hops: 4,
                     place: Some(LoggedPlace {
+                        vitals: Default::default(),
                         health: 20.0,
                         dead: false,
                         dimension: Default::default(),
@@ -1397,6 +1398,17 @@ mod tests {
         body.extend_from_slice(&[1, 255]);
         // An empty crafting grid, no result and nothing on the cursor.
         body.extend_from_slice(&[0; 6]);
+        // A new player's body (format 26): food 20, saturation 5, no exhaustion, the timer
+        // at rest; air 300, no fire, not frozen; no fall, no absorption, no impulse.
+        body.extend_from_slice(&20_i32.to_be_bytes());
+        body.extend_from_slice(&5.0_f32.to_be_bytes());
+        body.extend_from_slice(&0.0_f32.to_be_bytes());
+        body.push(0);
+        body.extend_from_slice(&300_i32.to_be_bytes());
+        body.extend_from_slice(&[0; 8]);
+        body.extend_from_slice(&0.0_f64.to_be_bytes());
+        body.extend_from_slice(&0.0_f32.to_be_bytes());
+        body.push(0);
         assert_eq!(bytes[..body.len()], body);
         assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
         assert_eq!(PlayersFile::decode(&bytes), Ok(players()));
@@ -1740,7 +1752,7 @@ mod tests {
                                 inventory,
                                 ender,
                             )| {
-                                LoggedPlace { health: 20.0, dead: false, dimension: Default::default(), travel: None, seen_credits: false, portal_cooldown: 0,
+                                LoggedPlace { vitals: Default::default(), health: 20.0, dead: false, dimension: Default::default(), travel: None, seen_credits: false, portal_cooldown: 0,
                                     respawn: None,
                                     last_death: None,
                                     mode: (1, None),

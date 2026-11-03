@@ -153,6 +153,7 @@ impl Region {
         let width = radius * 2.0;
         let bounds = Aabb::of_entity(entity.position, width, HEIGHT);
         let source = clustine_world::Causer {
+            name: None,
             key,
             kind: entity.kind,
             position: entity.position.map(clustine_world::Double),

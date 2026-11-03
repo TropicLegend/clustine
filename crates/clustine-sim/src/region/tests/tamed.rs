@@ -598,6 +598,7 @@ fn hit_from_beyond(key: EntityId, sequence: u64) -> TickInputs {
                 what: Effected::OnEntity {
                     key,
                     by: EntityUse::Attack {
+                        weapon: None,
                         part: None,
                         look: [Float(0.0); 2],
                         player: None,

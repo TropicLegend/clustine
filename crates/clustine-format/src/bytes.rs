@@ -52,6 +52,10 @@ impl<'a> Input<'a> {
         Ok(u64::from_be_bytes(self.array()?))
     }
 
+    pub(crate) fn i64(&mut self) -> Result<i64, FormatError> {
+        Ok(i64::from_be_bytes(self.array()?))
+    }
+
     pub(crate) fn u128(&mut self) -> Result<u128, FormatError> {
         Ok(u128::from_be_bytes(self.array()?))
     }

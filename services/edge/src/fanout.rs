@@ -2121,16 +2121,26 @@ impl Fanout {
             }
             WorkerToEdge::ToPlayer {
                 player,
-                event: PlayerEvent::Health { health },
+                event:
+                    PlayerEvent::Health {
+                        health,
+                        food,
+                        saturation,
+                    },
             } => {
-                // A creative player's food and saturation stay as a new player's.
                 let packet = encoded(&SetHealth {
                     health,
-                    food: 20,
-                    saturation: 5.0,
+                    food,
+                    saturation,
                 });
                 self.send_to_player(player, [packet]).await;
             }
+            // The player's own knockback and entity data (V4), which no region reports
+            // yet: their packets are V4's edge step.
+            WorkerToEdge::ToPlayer {
+                event: PlayerEvent::Knocked { .. } | PlayerEvent::OwnData(_),
+                ..
+            } => {}
             WorkerToEdge::ToPlayer {
                 player,
                 event: PlayerEvent::Message { key, args, overlay },
@@ -3888,7 +3898,12 @@ impl Fanout {
     /// Shows the player whose stay is `entity` their death: the death message, the game's
     /// sentence `message` with their name, and the respawn screen it opens
     /// (`PlayerCombatKill`; `docs/groundwork/p-plan.md`, sections 19.5 and 19.6).
-    async fn died(&mut self, player: PlayerId, entity: EntityId, message: &str) {
+    async fn died(
+        &mut self,
+        player: PlayerId,
+        entity: EntityId,
+        message: &clustine_sim::api::DeathMessage,
+    ) {
         let Some(view) = self.players.get(&player) else {
             return;
         };
@@ -3902,7 +3917,7 @@ impl Fanout {
                     "with".to_owned(),
                     Nbt::List(vec![display_name(&name, player)]),
                 ),
-                ("translate".to_owned(), Nbt::String(message.to_owned())),
+                ("translate".to_owned(), Nbt::String(message.key.clone())),
             ]),
         });
         // `ServerPlayer.die` sends the death, and then `broadcastEntityEvent` the death's
@@ -8764,6 +8779,7 @@ mod tests {
             kept: Vec::new(),
             raid_omen_position: None,
             crafting: Default::default(),
+            vitals: Default::default(),
         }
     }
 
@@ -11866,6 +11882,7 @@ mod scenarios {
             kept: Vec::new(),
             raid_omen_position: None,
             crafting: Default::default(),
+            vitals: Default::default(),
         }
     }
 
@@ -13185,7 +13202,7 @@ mod scenarios {
             Durable::Died {
                 player: player(1),
                 entity: EntityId(5),
-                message: "death.attack.outOfWorld".to_owned(),
+                message: clustine_sim::api::DeathMessage::plain("death.attack.outOfWorld"),
                 at: (Dimension::Overworld, BlockPos::new(0, -130, 0)),
             },
         );
@@ -13194,7 +13211,11 @@ mod scenarios {
             WEST,
             WorkerToEdge::ToPlayer {
                 player: player(1),
-                event: PlayerEvent::Health { health: 20.0 },
+                event: PlayerEvent::Health {
+                    health: 20.0,
+                    food: 20,
+                    saturation: 5.0,
+                },
             },
         );
         let mut moved = transfer(EntityId(5), 0, EASTERN);

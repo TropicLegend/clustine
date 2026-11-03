@@ -126,9 +126,18 @@ impl Region {
                 position: None,
             });
         }
-        output
-            .player_events
-            .push((id, PlayerEvent::Health { health }));
+        let food = self
+            .players
+            .get(&id)
+            .map_or_else(crate::state::FoodData::default, |player| player.vitals.food);
+        output.player_events.push((
+            id,
+            PlayerEvent::Health {
+                health,
+                food: food.food,
+                saturation: food.saturation,
+            },
+        ));
         if health <= 0.0 {
             self.die(id, output);
         }
@@ -189,7 +198,7 @@ impl Region {
         let died = Durable::Died {
             player: id,
             entity,
-            message: OUT_OF_WORLD_MESSAGE.to_owned(),
+            message: crate::api::DeathMessage::plain(OUT_OF_WORLD_MESSAGE),
             at: died_in,
         };
         self.send(edge, died, output);

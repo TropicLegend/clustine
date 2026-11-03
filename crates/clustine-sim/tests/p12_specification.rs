@@ -431,6 +431,7 @@ impl Scene {
                     time_since_rest: 0,
                     raid_omen_position: None,
                     crafting: Default::default(),
+                    vitals: Default::default(),
                 }),
                 holder: None,
             }],

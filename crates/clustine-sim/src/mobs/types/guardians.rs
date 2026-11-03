@@ -278,6 +278,7 @@ impl Goal for GuardianAttackGoal {
             // `indirectMagic(guardian, guardian)`, then `doHurtTarget`: both land on the
             // target after the guardian's tick, in this order.
             let guardian = clustine_world::Causer {
+                name: None,
                 key: ai.tick.key,
                 kind: ai.tick.kind,
                 position: ai.position().map(clustine_world::Double),
@@ -285,6 +286,7 @@ impl Goal for GuardianAttackGoal {
                 living: true,
             };
             let hurt = clustine_world::HurtBy {
+                weapon: None,
                 damage_type: "minecraft:indirect_magic".to_owned(),
                 cause: Some(guardian.clone()),
                 direct: Some(guardian),

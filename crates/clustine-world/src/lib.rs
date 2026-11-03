@@ -19,6 +19,7 @@ pub mod poi;
 mod position;
 pub mod projectiles;
 pub mod raid;
+mod rules;
 mod section;
 pub mod spawn;
 pub mod trading;
@@ -52,6 +53,7 @@ pub use projectiles::{
     Arrow, ArrowKind, Cloud, EndCrystal, EyeOfEnder, Fangs, Fireball, Firework, InGround, Pickup,
     ProjectileOwner, ShulkerBullet, Spit,
 };
+pub use rules::GameRules;
 pub use section::{BIOME_CELLS, Biome, Section};
 pub use travel::{
     LevelChunk, PortalAxis, PortalClock, PortalKind, PortalState, Travel, Traveller, Way,

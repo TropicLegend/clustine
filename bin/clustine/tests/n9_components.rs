@@ -265,6 +265,7 @@ fn place() -> LoggedPlace {
         crafting_grid: [const { None }; 4],
         crafting_result: None,
         carried: None,
+        vitals: Default::default(),
     }
 }
 

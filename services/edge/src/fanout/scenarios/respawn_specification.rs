@@ -20,7 +20,7 @@ fn died(entity: EntityId) -> Durable {
     Durable::Died {
         player: player(1),
         entity,
-        message: "death.attack.outOfWorld".to_owned(),
+        message: clustine_sim::api::DeathMessage::plain("death.attack.outOfWorld"),
         at: DIED_IN,
     }
 }
@@ -89,7 +89,11 @@ async fn died_and_let_go_east(edge: &mut Harness, client: &mut Client) -> usize 
         WEST,
         WorkerToEdge::ToPlayer {
             player: player(1),
-            event: PlayerEvent::Health { health: 0.0 },
+            event: PlayerEvent::Health {
+                health: 0.0,
+                food: 20,
+                saturation: 5.0,
+            },
         },
     );
     edge.say(
@@ -486,7 +490,11 @@ async fn what_the_regions_told_meanwhile_is_told_after_the_respawn_in_order() {
         WEST,
         WorkerToEdge::ToPlayer {
             player: player(1),
-            event: PlayerEvent::Health { health: 7.0 },
+            event: PlayerEvent::Health {
+                health: 7.0,
+                food: 20,
+                saturation: 5.0,
+            },
         },
     );
     edge.say(
@@ -510,7 +518,11 @@ async fn what_the_regions_told_meanwhile_is_told_after_the_respawn_in_order() {
         EAST,
         WorkerToEdge::ToPlayer {
             player: player(1),
-            event: PlayerEvent::Health { health: 20.0 },
+            event: PlayerEvent::Health {
+                health: 20.0,
+                food: 20,
+                saturation: 5.0,
+            },
         },
     );
     edge.settle(EAST).await;

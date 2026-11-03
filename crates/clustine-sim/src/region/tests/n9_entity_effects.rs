@@ -52,6 +52,7 @@ fn kind(id: i32) -> u16 {
 /// `extras` and the hit's stream named by the zombie's `lived`.
 fn zombie_hit(amount: f32, extras: Vec<HitExtra>, lived: u32) -> HurtBy {
     let zombie = Causer {
+        name: None,
         key: ZOMBIE,
         kind: kind(entity_types::ZOMBIE),
         position: [Double(15.5), Double(-60.0), Double(0.5)],
@@ -59,6 +60,7 @@ fn zombie_hit(amount: f32, extras: Vec<HitExtra>, lived: u32) -> HurtBy {
         living: true,
     };
     HurtBy {
+        weapon: None,
         damage_type: "minecraft:mob_attack".to_owned(),
         cause: Some(zombie.clone()),
         direct: Some(zombie),

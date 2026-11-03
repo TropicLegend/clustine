@@ -91,6 +91,7 @@ impl Region {
             Some((owner, causer))
         });
         let direct = clustine_world::Causer {
+            name: None,
             key: fangs.key,
             kind: fangs.kind,
             position: fangs.position.map(Double),
@@ -152,6 +153,7 @@ fn bite_by(
     direct: Option<clustine_world::Causer>,
 ) -> HurtBy {
     HurtBy {
+        weapon: None,
         damage_type: kind.to_owned(),
         cause,
         direct,

@@ -290,6 +290,7 @@ mod tests {
             kept: Vec::new(),
             raid_omen_position: None,
             crafting: Default::default(),
+            vitals: Default::default(),
         }
     }
 

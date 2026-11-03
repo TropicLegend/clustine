@@ -88,6 +88,25 @@ pub(crate) fn place(x: f64, z: f64) -> Place {
             carried: Some(ItemStack::new(5, 2)),
             drag: None,
         },
+        // What the store keeps of the body, none of it a new player's (V4).
+        vitals: Box::new(clustine_rpc::Vitals {
+            food: clustine_rpc::FoodData {
+                food: 7,
+                saturation: 1.5,
+                exhaustion: 2.25,
+                timer_from: Some(-30),
+            },
+            air: 120,
+            fire: -20,
+            frozen: 40,
+            fall_distance: 3.5,
+            absorption: 4.0,
+            impulse: Some(clustine_rpc::Impulse {
+                at: [1.0, 2.0, 3.0],
+                grace_until: 5,
+            }),
+            ..clustine_rpc::Vitals::default()
+        }),
     }
 }
 
@@ -212,6 +231,7 @@ pub(crate) fn on_disk(place: &Place) -> LoggedPlace {
         crafting_grid: place.crafting.grid.clone(),
         crafting_result: place.crafting.result.clone(),
         carried: place.crafting.carried.clone(),
+        vitals: crate::players::logged_vitals(&place.vitals),
     }
 }
 

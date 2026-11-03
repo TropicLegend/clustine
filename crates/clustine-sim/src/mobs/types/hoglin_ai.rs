@@ -529,6 +529,7 @@ pub(crate) fn hurt_and_throw_target(ai: &mut Ai<'_, '_>, target: &Looked, baby: 
         vec![HitExtra::Throw(Float(knockback))]
     };
     let attacker = Causer {
+        name: None,
         key: ai.tick.key,
         kind: ai.tick.kind,
         position: ai.position().map(Double),
@@ -536,6 +537,7 @@ pub(crate) fn hurt_and_throw_target(ai: &mut Ai<'_, '_>, target: &Looked, baby: 
         living: true,
     };
     let hurt = HurtBy {
+        weapon: None,
         damage_type: "minecraft:mob_attack".to_owned(),
         cause: Some(attacker.clone()),
         direct: Some(attacker),

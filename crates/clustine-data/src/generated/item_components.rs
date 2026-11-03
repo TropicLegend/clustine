@@ -3,7 +3,7 @@
 use crate::{AttackRange, Consumable, ConsumeEffect, EffectInstance, EffectSet, Equippable, Food, ItemComponents, ItemModifier, Swing, Tool, ToolBlocks, ToolRule, UseAnimation, UseCooldown, UseRemainder, Weapon};
 
 /// An item with a stack of 64 and none of the other components.
-const PLAIN: ItemComponents = ItemComponents { max_stack_size: 64, max_damage: None, damage_resistant: None, equippable: None, attack_animation: Swing::DEFAULT, entity: None, modifiers: &[], weapon: None, damage_type: None, minimum_attack_charge: None, attack_range: None, tool: None, potion_contents: None, potion_duration_scale: None, damage: None, use_cooldown: None, fireworks_flight_duration: None, charged_projectiles: false, chicken_variant: None, consumable: None, food: None, use_remainder: None, ominous_bottle_amplifier: None };
+const PLAIN: ItemComponents = ItemComponents { max_stack_size: 64, max_damage: None, damage_resistant: None, equippable: None, attack_animation: Swing::DEFAULT, entity: None, modifiers: &[], weapon: None, damage_type: None, minimum_attack_charge: None, attack_range: None, tool: None, potion_contents: None, potion_duration_scale: None, damage: None, use_cooldown: None, fireworks_flight_duration: None, charged_projectiles: false, chicken_variant: None, consumable: None, food: None, use_remainder: None, blocks_attacks: None, death_protection: None, ominous_bottle_amplifier: None };
 
 /// By item id.
 pub static ITEM_COMPONENTS: [ItemComponents; 1658] = [

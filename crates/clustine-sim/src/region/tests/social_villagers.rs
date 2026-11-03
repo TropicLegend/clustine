@@ -145,6 +145,7 @@ fn a_zombie_s_hit_is_gossiped_about_by_its_uuid_which_the_region_finds() {
     );
     lay(&mut region, &zombie);
     let cause = Causer {
+        name: None,
         key: ZOMBIE,
         kind: entity_types::ZOMBIE as u16,
         position: [Double(4.5), Double(-60.0), Double(1.5)],
@@ -152,6 +153,7 @@ fn a_zombie_s_hit_is_gossiped_about_by_its_uuid_which_the_region_finds() {
         living: true,
     };
     let hurt = HurtBy {
+        weapon: None,
         damage_type: "minecraft:mob_attack".to_owned(),
         cause: Some(cause.clone()),
         direct: Some(cause),

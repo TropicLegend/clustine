@@ -297,7 +297,7 @@ fn died(output: &TickOutput, id: PlayerId) -> Vec<String> {
         .filter_map(|(_, _, entry)| match entry {
             Durable::Died {
                 player, message, ..
-            } if *player == id => Some(message.clone()),
+            } if *player == id => Some(message.key.clone()),
             _ => None,
         })
         .collect()
@@ -318,7 +318,7 @@ fn told(output: &TickOutput, id: PlayerId) -> Vec<PlayerEvent> {
 
 fn health_told(output: &TickOutput, id: PlayerId) -> Option<f32> {
     told(output, id).into_iter().find_map(|event| match event {
-        PlayerEvent::Health { health } => Some(health),
+        PlayerEvent::Health { health, .. } => Some(health),
         _ => None,
     })
 }

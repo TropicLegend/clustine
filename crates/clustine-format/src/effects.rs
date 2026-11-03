@@ -350,6 +350,7 @@ fn put_use(out: &mut Vec<u8>, by: &EntityUse) {
             look,
             player,
             part,
+            ref weapon,
         } => {
             out.push(USE_ATTACK_SEEN);
             out.extend_from_slice(&attacker.0.to_be_bytes());
@@ -372,6 +373,8 @@ fn put_use(out: &mut Vec<u8>, by: &EntityUse) {
                     out.push(part);
                 }
             }
+            // The attacker's weapon (format 26).
+            put_optional_stack(out, weapon.as_ref());
         }
         EntityUse::Interact {
             player,
@@ -546,6 +549,8 @@ fn put_use(out: &mut Vec<u8>, by: &EntityUse) {
                 out.extend_from_slice(&attacker.0.to_be_bytes());
                 out.extend_from_slice(&lived.to_be_bytes());
             }
+            // The causer's weapon (format 26).
+            put_optional_stack(out, hurt.weapon.as_ref());
         }
         EntityUse::Alert {
             attacker,
@@ -637,7 +642,7 @@ fn take_use(input: &mut Input<'_>) -> Result<EntityUse, FormatError> {
             let (creative, sprinting) = take_two_flags(input)?;
             let damage = Float(input.f32()?);
             let from = take_doubles(input)?;
-            let (look, player, part) = if use_kind == USE_ATTACK_SEEN {
+            let (look, player, part, weapon) = if use_kind == USE_ATTACK_SEEN {
                 let look = [Float(input.f32()?), Float(input.f32()?)];
                 let player = match input.u8()? {
                     0 => None,
@@ -649,9 +654,10 @@ fn take_use(input: &mut Input<'_>) -> Result<EntityUse, FormatError> {
                     1 => Some(input.u8()?),
                     _ => return Err(FormatError::Corrupt("an attack's part flag")),
                 };
-                (look, player, part)
+                let weapon = take_optional_stack(input, "an attack's weapon flag")?;
+                (look, player, part, weapon)
             } else {
-                ([Float(0.0); 2], None, None)
+                ([Float(0.0); 2], None, None, None)
             };
             EntityUse::Attack {
                 attacker,
@@ -662,6 +668,7 @@ fn take_use(input: &mut Input<'_>) -> Result<EntityUse, FormatError> {
                 look,
                 player,
                 part,
+                weapon,
             }
         }
         USE_INTERACT | USE_INTERACT_FROM_EDGE => {
@@ -812,6 +819,7 @@ fn take_use(input: &mut Input<'_>) -> Result<EntityUse, FormatError> {
             } else {
                 None
             };
+            let weapon = take_optional_stack(input, "a hurt's weapon flag")?;
             EntityUse::Hurt(Box::new(HurtBy {
                 damage_type,
                 cause,
@@ -827,6 +835,7 @@ fn take_use(input: &mut Input<'_>) -> Result<EntityUse, FormatError> {
                 extras,
                 sound,
                 hit,
+                weapon,
             }))
         }
         USE_ALERT => EntityUse::Alert {
@@ -884,7 +893,7 @@ fn take_use(input: &mut Input<'_>) -> Result<EntityUse, FormatError> {
 }
 
 /// A causer is its key u64, its type u16, its feet 3 × f64, u8 0 or u8 1 and the player's
-/// UUID u128, and u8 0 or 1 whether it is living.
+/// UUID u128, u8 0 or 1 whether it is living, and u8 0 or u8 1 and its name.
 fn put_causer(out: &mut Vec<u8>, causer: &Causer) {
     out.extend_from_slice(&causer.key.0.to_be_bytes());
     out.extend_from_slice(&causer.kind.to_be_bytes());
@@ -894,6 +903,11 @@ fn put_causer(out: &mut Vec<u8>, causer: &Causer) {
         out.extend_from_slice(&player.as_u128().to_be_bytes());
     }
     out.push(u8::from(causer.living));
+    // Its name for a death message (format 26).
+    out.push(u8::from(causer.name.is_some()));
+    if let Some(name) = &causer.name {
+        put_string(out, name);
+    }
 }
 
 fn take_causer(input: &mut Input<'_>) -> Result<Causer, FormatError> {
@@ -907,6 +921,11 @@ fn take_causer(input: &mut Input<'_>) -> Result<Causer, FormatError> {
             None
         },
         living: take_flag(input, "a causer's living flag")?,
+        name: if take_flag(input, "a causer's name flag")? {
+            Some(take_string(input)?)
+        } else {
+            None
+        },
     })
 }
 
@@ -1450,6 +1469,7 @@ mod entity_uses {
             what: Effected::OnEntity {
                 key: EntityId(9 << 32 | 4),
                 by: EntityUse::Attack {
+                    weapon: None,
                     part: None,
                     look: [Float(-45.5), Float(12.0)],
                     player: Some(Uuid::from_u128(0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10)),
@@ -1491,6 +1511,7 @@ mod entity_uses {
         put_use(
             &mut out,
             &EntityUse::Attack {
+                weapon: None,
                 part: None,
                 look: [Float(0.0); 2],
                 player: None,
@@ -1508,6 +1529,7 @@ mod entity_uses {
         assert_eq!(
             read,
             EntityUse::Attack {
+                weapon: None,
                 part: None,
                 look: [Float(0.0); 2],
                 player: None,
@@ -1551,6 +1573,7 @@ mod entity_uses {
                 what: Effected::OnEntity {
                     key: EntityId(1),
                     by: EntityUse::Attack {
+                        weapon: None,
                         part: None,
                         look: [Float(0.0); 2],
                         player: None,
@@ -1884,6 +1907,7 @@ mod entity_uses {
 
     fn causer(player: Option<u128>, living: bool) -> Causer {
         Causer {
+            name: None,
             key: EntityId(u64::MAX - 7),
             kind: 1 << 15 | 3,
             position: [Double(-0.0), Double(-63.5), Double(1e300)],
@@ -1908,6 +1932,7 @@ mod entity_uses {
     /// the hit's key.
     fn full_hurt() -> EntityUse {
         EntityUse::Hurt(Box::new(HurtBy {
+            weapon: None,
             damage_type: "minecraft:arrow".to_owned(),
             cause: Some(causer(
                 Some(0x0123_4567_89AB_CDEF_FEDC_BA98_7654_3210),
@@ -1939,6 +1964,7 @@ mod entity_uses {
     /// A hurt of nothing but its type and amount.
     fn bare_hurt() -> EntityUse {
         EntityUse::Hurt(Box::new(HurtBy {
+            weapon: None,
             damage_type: "minecraft:generic".to_owned(),
             cause: None,
             direct: None,
@@ -2158,8 +2184,9 @@ mod entity_uses {
             take_effect(&mut Input(&bad)),
             Err(FormatError::Corrupt("a causer's flag"))
         );
-        // The extra's tag is the byte before the sound's flag and the hit's.
-        let extra = out.len() - 3;
+        // The extra's tag is the byte before the sound's flag, the hit's and the
+        // weapon's.
+        let extra = out.len() - 4;
         assert_eq!(out[extra], EXTRA_HUSK_HUNGER);
         let mut bad = out.clone();
         bad[extra] = 5;

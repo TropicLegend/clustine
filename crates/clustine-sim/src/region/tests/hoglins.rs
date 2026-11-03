@@ -92,6 +92,7 @@ fn attack_target(region: &Region, key: EntityId) -> Option<EntityId> {
 fn hurt_by_the_pig(region: &mut Region, key: EntityId, amount: f32) {
     let at = record(region, PIG).unwrap().position;
     let pig = Causer {
+        name: None,
         key: PIG,
         kind: entity_types::PIG as u16,
         position: at.map(Double),
@@ -99,6 +100,7 @@ fn hurt_by_the_pig(region: &mut Region, key: EntityId, amount: f32) {
         living: true,
     };
     let hurt = HurtBy {
+        weapon: None,
         damage_type: "minecraft:mob_attack".to_owned(),
         cause: Some(pig.clone()),
         direct: Some(pig),

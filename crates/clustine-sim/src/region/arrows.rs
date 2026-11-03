@@ -154,6 +154,7 @@ impl Flight {
     /// The arrow as a hurt names what dealt it.
     fn causer(&self) -> Causer {
         Causer {
+            name: None,
             key: self.key,
             kind: self.kind,
             position: self.position.map(Double),
@@ -936,6 +937,7 @@ impl Region {
             .map_or_else(
                 || direct.clone(),
                 |owner| Causer {
+                    name: None,
                     key: owner.key,
                     kind: owner.kind,
                     position: owner.from,
@@ -944,6 +946,7 @@ impl Region {
                 },
             );
         HurtBy {
+            weapon: None,
             damage_type: damage_type.to_owned(),
             cause: Some(cause),
             direct: Some(direct),

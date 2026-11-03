@@ -468,6 +468,12 @@ pub struct ItemComponents {
     /// `minecraft:use_remainder`: what is left in the hand once it is used up (a bowl,
     /// a bottle, a bucket).
     pub use_remainder: Option<UseRemainder>,
+    /// `minecraft:blocks_attacks`: how the item blocks while used (the shield's), read
+    /// by `LivingEntity.applyItemBlocking` (V4).
+    pub blocks_attacks: Option<BlocksAttacks>,
+    /// `minecraft:death_protection`: the item saves its holder from death and gives
+    /// these effects (the totem's), `LivingEntity.checkTotemDeathProtection` (V4).
+    pub death_protection: Option<&'static [ConsumeEffect]>,
     /// `minecraft:ominous_bottle_amplifier`: the bad omen an ominous bottle gives, 0 by
     /// default.
     pub ominous_bottle_amplifier: Option<i32>,
@@ -653,6 +659,102 @@ pub struct Weapon {
     pub item_damage_per_attack: u32,
     /// How long an attack with it disables a shield it meets.
     pub disable_blocking_for_seconds: f32,
+}
+
+/// A damage type's data (`data/minecraft/damage_type/<name>.json`, `DamageType`): the
+/// key of its death message, how difficulty scales it, the exhaustion a hurt by it
+/// costs, the sound its hurt makes and how its death message reads (V4).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DamageTypeData {
+    pub name: &'static str,
+    pub message_id: &'static str,
+    pub scaling: DamageScaling,
+    pub exhaustion: f32,
+    pub effects: DamageEffects,
+    pub death_message_type: DeathMessageType,
+}
+
+/// `DamageScaling`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DamageScaling {
+    Never,
+    WhenCausedByLivingNonPlayer,
+    Always,
+}
+
+/// `DamageEffects`: which sound a hurt by the type makes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DamageEffects {
+    Hurt,
+    Thorns,
+    Drowning,
+    Burning,
+    Poking,
+    Freezing,
+}
+
+/// `DeathMessageType`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeathMessageType {
+    Default,
+    FallVariants,
+    IntentionalGameDesign,
+}
+
+/// The game's damage types, sorted by name; filled by the generator (V4's part A).
+pub static DAMAGE_TYPES: &[DamageTypeData] = &[];
+
+/// The data of the damage type named `name`, where the game has one.
+pub fn damage_type(name: &str) -> Option<&'static DamageTypeData> {
+    DAMAGE_TYPES
+        .binary_search_by(|data| data.name.cmp(name))
+        .ok()
+        .map(|at| &DAMAGE_TYPES[at])
+}
+
+/// An item's `minecraft:blocks_attacks` (`BlocksAttacks`): a shield's blocking.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BlocksAttacks {
+    /// How long the item must be in use before it blocks (`block_delay_seconds`).
+    pub block_delay_seconds: f32,
+    /// What scales an attacker's `disable_blocking_for_seconds` (`disable_cooldown_scale`).
+    pub disable_cooldown_scale: f32,
+    /// How much of each kind of damage it takes away, in the data's order.
+    pub damage_reductions: &'static [DamageReduction],
+    /// How much a block wears it (`item_damage`).
+    pub item_damage: ItemDamageFunction,
+    /// The tag of damage types it does not block (`bypassed_by`).
+    pub bypassed_by: Option<&'static str>,
+    /// The sounds of a block and of the item being disabled, by name.
+    pub block_sound: Option<&'static str>,
+    pub disable_sound: Option<&'static str>,
+}
+
+/// One of `blocks_attacks`'s `damage_reductions`: within the angle, of the damage types
+/// named (all where none are), `base + factor · damage` is taken away, at most the
+/// damage.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DamageReduction {
+    pub horizontal_blocking_angle: f32,
+    pub kinds: Option<DamageTypes>,
+    pub base: f32,
+    pub factor: f32,
+}
+
+/// Damage types named by a tag or listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DamageTypes {
+    Tag(&'static str),
+    Listed(&'static [&'static str]),
+}
+
+/// `blocks_attacks`'s `item_damage`: a block of at least `threshold` wears the item by
+/// `floor(base + factor · damage)`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ItemDamageFunction {
+    pub threshold: f32,
+    pub base: f32,
+    pub factor: f32,
 }
 
 /// An item's `minecraft:tool`: how fast it breaks which blocks, and which blocks it

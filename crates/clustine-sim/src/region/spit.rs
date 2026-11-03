@@ -125,9 +125,11 @@ impl Region {
                     && kind != TargetKind::Face
                 {
                     let hurt = HurtBy {
+                        weapon: None,
                         damage_type: "minecraft:spit".to_owned(),
                         cause: Some(owner),
                         direct: Some(clustine_world::Causer {
+                            name: None,
                             key,
                             kind: spit.kind,
                             position: spit.position.map(Double),

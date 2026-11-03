@@ -358,6 +358,7 @@ impl Region {
         let around = Aabb::of_entity(rocket.position, info.width, info.height).inflate([5.0; 3]);
         let cause = owner.and_then(|owner| self.causer_of(owner));
         let direct = clustine_world::Causer {
+            name: None,
             key: rocket.key,
             kind: rocket.kind,
             position: rocket.position.map(Double),
@@ -397,6 +398,7 @@ impl Region {
             let distance = (dx * dx + dy * dy + dz * dz).sqrt();
             let amount = damage * ((5.0 - f64::from(distance)) / 5.0).sqrt() as f32;
             let hurt = HurtBy {
+                weapon: None,
                 damage_type: "minecraft:fireworks".to_owned(),
                 cause: cause.clone(),
                 direct: Some(direct.clone()),

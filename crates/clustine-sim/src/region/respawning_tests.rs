@@ -374,7 +374,7 @@ fn health_told(output: &TickOutput, id: PlayerId) -> Option<f32> {
         .player_events
         .iter()
         .find_map(|(player, event)| match event {
-            crate::api::PlayerEvent::Health { health } if *player == id => Some(*health),
+            crate::api::PlayerEvent::Health { health, .. } if *player == id => Some(*health),
             _ => None,
         })
 }
@@ -390,7 +390,7 @@ fn died(output: &TickOutput, id: PlayerId) -> Option<String> {
     output.durable.iter().find_map(|(_, _, entry)| match entry {
         Durable::Died {
             player, message, ..
-        } if *player == id => Some(message.clone()),
+        } if *player == id => Some(message.key.clone()),
         _ => None,
     })
 }

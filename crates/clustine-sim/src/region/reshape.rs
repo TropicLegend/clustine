@@ -520,6 +520,8 @@ fn on_ticks_moved_by(player: &PlayerState, by: i128) -> PlayerState {
     // Their `gameTicks` goes on from where it was, so that a dig under way loses and
     // gains nothing by the merge (`digging.rs`).
     player.game_origin = i64::try_from(i128::from(player.game_origin) + by).unwrap_or(i64::MAX);
+    // And the body's counters (V4).
+    player.vitals = player.vitals.moved_by(by);
     player
 }
 
@@ -636,6 +638,7 @@ mod tests {
             menu: None,
             raid_omen_position: None,
             crafting: Default::default(),
+            vitals: Default::default(),
         }
     }
 
@@ -684,6 +687,7 @@ mod tests {
             kept: stay.kept,
             raid_omen_position: None,
             crafting: Default::default(),
+            vitals: Default::default(),
         }
     }
 

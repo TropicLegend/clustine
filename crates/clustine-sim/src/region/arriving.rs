@@ -654,6 +654,8 @@ impl Region {
                         id,
                         crate::api::PlayerEvent::Health {
                             health: player.health,
+                            food: player.vitals.food.food,
+                            saturation: player.vitals.food.saturation,
                         },
                     ));
                     // And their experience (`PlayerList.respawn` 1014–1023), which the

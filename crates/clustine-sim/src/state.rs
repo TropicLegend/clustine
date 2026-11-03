@@ -293,6 +293,173 @@ pub struct PlayerState {
     /// them across a hand-over as the game never closes it (`docs/groundwork/v-plan.md`,
     /// section 4.7).
     pub crafting: Crafting,
+    /// What their body keeps of survival (V4, `docs/groundwork/v-plan.md`, section 4.3
+    /// and 4.4): food, air, fire, freezing, falling, absorption, the hurt cooldown, who
+    /// hurt them last.
+    pub vitals: Vitals,
+}
+
+/// The air a player has at most and starts with (`Entity.TOTAL_AIR_SUPPLY`,
+/// `LivingEntity.getMaxAirSupply @0`).
+pub const PLAYER_MAX_AIR: i32 = 300;
+
+/// What a player's body keeps of survival beyond their health and effects (V4,
+/// `docs/groundwork/v-plan.md`, sections 4.2 to 4.4; the build design's sections 7 and
+/// 8). Ticks are the region's, signed, so that a merge, a hand-over and the stored place
+/// move them all by [`Vitals::moved_by`]: a transfer and a place carry them on tick 0 (as
+/// ticks left, or since), the region that takes them on its own. Counters that change
+/// only at an event are kept as the tick of their end, so that a state changes only when
+/// something happens; the fire, the air and the freezing change every tick while they
+/// act, as the game's do.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Vitals {
+    pub food: FoodData,
+    /// `Entity.airSupply`, [`PLAYER_MAX_AIR`] at most; below 0 down to −20 before a
+    /// drowning hit.
+    pub air: i32,
+    /// `Entity.remainingFireTicks`: burning while above 0; −20 after leaving fire, rising
+    /// by one a tick in fire before the player ignites (`Player.getFireImmuneTicks`).
+    pub fire: i32,
+    /// `Entity.TicksFrozen`, in powder snow.
+    pub frozen: i32,
+    /// `Entity.fallDistance`, from the client's moves.
+    pub fall_distance: f64,
+    /// The kept copy of `LivingEntity.absorptionAmount`, written at the end of the tick
+    /// as the health is; the region's `Effects.absorption` is the truth in memory.
+    pub absorption: f32,
+    /// The tick the damage cooldown (`LivingEntity.damageCooldownTime`, 20 after a full
+    /// hit) ends, if it runs. Not saved by the game: left out of the place.
+    pub cooldown_until: Option<i64>,
+    /// `LivingEntity.lastHurt`, the damage the cooldown's second half compares with. Not
+    /// saved.
+    pub last_hurt: f32,
+    /// Who hurt them last, and until when it counts (`lastHurtByMob` with its 100 ticks,
+    /// `lastHurtByPlayer`): tamed wolves defend against it, and a death names it.
+    pub last_hurt_by: Option<LastHurtBy>,
+    /// Where a wind charge last threw them, which a fall is measured from
+    /// (`currentImpulseImpactPos`, `currentImpulseContextResetGraceTime`). Nothing sets
+    /// it yet: there are no wind charges.
+    pub impulse: Option<Impulse>,
+    /// The motion the server keeps for them (`getDeltaMovement`): set by knockback and
+    /// pushes, slowed ×0.98 a tick, its y cut by a landing; knockback starts from it. Not
+    /// saved.
+    pub motion: [f64; 3],
+    /// The arrows stuck in them (`DATA_ARROW_COUNT_ID`). Not saved.
+    pub arrows: i32,
+    /// The combat tracker's entries for the death message
+    /// (`CombatTracker.recordDamage`). Not saved: lost at a rejoin, as the game's.
+    pub combat: Vec<CombatEntry>,
+}
+
+impl Default for Vitals {
+    fn default() -> Self {
+        Self {
+            food: FoodData::default(),
+            air: PLAYER_MAX_AIR,
+            fire: 0,
+            frozen: 0,
+            fall_distance: 0.0,
+            absorption: 0.0,
+            cooldown_until: None,
+            last_hurt: 0.0,
+            last_hurt_by: None,
+            impulse: None,
+            motion: [0.0; 3],
+            arrows: 0,
+            combat: Vec::new(),
+        }
+    }
+}
+
+impl Vitals {
+    /// The same, every tick moved by `by`: onto a survivor's ticks at a merge, onto tick
+    /// 0 for a transfer or a place, onto the arriving region's from there.
+    pub fn moved_by(&self, by: i128) -> Self {
+        let moved = |tick: i64| i64::try_from(i128::from(tick) + by).unwrap_or(i64::MAX);
+        let mut vitals = self.clone();
+        vitals.food.timer_from = vitals.food.timer_from.map(moved);
+        vitals.cooldown_until = vitals.cooldown_until.map(moved);
+        if let Some(by) = &mut vitals.last_hurt_by {
+            by.until = moved(by.until);
+        }
+        if let Some(impulse) = &mut vitals.impulse {
+            impulse.grace_until = moved(impulse.grace_until);
+        }
+        for entry in &mut vitals.combat {
+            entry.at = moved(entry.at);
+        }
+        vitals
+    }
+
+    /// What of them the stored place keeps: what the game saves of a player
+    /// (`Player.addAdditionalSaveData`, `LivingEntity.addAdditionalSaveData`), without
+    /// the cooldown, the last hurt, the motion, the arrows and the combat tracker, which
+    /// a rejoin begins without. Who hurt them last is left out too (named: the game keeps
+    /// a mob's UUID for its 100 ticks; a rejoin's entity ids are new).
+    pub fn kept_in_place(&self) -> Self {
+        Self {
+            cooldown_until: None,
+            last_hurt: 0.0,
+            last_hurt_by: None,
+            motion: [0.0; 3],
+            arrows: 0,
+            combat: Vec::new(),
+            ..self.clone()
+        }
+    }
+}
+
+/// `FoodData`: the food level (20 at most), the saturation (at most the food), the
+/// exhaustion (to 40) and the tick its one timer began, `None` at rest (the game's
+/// `tickTimer` of 0, reset in every tick no branch applies).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FoodData {
+    pub food: i32,
+    pub saturation: f32,
+    pub exhaustion: f32,
+    pub timer_from: Option<i64>,
+}
+
+impl Default for FoodData {
+    /// A new player's (`FoodData`'s fields): 20, 5, none.
+    fn default() -> Self {
+        Self {
+            food: 20,
+            saturation: 5.0,
+            exhaustion: 0.0,
+            timer_from: None,
+        }
+    }
+}
+
+/// Who hurt a player last: the entity, a player's UUID where it was one, and the tick
+/// until which it counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastHurtBy {
+    pub entity: EntityId,
+    pub player: Option<uuid::Uuid>,
+    pub until: i64,
+}
+
+/// Where a wind charge threw a player, and the tick its grace ends.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Impulse {
+    pub at: [f64; 3],
+    pub grace_until: i64,
+}
+
+/// One hurt the combat tracker keeps (`CombatEntry`): its type, how much, who did it,
+/// where they were falling from, and the tick.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CombatEntry {
+    pub damage_type: String,
+    pub amount: f32,
+    pub killer: Option<crate::api::Killer>,
+    /// `CombatTracker.getFallLocation` at the hurt (a ladder, vines, water …), by the
+    /// game's id, if they were falling from one.
+    pub fall_location: Option<String>,
+    pub fall_distance: f32,
+    pub at: i64,
 }
 
 /// The player's own inventory screen's (`InventoryMenu`'s) state beyond the inventory:
@@ -676,6 +843,66 @@ pub struct EdgeDelta {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A body with every tick it keeps set, at a region's tick 1000.
+    fn counting() -> Vitals {
+        Vitals {
+            food: FoodData {
+                timer_from: Some(990),
+                ..FoodData::default()
+            },
+            cooldown_until: Some(1012),
+            last_hurt: 6.0,
+            last_hurt_by: Some(LastHurtBy {
+                entity: EntityId(7),
+                player: None,
+                until: 1080,
+            }),
+            impulse: Some(Impulse {
+                at: [1.0, 2.0, 3.0],
+                grace_until: 1005,
+            }),
+            motion: [0.1, 0.2, 0.3],
+            arrows: 2,
+            combat: vec![CombatEntry {
+                damage_type: "minecraft:fall".to_owned(),
+                amount: 3.0,
+                killer: None,
+                fall_location: None,
+                fall_distance: 6.0,
+                at: 995,
+            }],
+            ..Vitals::default()
+        }
+    }
+
+    #[test]
+    fn every_tick_a_body_keeps_moves_by_the_same_and_moves_back() {
+        let vitals = counting();
+        // Onto tick 0 at a hand-over, then onto the next region's 40.
+        let carried = vitals.moved_by(-1000);
+        assert_eq!(carried.food.timer_from, Some(-10));
+        assert_eq!(carried.cooldown_until, Some(12));
+        assert_eq!(carried.last_hurt_by.map(|by| by.until), Some(80));
+        assert_eq!(carried.impulse.map(|impulse| impulse.grace_until), Some(5));
+        assert_eq!(carried.combat[0].at, -5);
+        let arrived = carried.moved_by(40);
+        assert_eq!(arrived.cooldown_until, Some(52));
+        assert_eq!(arrived.moved_by(960), vitals);
+    }
+
+    #[test]
+    fn a_place_keeps_what_the_game_saves_of_a_body_and_nothing_a_rejoin_begins_without() {
+        let kept = counting().kept_in_place();
+        assert_eq!(kept.food, counting().food);
+        assert_eq!(kept.impulse, counting().impulse);
+        assert_eq!(kept.cooldown_until, None);
+        assert_eq!(kept.last_hurt, 0.0);
+        assert_eq!(kept.last_hurt_by, None);
+        assert_eq!(kept.motion, [0.0; 3]);
+        assert_eq!(kept.arrows, 0);
+        assert!(kept.combat.is_empty());
+    }
 
     #[test]
     fn an_open_menu_with_a_drag_under_way_reads_back_as_it_was_written() {

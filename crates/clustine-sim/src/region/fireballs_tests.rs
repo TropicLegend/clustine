@@ -444,6 +444,7 @@ fn a_small_fireball_is_not_sent_back_by_a_hit() {
     );
     lay(&mut region, &ball);
     let by = EntityUse::Attack {
+        weapon: None,
         part: None,
         attacker: EntityId(5),
         creative: true,

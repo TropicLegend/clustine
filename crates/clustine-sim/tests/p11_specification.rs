@@ -453,6 +453,7 @@ impl Scene {
                     time_since_rest: self.options.time_since_rest,
                     raid_omen_position: self.options.raid_omen_position,
                     crafting: Default::default(),
+                    vitals: Default::default(),
                 }),
                 holder: None,
             }],

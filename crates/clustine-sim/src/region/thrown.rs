@@ -914,6 +914,7 @@ impl Region {
     pub(crate) fn causer_of(&self, key: EntityId) -> Option<clustine_world::Causer> {
         let thrower = self.thrower(key)?;
         Some(clustine_world::Causer {
+            name: None,
             key,
             kind: thrower.kind,
             position: thrower.from,
@@ -1033,6 +1034,7 @@ impl Region {
     /// The potion or cloud `key` of `kind` at `at` as the cause of what it gives.
     fn giver(key: EntityId, kind: u16, at: Vec3) -> clustine_world::Causer {
         clustine_world::Causer {
+            name: None,
             key,
             kind,
             position: at.map(Double),

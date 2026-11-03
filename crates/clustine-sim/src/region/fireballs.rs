@@ -427,6 +427,7 @@ impl Region {
         fire_before: i32,
     ) -> HurtBy {
         let cause = data.owner.map(|owner| clustine_world::Causer {
+            name: None,
             key: owner.key,
             kind: owner.kind,
             position: self
@@ -441,9 +442,11 @@ impl Region {
             "minecraft:unattributed_fireball"
         };
         HurtBy {
+            weapon: None,
             damage_type: damage_type.to_owned(),
             cause,
             direct: Some(clustine_world::Causer {
+                name: None,
                 key: fireball.key,
                 kind: fireball.kind,
                 position: fireball.position.map(Double),

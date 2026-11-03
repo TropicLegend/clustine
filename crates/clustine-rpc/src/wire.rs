@@ -770,6 +770,7 @@ mod tests {
             time_since_rest: 0,
             raid_omen_position: None,
             crafting: Default::default(),
+            vitals: Default::default(),
         };
         let standing = Place {
             health: 20.0,
@@ -791,6 +792,7 @@ mod tests {
             time_since_rest: 0,
             raid_omen_position: None,
             crafting: Default::default(),
+            vitals: Default::default(),
         };
 
         round_trip(StoreRequest::Commit {

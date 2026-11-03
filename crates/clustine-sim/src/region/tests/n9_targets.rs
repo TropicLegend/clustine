@@ -374,6 +374,7 @@ const ATTACKER: EntityId = EntityId(0x7_0000_0100);
 /// what last hurt it.
 fn hurt_by_the_skeleton() -> EntityUse {
     let skeleton = Causer {
+        name: None,
         key: ATTACKER,
         kind: of(entity_types::SKELETON),
         position: [Double(10.5), Double(-60.0), Double(6.5)],
@@ -381,6 +382,7 @@ fn hurt_by_the_skeleton() -> EntityUse {
         living: true,
     };
     EntityUse::Hurt(Box::new(HurtBy {
+        weapon: None,
         damage_type: "minecraft:mob_attack".to_owned(),
         cause: Some(skeleton.clone()),
         direct: Some(skeleton),

@@ -410,6 +410,7 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
         time_since_rest: 0,
         raid_omen_position: None,
         crafting: Default::default(),
+        vitals: Default::default(),
     }
 }
 
@@ -453,6 +454,7 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
         time_since_rest: 0,
         raid_omen_position: None,
         crafting: Default::default(),
+        vitals: Default::default(),
     }
 }
 
@@ -497,6 +499,7 @@ fn taken_in(transfer: &PlayerTransfer, edge: EdgeId) -> PlayerState {
         rested: 0,
         raid_omen_position: None,
         crafting: Default::default(),
+        vitals: Default::default(),
     }
 }
 
@@ -2492,6 +2495,7 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         rested: 0,
         raid_omen_position: None,
         crafting: Default::default(),
+        vitals: Default::default(),
     }
 }
 
@@ -5111,6 +5115,7 @@ fn place_of(state: &PlayerState) -> Place {
         time_since_rest: 0,
         raid_omen_position: None,
         crafting: Default::default(),
+        vitals: Default::default(),
     }
 }
 

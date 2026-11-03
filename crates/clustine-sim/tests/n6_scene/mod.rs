@@ -417,6 +417,7 @@ impl Scene {
             time_since_rest: 0,
             raid_omen_position: None,
             crafting: Default::default(),
+            vitals: Default::default(),
         };
         change(&mut place);
         let entered = self.region.tick(&TickInputs {

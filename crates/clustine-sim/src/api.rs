@@ -133,6 +133,10 @@ pub struct Place {
     /// drops them at the feet when a player leaves. A drag under way is not kept; a
     /// client that joins has none.
     pub crafting: crate::state::Crafting,
+    /// What their body keeps of survival, as the stored place keeps it
+    /// ([`crate::state::Vitals::kept_in_place`]), its ticks on tick 0. Boxed, so that a
+    /// place stays small beside the messages that carry it.
+    pub vitals: Box<crate::state::Vitals>,
 }
 
 /// A player asleep in a bed: its head, and the game time of their region they lay down
@@ -531,6 +535,8 @@ pub struct PlayerTransfer {
     /// Their inventory screen's own state, which crosses with them: the game never
     /// closes it (`docs/groundwork/v-plan.md`, section 4.7).
     pub crafting: crate::state::Crafting,
+    /// What their body keeps of survival, all of it, its ticks on tick 0.
+    pub vitals: crate::state::Vitals,
 }
 
 /// The number of spawning categories counted: `MobCategory` but `MISC`, in its order.
@@ -1459,7 +1465,7 @@ pub enum Durable {
     Died {
         player: PlayerId,
         entity: EntityId,
-        message: String,
+        message: DeathMessage,
         /// Where they died, the level and the block (section 19.9).
         at: (Dimension, BlockPos),
     },
@@ -1857,9 +1863,22 @@ pub enum PlayerEvent {
         flying: bool,
         respawn: Option<Respawned>,
     },
-    /// The player's health changed (`ClientboundSetHealthPacket`, with the food and
-    /// saturation a creative player keeps full).
-    Health { health: f32 },
+    /// The player's health, food or saturation changed (`ClientboundSetHealthPacket`,
+    /// sent on `ServerPlayer.doTick`'s rule of change, @146-264).
+    Health {
+        health: f32,
+        food: i32,
+        saturation: f32,
+    },
+    /// The player was knocked (`markHurt`, or another player's hit through
+    /// `causeExtraKnockback`): their client is told its motion as the server keeps it,
+    /// `SetEntityMotion` with the player's own entity (V4).
+    Knocked { motion: [f64; 3] },
+    /// What the player's own entity data says that only the server sets (V4): the edge
+    /// sends it to the player's own client as `SetEntityData`, and again whole at a
+    /// respawn (`ServerEntity.sendDirtyEntityData`, `getNonDefaultValues`). Reported on
+    /// change, and whole once at an arrival.
+    OwnData(OwnData),
     /// A global level event (`ServerLevel.globalLevelEvent`: an end portal opened, the
     /// dragon's death), heard at `position`, which the region worked out for the player
     /// (`end_world.rs`). Sent with the packet's `global` set.
@@ -2642,4 +2661,50 @@ pub struct QueryId {
 pub struct PortalAnswer {
     pub id: QueryId,
     pub portals: Vec<BlockPos>,
+}
+
+/// What a player's own entity data says that only the server sets (V4): air
+/// (`DATA_AIR_SUPPLY_ID`), absorption (`DATA_PLAYER_ABSORPTION_ID`), burning (shared flag
+/// 0), ticks frozen (`DATA_TICKS_FROZEN`) and the arrows stuck in them
+/// (`DATA_ARROW_COUNT_ID`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct OwnData {
+    pub air: i32,
+    pub absorption: f32,
+    pub on_fire: bool,
+    pub frozen: i32,
+    pub arrows: i32,
+}
+
+/// Who killed or hurt a player, as a death message names them: the entity, its type,
+/// its name (a player's, or a custom name), whether it was a player, and what it held.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Killer {
+    pub entity: EntityId,
+    pub kind: u16,
+    pub name: Option<String>,
+    pub player: bool,
+    pub weapon: Option<ItemStack>,
+}
+
+/// A death message (`CombatTracker.getDeathMessage`): its translation key
+/// (`death.attack.<id>`, its `.player` and `.item` forms, the fall variants), and what it
+/// names after the dead player: the killer, shown by its name or its type's, and the
+/// weapon. The edge builds the component.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeathMessage {
+    pub key: String,
+    pub killer: Option<Killer>,
+    pub item: Option<ItemStack>,
+}
+
+impl DeathMessage {
+    /// A message that names nobody (the void's `death.attack.outOfWorld`).
+    pub fn plain(key: &str) -> Self {
+        Self {
+            key: key.to_owned(),
+            killer: None,
+            item: None,
+        }
+    }
 }

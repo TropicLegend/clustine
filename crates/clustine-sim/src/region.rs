@@ -515,6 +515,8 @@ struct Player {
     dig: crate::state::Dig,
     /// See [`PlayerState::crafting`] (`inventory_menu.rs`).
     crafting: crate::state::Crafting,
+    /// See [`PlayerState::vitals`].
+    vitals: crate::state::Vitals,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -1565,6 +1567,7 @@ impl Region {
                     time_since_rest: transfer.time_since_rest,
                     raid_omen_position: transfer.raid_omen_position,
                     crafting: transfer.crafting.kept(),
+                    vitals: Box::new(transfer.vitals.kept_in_place()),
                 },
                 face: at_portal.clone().unwrap_or_else(|| PlayerFace {
                     sprinting: transfer.keys.sprint,
@@ -2197,6 +2200,8 @@ impl Region {
             game_origin: digging::origin_after(self.tick, transfer.digging.game_ticks),
             dig: transfer.digging.dig,
             crafting: transfer.crafting.clone(),
+            // Counted on from the region's ticks, as the effects are.
+            vitals: transfer.vitals.moved_by(i128::from(self.tick)),
             cooldowns: transfer
                 .cooldowns
                 .iter()
@@ -2296,6 +2301,11 @@ impl Region {
         let crafting = place
             .as_ref()
             .map(|place| place.crafting.clone())
+            .unwrap_or_default();
+        // And what their body kept (V4), on tick 0 as the place has it.
+        let placed_vitals = place
+            .as_ref()
+            .map(|place| place.vitals.clone())
             .unwrap_or_default();
         // Their effects and their time since rest too, counted on from now.
         let (effects, time_since_rest, raid_omen_position) = place
@@ -2414,6 +2424,7 @@ impl Region {
                         appearance,
                         posture: Default::default(),
                         crafting: crafting.clone(),
+                        vitals: (*placed_vitals).clone(),
                     };
                     match elsewhere {
                         Some(to) => unplaced.push((edge, id, transfer, to)),
@@ -2497,6 +2508,7 @@ impl Region {
             game_origin: digging::origin_after(self.tick, 0),
             dig: Default::default(),
             crafting,
+            vitals: placed_vitals.moved_by(i128::from(self.tick)),
         };
         self.enter(id, player, attempt, output);
     }
@@ -2923,6 +2935,7 @@ impl Region {
                 let look = [Float(player.pose.yaw), Float(player.pose.pitch)];
                 let damage = self.attack_of(id).map_or(1.0, |attack| attack.amount);
                 let by = EntityUse::Attack {
+                    weapon: None,
                     part: *part,
                     attacker,
                     creative: true,
@@ -4287,6 +4300,7 @@ impl Player {
             game_origin: self.game_origin,
             dig: self.dig,
             crafting: self.crafting.clone(),
+            vitals: self.vitals.clone(),
         }
     }
 
@@ -4340,6 +4354,7 @@ impl Player {
             game_origin: state.game_origin,
             dig: state.dig,
             crafting: state.crafting,
+            vitals: state.vitals,
         }
     }
 
@@ -4402,6 +4417,11 @@ impl Player {
             time_since_rest: self.time_since_rest(tick + 1),
             raid_omen_position: self.raid_omen_position,
             crafting: self.crafting.kept(),
+            vitals: Box::new(
+                self.vitals
+                    .moved_by(-(i128::from(tick) + 1))
+                    .kept_in_place(),
+            ),
         }
     }
 
@@ -4455,6 +4475,8 @@ impl Player {
                 dig: self.dig,
             },
             crafting: self.crafting,
+            // On tick 0, as counted at the end of the tick.
+            vitals: self.vitals.moved_by(-(i128::from(tick) + 1)),
             cooldowns: self
                 .cooldowns
                 .into_iter()
@@ -6907,6 +6929,7 @@ mod tests {
             kept: Vec::new(),
             raid_omen_position: None,
             crafting: Default::default(),
+            vitals: Default::default(),
         }
     }
 
@@ -7508,6 +7531,7 @@ mod tests {
                         kept: Vec::new(),
                         raid_omen_position: None,
                         crafting: Default::default(),
+                        vitals: Default::default(),
                     }
                 ),
             ]
@@ -7855,6 +7879,7 @@ mod tests {
             kept: Vec::new(),
             raid_omen_position: None,
             crafting: Default::default(),
+            vitals: Default::default(),
         };
         assert_eq!(told(&output), [(player(1), spawned), departed(1, transfer)]);
         assert_eq!(let_go(&output), [(player(1), WEST_REGION)]);

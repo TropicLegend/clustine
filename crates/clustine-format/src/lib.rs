@@ -29,7 +29,7 @@ pub use chunk::{ChunkFile, KIND_CHUNK};
 pub use entities::{EntitiesFile, KIND_ENTITIES};
 pub use log::{
     ENDER_SLOTS, INVENTORY_SLOTS, LogRecord, Logged, LoggedPlace, LoggedStay, LoggedUnit,
-    MAX_RECORD_LENGTH, read_log, read_log_with_offsets,
+    LoggedVitals, MAX_RECORD_LENGTH, read_log, read_log_with_offsets,
 };
 pub use region::{
     BlocksFile, CoupledRegion, CouplingsFile, Handshake, PlayerRecord, PlayersFile, RegionFile,
@@ -69,8 +69,10 @@ pub use region::{
 /// its exit's holder makes (section 19.8 of the same plan); 23 since a place ends with
 /// where the player last died (section 19.9); 24 since it ends with their game mode and
 /// the one before it (`docs/groundwork/v-plan.md`, section 4.1); 25 since it ends with
-/// their inventory screen's crafting grid, its result and the cursor (section 4.7).
-pub const FORMAT_VERSION: u8 = 25;
+/// their inventory screen's crafting grid, its result and the cursor (section 4.7); 26
+/// since it ends with what their body keeps of survival: food, air, fire, freezing, the fall
+/// and absorption (V4).
+pub const FORMAT_VERSION: u8 = 26;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

@@ -310,7 +310,68 @@ pub struct LoggedPlace {
     pub crafting_grid: [Option<ItemStack>; 4],
     pub crafting_result: Option<ItemStack>,
     pub carried: Option<ItemStack>,
+    /// What their body keeps of survival as the game saves it (V4, format 26).
+    pub vitals: LoggedVitals,
 }
+
+/// What a place keeps of a player's body (V4, `docs/groundwork/v-plan.md`, section 4.2):
+/// the food, its saturation, exhaustion and the tick its timer began (on tick 0, so
+/// below 0 where it ran before the place was made; none at rest), the air, the fire
+/// ticks, the ticks frozen, the fall distance, the absorption, and a wind charge's
+/// impulse with the tick its grace ends.
+#[derive(Debug, Clone, Copy)]
+pub struct LoggedVitals {
+    pub food: i32,
+    pub saturation: f32,
+    pub exhaustion: f32,
+    pub food_timer_from: Option<i64>,
+    pub air: i32,
+    pub fire: i32,
+    pub frozen: i32,
+    pub fall_distance: f64,
+    pub absorption: f32,
+    pub impulse: Option<([f64; 3], i64)>,
+}
+
+impl Default for LoggedVitals {
+    /// A new player's: food 20, saturation 5, air 300.
+    fn default() -> Self {
+        Self {
+            food: 20,
+            saturation: 5.0,
+            exhaustion: 0.0,
+            food_timer_from: None,
+            air: 300,
+            fire: 0,
+            frozen: 0,
+            fall_distance: 0.0,
+            absorption: 0.0,
+            impulse: None,
+        }
+    }
+}
+
+impl PartialEq for LoggedVitals {
+    fn eq(&self, other: &Self) -> bool {
+        self.food == other.food
+            && self.saturation.to_bits() == other.saturation.to_bits()
+            && self.exhaustion.to_bits() == other.exhaustion.to_bits()
+            && self.food_timer_from == other.food_timer_from
+            && self.air == other.air
+            && self.fire == other.fire
+            && self.frozen == other.frozen
+            && self.fall_distance.to_bits() == other.fall_distance.to_bits()
+            && self.absorption.to_bits() == other.absorption.to_bits()
+            && self
+                .impulse
+                .map(|(at, until)| (at.map(f64::to_bits), until))
+                == other
+                    .impulse
+                    .map(|(at, until)| (at.map(f64::to_bits), until))
+    }
+}
+
+impl Eq for LoggedVitals {}
 
 impl PartialEq for LoggedPlace {
     fn eq(&self, other: &Self) -> bool {
@@ -344,6 +405,7 @@ impl PartialEq for LoggedPlace {
             && self.crafting_grid == other.crafting_grid
             && self.crafting_result == other.crafting_result
             && self.carried == other.carried
+            && self.vitals == other.vitals
     }
 }
 
@@ -1347,6 +1409,65 @@ pub(crate) fn put_place(out: &mut Vec<u8>, place: &LoggedPlace) {
     {
         put_optional_stack(out, slot.as_ref());
     }
+    // The body (format 26).
+    put_vitals(out, &place.vitals);
+}
+
+fn put_vitals(out: &mut Vec<u8>, vitals: &LoggedVitals) {
+    out.extend_from_slice(&vitals.food.to_be_bytes());
+    out.extend_from_slice(&vitals.saturation.to_be_bytes());
+    out.extend_from_slice(&vitals.exhaustion.to_be_bytes());
+    match vitals.food_timer_from {
+        None => out.push(0),
+        Some(from) => {
+            out.push(1);
+            out.extend_from_slice(&from.to_be_bytes());
+        }
+    }
+    for value in [vitals.air, vitals.fire, vitals.frozen] {
+        out.extend_from_slice(&value.to_be_bytes());
+    }
+    out.extend_from_slice(&vitals.fall_distance.to_be_bytes());
+    out.extend_from_slice(&vitals.absorption.to_be_bytes());
+    match vitals.impulse {
+        None => out.push(0),
+        Some((at, until)) => {
+            out.push(1);
+            for coordinate in at {
+                out.extend_from_slice(&coordinate.to_be_bytes());
+            }
+            out.extend_from_slice(&until.to_be_bytes());
+        }
+    }
+}
+
+fn take_vitals(input: &mut Input<'_>) -> Result<LoggedVitals, FormatError> {
+    let (food, saturation, exhaustion) = (input.i32()?, input.f32()?, input.f32()?);
+    let food_timer_from = match input.u8()? {
+        0 => None,
+        1 => Some(input.i64()?),
+        _ => return Err(FormatError::Corrupt("a place's food timer flag")),
+    };
+    let (air, fire, frozen) = (input.i32()?, input.i32()?, input.i32()?);
+    let fall_distance = input.f64()?;
+    let absorption = input.f32()?;
+    let impulse = match input.u8()? {
+        0 => None,
+        1 => Some(([input.f64()?, input.f64()?, input.f64()?], input.i64()?)),
+        _ => return Err(FormatError::Corrupt("a place's impulse flag")),
+    };
+    Ok(LoggedVitals {
+        food,
+        saturation,
+        exhaustion,
+        food_timer_from,
+        air,
+        fire,
+        frozen,
+        fall_distance,
+        absorption,
+        impulse,
+    })
 }
 
 /// What a place writes for no previous game mode.
@@ -1420,7 +1541,9 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
     }
     let crafting_result = take_optional_stack(input, "a crafting result")?;
     let carried = take_optional_stack(input, "a carried stack")?;
+    let vitals = take_vitals(input)?;
     Ok(LoggedPlace {
+        vitals,
         crafting_grid,
         crafting_result,
         carried,
@@ -3087,6 +3210,7 @@ mod tests {
         let mut ender = [const { None }; ENDER_SLOTS];
         ender[0] = Some(ItemStack::new(6, 1));
         LoggedPlace {
+            vitals: Default::default(),
             health: 20.0,
             dead: false,
             dimension: Default::default(),
@@ -3427,6 +3551,17 @@ mod tests {
         payload.extend_from_slice(&[1, 0, 0, 0, 7, 0, 0, 0, 2, 0, 0, 0, 0]);
         payload.extend_from_slice(&[0, 0, 0]);
         payload.extend_from_slice(&[1, 0, 0, 0, 8, 0, 0, 0, 1, 0, 0, 0, 0]);
+        // A new player's body (format 26): food 20, saturation 5, no exhaustion, the timer
+        // at rest; air 300, no fire, not frozen; no fall, no absorption, no impulse.
+        payload.extend_from_slice(&20_i32.to_be_bytes());
+        payload.extend_from_slice(&5.0_f32.to_be_bytes());
+        payload.extend_from_slice(&0.0_f32.to_be_bytes());
+        payload.push(0);
+        payload.extend_from_slice(&300_i32.to_be_bytes());
+        payload.extend_from_slice(&[0; 8]);
+        payload.extend_from_slice(&0.0_f64.to_be_bytes());
+        payload.extend_from_slice(&0.0_f32.to_be_bytes());
+        payload.push(0);
         assert_eq!(bytes[..4], (payload.len() as u32).to_be_bytes());
         assert_eq!(bytes[4..8], crc32fast::hash(&payload).to_be_bytes());
         assert_eq!(bytes[8..], payload);
@@ -3558,6 +3693,40 @@ mod tests {
         );
     }
 
+    /// A place's body (format 26) is read back as it was written, every field of it, and
+    /// a flag out of range is refused.
+    #[test]
+    fn a_places_body_reads_as_it_was_written() {
+        let mut place = place();
+        place.vitals = LoggedVitals {
+            food: 7,
+            saturation: 1.5,
+            exhaustion: 2.25,
+            food_timer_from: Some(-30),
+            air: -12,
+            fire: -20,
+            frozen: 40,
+            fall_distance: 3.5,
+            absorption: 4.0,
+            impulse: Some(([1.0, -2.0, 3.5], 5)),
+        };
+        let mut out = Vec::new();
+        put_place(&mut out, &place);
+        let mut input = Input(&out);
+        assert_eq!(take_place(&mut input), Ok(place.clone()));
+        input.finish().unwrap();
+        // The food timer's flag is the 13th byte of the body, which is the place's end
+        // less the body's 78 bytes with these values.
+        let body = out.len() - (4 + 4 + 4 + 9 + 12 + 8 + 4 + 1 + 24 + 8);
+        assert_eq!(out[body + 12], 1);
+        let mut bad = out.clone();
+        bad[body + 12] = 2;
+        assert_eq!(
+            take_place(&mut Input(&bad)),
+            Err(FormatError::Corrupt("a place's food timer flag"))
+        );
+    }
+
     /// A place whose stacks carry components, in the inventory and the ender chest alike,
     /// is read back with them.
     #[test]
@@ -3578,12 +3747,12 @@ mod tests {
     /// dimension, of 19, before the records written forward named theirs, of 20,
     /// before a place carried the player's health, of 21, before a gateway's travel
     /// carried its island, of 22, before a place carried the last death, of 23, before it
-    /// carried the game mode, and of 24, before it carried the crafting grid, are refused
-    /// as any record of another format is.
+    /// carried the game mode, of 24, before it carried the crafting grid, and of 25,
+    /// before it carried the body, are refused as any record of another format is.
     #[test]
-    fn records_of_formats_13_to_24_are_refused() {
-        assert_eq!(FORMAT_VERSION, 25);
-        for earlier in [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24] {
+    fn records_of_formats_13_to_25_are_refused() {
+        assert_eq!(FORMAT_VERSION, 26);
+        for earlier in [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25] {
             let mut payload = commit_with_stays().encode()[FRAME_HEADER_LENGTH..].to_vec();
             assert_eq!(payload[0], FORMAT_VERSION);
             payload[0] = earlier;
@@ -3766,6 +3935,7 @@ mod tests {
                     (dimension, travel, (seen_credits, portal_cooldown), respawn, (health, dead)),
                 )| {
                     LoggedPlace {
+                        vitals: Default::default(),
                         dimension,
                         travel,
                         seen_credits,
