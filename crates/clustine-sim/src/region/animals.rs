@@ -156,6 +156,7 @@ impl Region {
         let start = stream.clone();
         let player_uuid = self.uuid_of_player(player);
         let game_time = i64::try_from(self.clock.game_time).unwrap_or(i64::MAX);
+        let used_held = held.clone();
         let mut used = Used {
             key: entity.key,
             kind: entity.kind,
@@ -195,23 +196,60 @@ impl Region {
             return;
         }
         self.commit_mob(entity, chunk, &mob, output);
+        let held_item = used_held.map(|stack| stack.item);
         for done in did {
-            self.carry_out(entity, chunk, player, from, done, output);
+            self.carry_out(entity, chunk, player, from, held_item, done, output);
         }
         self.interacted(entity, player, result, output);
     }
 
-    /// One thing a use of the mob `entity` did beyond it.
+    /// One thing a use of the mob `entity` did beyond it, by the player whose entity is
+    /// `player` with `held` in the hand used.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the use's parts, as the effect has them"
+    )]
     pub(super) fn carry_out(
         &mut self,
         entity: &Entity,
         chunk: ChunkPos,
         player: EntityId,
         from: Vec3,
+        held: Option<i32>,
         done: Did,
         output: &mut TickOutput,
     ) {
         match done {
+            Did::UseUp(count) => {
+                if let Some(item) = held {
+                    self.consume_item_of_entity(player, item, count, output);
+                }
+            }
+            Did::Wear(amount) => {
+                if let Some(item) = held {
+                    self.hurt_and_break_item_of_entity(player, item, amount, output);
+                }
+            }
+            // `createFilledResult` of the region's own player without infinite
+            // materials: one of the hand used up for it (`materials.rs`). Anyone else's
+            // is given as a creative player's is, across a line too (named there).
+            Did::Give {
+                stack,
+                no_duplicates,
+            } if held.is_some_and(|item| {
+                self.player_with_entity(player).is_some_and(|id| {
+                    !self.has_infinite_materials(id) && self.hand_with_item(id, item).is_some()
+                })
+            }) =>
+            {
+                let id = self
+                    .player_with_entity(player)
+                    .expect("the guard found the player");
+                let hand = held
+                    .and_then(|item| self.hand_with_item(id, item))
+                    .expect("the guard found the hand");
+                self.create_filled_result(id, hand, stack, no_duplicates, output);
+            }
             Did::Sound {
                 sound,
                 source,
@@ -470,8 +508,9 @@ impl Region {
 
     /// `SpawnEggItem.spawnOffspringFromSpawnEgg`: an egg of the type of the farm animal
     /// `entity` used on it makes a baby of it at its feet, facing south, as its own
-    /// breeding with itself would (no `finalizeSpawn`); the creative player keeps the
-    /// egg. Whether it made one.
+    /// breeding with itself would (no `finalizeSpawn`); one of the eggs used up, but a
+    /// creative player's (`itemStack.consume(1, player)`, `materials.rs`). Whether it
+    /// made one.
     pub(crate) fn offspring_from_egg(
         &mut self,
         entity: &Entity,
@@ -518,6 +557,7 @@ impl Region {
             return false;
         };
         self.add_made_mob(made, output);
+        self.consume_item_of_entity(player, stack.item, 1, output);
         true
     }
 
@@ -589,6 +629,9 @@ impl Region {
             except: None,
         });
         self.interacted(entity, player, Interaction::Success, output);
+        // `attemptToShearEquipment`'s `hurtAndBreak(1, player, hand)` of the shears
+        // (`materials.rs`).
+        self.hurt_and_break_item_of_entity(player, items::SHEARS, 1, output);
         true
     }
 }

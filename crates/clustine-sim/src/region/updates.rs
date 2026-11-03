@@ -412,7 +412,8 @@ impl Region {
         self.vibrate_at(super::vibrations::Vibration::BLOCK_DESTROY, pos, context);
         self.set_block(pos, fluid_block(state), output);
         // `Block.playerDestroy`, which the game calls only where the break makes drops:
-        // never for a creative player, which every player is (`ice.rs`).
+        // never for a creative player, and for nobody until survival's breaking (V2,
+        // `materials.rs`: a survival player's break is a creative one's until then).
         self.ice_broken_by_player(pos, state, false, output);
     }
 

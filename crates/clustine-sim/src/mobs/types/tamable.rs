@@ -268,9 +268,10 @@ pub(crate) fn nutrition(item: i32) -> Option<i32> {
     Some(value)
 }
 
-/// `TamableAnimal.feed(player, hand, stack, perNutrition, otherwise)`: the item eaten
-/// (a creative player keeps it), health back by its nutrition times `per_nutrition`, or
-/// `otherwise` for an item of no food, then the type's eating sound, if any.
+/// `TamableAnimal.feed(player, hand, stack, perNutrition, otherwise)`: health back by
+/// its nutrition times `per_nutrition`, or `otherwise` for an item of no food, then the
+/// type's eating sound, if any. The item eaten (its `usePlayerItem`, which a nautilus
+/// overrides) is the caller's to use up.
 pub(crate) fn feed(used: &mut Used<'_>, per_nutrition: f32, otherwise: f32, eat: Option<Did>) {
     let amount = used
         .held

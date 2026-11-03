@@ -563,8 +563,8 @@ fn sound(sound: i32, source: i32, at: Vec3) -> Did {
     }
 }
 
-/// `CopperGolem.mobInteract` (the brief's 7.13.3), in its order. A creative player's
-/// honeycomb is kept and their axe not worn, and every player is one.
+/// `CopperGolem.mobInteract` (the brief's 7.13.3), in its order. The shears and the axe
+/// are worn by one and the honeycomb used up, but a creative player's.
 fn mob_interact(used: &mut Used<'_>) -> Interaction {
     let held = used.held.as_ref().filter(|stack| stack.count > 0);
     let hand = usize::from(slots::MAIN_HAND);
@@ -605,6 +605,7 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
             });
         }
         used.did.push(Did::GameEvent("minecraft:shear"));
+        used.wear_held(1);
         return Interaction::Success;
     }
     let block = crate::physics::containing(used.position);
@@ -630,6 +631,7 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
             centre,
         ));
         update(used.mob, |own| own.next_weathering = WAXED);
+        used.use_up_held();
         return Interaction::SuccessServer;
     }
     let axe = held.is_some_and(|stack| item_in_tag(stack.item, "minecraft:axes"));
@@ -645,6 +647,7 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
             data: 0,
         });
         update(used.mob, |own| own.next_weathering = UNSET);
+        used.wear_held(1);
         return Interaction::SuccessServer;
     }
     if axe && own.weather != UNAFFECTED {
@@ -662,6 +665,7 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
             own.next_weathering = UNSET;
             own.weather = previous_stage(own.weather);
         });
+        used.wear_held(1);
         return Interaction::SuccessServer;
     }
     Interaction::Pass

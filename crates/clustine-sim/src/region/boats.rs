@@ -330,8 +330,8 @@ impl Region {
     /// `BoatItem.use`: a boat of the held item's kind where the player's ray from their
     /// eyes meets a block's outline or any fluid's surface, turned as the player is,
     /// unless an entity's box holds the player's eyes or the boat's box would meet a
-    /// block's shape, a boat, a cart or a player. A creative player keeps the item
-    /// (`ItemStack.consume`), and every player is one.
+    /// block's shape, a boat, a cart or a player. The caller uses the item up, but a
+    /// creative player's (`ItemStack.consume`; `placing.rs`).
     pub(crate) fn place_boat(
         &mut self,
         used: &ItemUse,

@@ -14,7 +14,7 @@ use clustine_world::{EntityId, HOTBAR_SLOTS, ItemStack, MAIN_START, PlayerId};
 use super::Region;
 use super::hanging::hanging_pick;
 use super::knots::knot_pick;
-use super::uses::{CREATIVE_ENTITY_REACH, User, distance_to_sqr};
+use super::uses::{User, distance_to_sqr};
 use crate::api::{PlayerEvent, TickOutput};
 
 /// The slots `Inventory.items` has, the hotbar's and the main inventory's, in which a
@@ -25,8 +25,10 @@ impl Region {
     /// The player `player`, standing as `user`, picked the item of the entity `key`:
     /// where the region has it or a copy of it, within reach (the interaction range and
     /// the 3 the handler adds, from the eyes to its box), its `getPickResult()` is
-    /// selected where the inventory has it, or else put into the hotbar, every player
-    /// being creative; the client is told the slot selected, and every slot changed.
+    /// selected where the inventory has it, or else, for a player with infinite
+    /// materials only (`hasInfiniteMaterials`, n7 `handlePickItemFromEntity`'s
+    /// `tryPickItem`), put into the hotbar; the client is told the slot selected, and
+    /// every slot changed.
     pub(crate) fn pick_entity_item(
         &mut self,
         player: PlayerId,
@@ -41,19 +43,20 @@ impl Region {
                 None => return,
             },
         };
-        let reach = CREATIVE_ENTITY_REACH * CREATIVE_ENTITY_REACH;
-        if distance_to_sqr(self.entity_box(&entity), user.eyes()) >= reach {
+        // `isWithinEntityInteractionRange(entity, 3)` (`handlePickItemFromEntity` @32).
+        if distance_to_sqr(self.entity_box(&entity), user.eyes()) >= user.reach_sqr() {
             return;
         }
         let Some(picked) = hanging_pick(&entity).or_else(|| knot_pick(&entity)) else {
             return;
         };
+        let infinite = self.has_infinite_materials(player);
         let Some(state) = self.players.get_mut(&player) else {
             return;
         };
         let mut slots: Vec<Option<ItemStack>> = state.inventory.0[..ITEMS].to_vec();
         let mut selected = usize::from(state.selected_slot);
-        let changed = try_pick(&mut slots, &mut selected, picked, true);
+        let changed = try_pick(&mut slots, &mut selected, picked, infinite);
         for &slot in &changed {
             state.inventory.set(slot, slots[slot].clone());
         }

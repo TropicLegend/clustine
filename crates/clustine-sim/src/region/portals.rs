@@ -30,8 +30,8 @@
 //!   moves of the tick. A player is marked by where they stand at the end of the tick's
 //!   inputs, as they press plates (`pressed.rs`).
 //! - The game rules `players_nether_portal_creative_delay` and
-//!   `players_nether_portal_default_delay` keep their defaults, 0 and 80; and every
-//!   Clustine player is creative, so invulnerable, until survival comes.
+//!   `players_nether_portal_default_delay` keep their defaults, 0 and 80: a creative
+//!   player, whose abilities are invulnerable, goes at once, anyone else after 80.
 //! - A player's cooldown counts down whatever they do: they are never changing
 //!   dimension (`isChangingDimension`) in a tick of the region's.
 
@@ -467,8 +467,9 @@ impl Region {
             let allowed = player.riding.is_none() && player.sleeping.is_none();
             let feet = player.pose.position;
             let mut portal = before;
-            // Every Clustine player is creative, and so invulnerable.
-            let invulnerable = true;
+            // `getAbilities().invulnerable`: a creative player's portal fires at once,
+            // anyone else waits the game rule's delay.
+            let invulnerable = player.mode.current.abilities().invulnerable;
             let fired = handle_portal(
                 &mut portal,
                 || allowed,

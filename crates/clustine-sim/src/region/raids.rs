@@ -531,13 +531,15 @@ impl Region {
         let every_twenty = self.clock.game_time.is_multiple_of(20);
         let regathers =
             |bar: Uuid| gathered.contains_key(&bar) || (every_twenty && !own.contains(&bar));
-        // Every player is alive and none a spectator while everyone is in creative mode.
+        // `isAlive() && !isSpectator()` of each.
         let players: Vec<(PlayerId, BlockPos, bool)> = self
             .players
             .iter()
             .map(|(id, player)| {
                 let at = player.pose.position;
-                (*id, crate::physics::containing([at.x, at.y, at.z]), true)
+                let alive =
+                    !player.dead && player.mode.current != clustine_world::GameMode::Spectator;
+                (*id, crate::physics::containing([at.x, at.y, at.z]), alive)
             })
             .collect();
         for (id, at, alive) in players {

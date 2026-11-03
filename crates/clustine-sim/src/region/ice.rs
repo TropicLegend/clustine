@@ -90,9 +90,9 @@ impl Region {
     /// `IceBlock.playerDestroy` (n8 IceBlock.txt 15-90) for `state` broken by a player at
     /// `pos`, which the break has already left as air. The game calls it only where the
     /// break makes drops (`ServerPlayerGameMode.destroyBlock` returns before it for a
-    /// creative player, `preventsBlockDrops`), which `makes_drops` says; every Clustine
-    /// player is creative, so in practice ice broken leaves air everywhere, and this is
-    /// built for when survival comes. Where water evaporates the ice is only removed
+    /// creative player, `preventsBlockDrops`), which `makes_drops` says; every player's
+    /// break is a creative one's until survival's breaking (V2, `materials.rs`), so in
+    /// practice ice broken leaves air everywhere until then. Where water evaporates the ice is only removed
     /// (`removeBlock` of what is air already, which changes nothing). Elsewhere it becomes
     /// water, with every update, where the block below is in
     /// `ice_melts_when_destroyed_above` or is a liquid. The tool's Silk Touch

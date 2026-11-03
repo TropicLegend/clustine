@@ -855,7 +855,8 @@ fn sound_of_use(used: &mut Used<'_>, sound: i32) -> Did {
 
 /// `AbstractNautilus.usePlayerItem`: a bucket of fish eaten leaves a water bucket
 /// (`ItemUtils.createFilledResult`: a creative player keeps the bucket and is given a
-/// water bucket where they have none); anything else is kept by a creative player.
+/// water bucket where they have none); anything else is used up but by a creative
+/// player.
 fn use_player_item(used: &mut Used<'_>) {
     let bucket = used
         .held
@@ -866,6 +867,8 @@ fn use_player_item(used: &mut Used<'_>) {
             stack: ItemStack::new(items::WATER_BUCKET, 1),
             no_duplicates: true,
         });
+    } else {
+        used.use_up_held();
     }
 }
 
@@ -928,6 +931,8 @@ fn equip(used: &mut Used<'_>, stack: ItemStack) -> Interaction {
         pitch: 1.0,
         but_the_player: false,
     });
+    // `stack.split(1)`, given back to a creative player by `Player.interactOn`.
+    used.use_up_held();
     used.did.push(Did::GameEvent("minecraft:equip"));
     Interaction::Success
 }
@@ -942,7 +947,12 @@ fn animal_interact(used: &mut Used<'_>, family: &dyn Family) -> Interaction {
     let result = animal::mob_interact(used, food, Some(eat));
     if result != Interaction::Pass && food.test(used.held.as_ref()) {
         let mut done = std::mem::take(&mut used.did);
-        let added = done.split_off(before);
+        // The animal's `usePlayerItem` is the nautilus's own, here.
+        let added: Vec<Did> = done
+            .split_off(before)
+            .into_iter()
+            .filter(|did| *did != Did::UseUp(1))
+            .collect();
         used.did = done;
         use_player_item(used);
         used.did.extend(added);

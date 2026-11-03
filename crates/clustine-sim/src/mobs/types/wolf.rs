@@ -320,6 +320,8 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
     let held = used.held.as_ref().filter(|stack| stack.count > 0);
     if own.tame.is_tame() {
         if FOOD.test(held) && tamable::hurt(used.mob, used.kind) {
+            // `feed`'s `usePlayerItem`.
+            used.use_up_held();
             tamable::feed(used, 2.0, 2.0, None);
             return Interaction::Success;
         }
@@ -331,6 +333,8 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
             if let Some(dye) = dye.filter(|dye| *dye != own.collar) {
                 own.collar = dye;
                 put(used.mob, &shared, &own);
+                // `itemStack.consume(1, player)`.
+                used.use_up_held();
                 return Interaction::Success;
             }
             return animal::mob_interact(used, FOOD, None);
@@ -348,6 +352,8 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
         return result;
     }
     if animal::is_item(held, items::BONE) && !own.anger.is_angry(used.game_time) {
+        // `itemStack.consume(1, player)` before the try.
+        used.use_up_held();
         try_to_tame(used);
         return Interaction::SuccessServer;
     }

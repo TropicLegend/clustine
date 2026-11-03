@@ -226,6 +226,8 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
         });
     }
     used.did.push(Did::GameEvent("minecraft:shear"));
+    // `itemStack.hurtAndBreak(1, player, hand)`.
+    used.wear_held(1);
     Interaction::Success
 }
 

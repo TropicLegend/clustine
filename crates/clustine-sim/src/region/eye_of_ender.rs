@@ -8,7 +8,7 @@
 //! neighbour told), what stands in the eye's box is lifted onto it
 //! (`Block.pushEntitiesUp`, n6 Block 102–121), the comparators beside it are told, and
 //! level event 1503 is played; the stack is shrunk, but a creative player's count is put
-//! back (`ServerPlayerGameMode.useItemOn` 350–377), and every player is creative. Then
+//! back (`ServerPlayerGameMode.useItemOn` 350–377; `materials.rs`). Then
 //! the 5 × 5 ring is looked for from the frame; where it is whole, each of the inner 3 ×
 //! 3 is destroyed with its drops and made `end_portal` with flags 2, and the global level
 //! event 1038 at its centre is told to the region's players in this tick and goes into
@@ -187,9 +187,9 @@ impl Region {
         self.push_up_onto_the_eye(pos, output);
         self.set_block_updated(pos, new, UPDATE_CLIENTS, UPDATE_LIMIT, output);
         self.update_neighbour_for_output_signal(pos, new, output);
-        // `getItemInHand().shrink(1)`, put back for a creative player, as every player
-        // is: nothing is taken.
-        let _ = player;
+        // `getItemInHand().shrink(1)`, put back for a creative player
+        // (`ServerPlayerGameMode.useItemOn`; `materials.rs`).
+        self.consume_item(player, items::ENDER_EYE, 1, output);
         output.events.push(RegionEvent::LevelEvent {
             kind: EYE_SET,
             position: pos,
@@ -352,7 +352,8 @@ impl Region {
             pitch: 0.33 + r * (0.5 - 0.33),
             except: None,
         });
-        // `stack.consume(1, player)`: a creative player keeps it, as every player does.
+        // `stack.consume(1, player)`: a creative player keeps it (`materials.rs`).
+        self.consume_in_hand(player, hand, 1, output);
         let swing = ItemComponents::of(items::ENDER_EYE).attack_animation;
         self.swing_arm(player, hand == Hand::Off, swing, true, output);
         self.reset_attack_strength(player);

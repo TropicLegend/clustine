@@ -16,8 +16,11 @@
 //! itself before it asks.
 //!
 //! As in the game, a creative player's elytra does not wear as they glide
-//! (`ItemStack.processDurabilityChange` 9–22 spares a player with infinite materials), so
-//! of every twentieth tick of a glide nothing is left to do.
+//! (`ItemStack.processDurabilityChange` 9–22 spares a player with infinite materials);
+//! anyone else's is worn by one every twentieth tick of a glide (n9
+//! LivingEntity.updateFallFlying @33-102). Named: the game's choice among the slots that
+//! glide (`Util.getRandom`, a draw of the player's random) is drawn for a player whose
+//! elytra wears, not for a creative player's, whose wear is nothing.
 //!
 //! Named differences beside: Riptide is not built, so nothing begins a spin
 //! (`isAutoSpinAttack`) and the pose `SPIN_ATTACK` is never taken; a dead player, and one
@@ -271,9 +274,12 @@ impl Region {
         // `updateFallFlying`, while gliding: it ends where the player cannot glide; every
         // tenth tick of a glide is heard (`ELYTRA_GLIDE`).
         let mut glide_heard = false;
+        let mut glide_wears = false;
         if player.posture.fall_flying {
             if can_glide {
-                glide_heard = (player.eyes.fall_fly_ticks + 1) % 10 == 0;
+                let ticks = player.eyes.fall_fly_ticks + 1;
+                glide_heard = ticks % 10 == 0;
+                glide_wears = glide_heard && (ticks / 10) % 2 == 0;
             } else {
                 player.posture.fall_flying = false;
             }
@@ -284,6 +290,9 @@ impl Region {
             0
         };
         let (entity, feet) = (player.entity_id, player.pose.position);
+        if glide_wears && !self.has_infinite_materials(id) {
+            self.glider_worn(id, output);
+        }
         if glide_heard && let Some(glide) = Vibration::named("minecraft:elytra_glide") {
             let heard = Heard::of(Some(Source::of(entity)), None);
             self.vibrate(glide, [feet.x, feet.y, feet.z], heard);

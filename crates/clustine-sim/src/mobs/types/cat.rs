@@ -258,9 +258,13 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
                 if let Some(dye) = dye.filter(|dye| *dye != own.collar) {
                     update(used.mob, |own| own.collar = dye);
                     used.mob.body.flags.persistent = true;
+                    // `itemStack.consume(1, player)`.
+                    used.use_up_held();
                     return Interaction::Success;
                 }
             } else if FOOD.test(held) && tamable::hurt(used.mob, used.kind) {
+                // `feed`'s `usePlayerItem`.
+                used.use_up_held();
                 let eat = eating_sound(used);
                 tamable::feed(used, 1.0, 1.0, eat);
                 return Interaction::Success;
@@ -275,6 +279,8 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
             return result;
         }
     } else if FOOD.test(held) {
+        // `usePlayerItem` before the try.
+        used.use_up_held();
         try_to_tame(used);
         used.mob.body.flags.persistent = true;
         used.did.extend(eating_sound(used));

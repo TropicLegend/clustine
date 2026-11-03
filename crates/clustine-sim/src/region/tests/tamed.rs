@@ -618,6 +618,8 @@ fn hit_from_beyond(key: EntityId, sequence: u64) -> TickInputs {
 #[test]
 fn a_wolf_hit_by_a_survival_player_turns_on_them_angry_for_twenty_to_thirty_nine_seconds() {
     let mut region = on_ticking_floor_with(&[]);
+    // A survival player is a wolf's target once hurts reach players (V4).
+    region.hurt_reaches_players = true;
     lay(&mut region, &wild_wolf(PET, [4.5, -60.0, 0.5]));
     checked(
         &mut region,

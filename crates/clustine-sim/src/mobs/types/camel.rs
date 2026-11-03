@@ -488,6 +488,8 @@ fn equip_saddle(used: &mut Used<'_>, breed: &Breed) -> Interaction {
         pitch: 1.0,
         but_the_player: false,
     });
+    // `stack.split(1)`, given back to a creative player by `Player.interactOn`.
+    used.use_up_held();
     used.did.push(Did::GameEvent("minecraft:equip"));
     equine::guarantee_drop(used.mob, slot);
     Interaction::Success
@@ -512,6 +514,8 @@ fn mob_interact(used: &mut Used<'_>, breed: &Breed) -> Interaction {
     }
     if breed.food.test(used.held.as_ref()) {
         return if handle_eating(used, breed) {
+            // What it ate, used up but by a creative player.
+            used.use_up_held();
             Interaction::SuccessServer
         } else {
             Interaction::Pass

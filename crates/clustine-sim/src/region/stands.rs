@@ -22,8 +22,11 @@
 //! crosses a line between the two hits needs two more).
 //!
 //! Named differences: across a line (another region's player) only a creative player's
-//! putting an item on is done, as an effect; a take or a swap gives the player an item
-//! and does nothing there (plan, section 8 item 7). The game's swing of the player's own
+//! putting an item on is done, as an effect, and so for every player whose use crosses a
+//! line, who keeps the item (`materials.rs`, V2's to lift); a take or a swap gives the
+//! player an item and does nothing there (plan, section 8 item 7). Every player's hit
+//! breaks a stand at once, as a creative player's does, until survival's breaking (V2).
+//! The game's swing of the player's own
 //! arm, an off hand's swing, the first hit's wobble and sound (entity event 32), and the
 //! breaking particles are not sent: the repo sends no entity events or particles yet.
 //! A name tag names nothing (Clustine keeps no names), and a stand's `Invisible` field
@@ -238,8 +241,8 @@ impl Region {
     /// holds: a stand at the clicked block where it gives way, else beside it, standing
     /// on what is under it, turned to face the player. Refused on the clicked block's
     /// underside, and where any block's shape or any entity (a dropped item among them)
-    /// is in its box. A creative player keeps the item
-    /// (`ServerPlayerGameMode.useItemOn`), and every player is one.
+    /// is in its box. The caller uses the item up, but a creative player's
+    /// (`ServerPlayerGameMode.useItemOn`; `placing.rs`).
     pub(crate) fn place_armor_stand(
         &mut self,
         click: &Click,

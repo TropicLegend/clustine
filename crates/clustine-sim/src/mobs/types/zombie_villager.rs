@@ -215,9 +215,9 @@ impl MobType for ZombieVillager {
 
     /// `ZombieVillager.mobInteract` (277–364): a golden apple on one that is weak starts
     /// its cure, `3600 + nextInt(2401)` ticks of its own random, the player who used it
-    /// kept, heard by the client as entity event 16 (the apple is kept: every player is
-    /// creative); on one that is not it is taken for nothing (`CONSUME`). Anything else is
-    /// the zombie's: nothing.
+    /// kept, heard by the client as entity event 16, the apple used up but a creative
+    /// player's (`consume(1, player)`); on one that is not it is taken for nothing
+    /// (`CONSUME`). Anything else is the zombie's: nothing.
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
         if !used
             .held
@@ -232,6 +232,7 @@ impl MobType for ZombieVillager {
         let time = 3600 + used.draws.next_int(2401) as i32;
         start_converting(used.mob, used.player_uuid, time, used.moment);
         used.did.push(Did::Event(CURE_STARTED));
+        used.use_up_held();
         Interaction::SuccessServer
     }
 

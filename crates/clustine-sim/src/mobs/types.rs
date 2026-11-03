@@ -1098,7 +1098,8 @@ pub(crate) struct Used<'a> {
     pub(crate) game_time: i64,
     /// What the hand used holds.
     pub(crate) held: Option<ItemStack>,
-    /// Whether the player is a creative one (every player is: what they use is kept).
+    /// Whether the player has infinite materials (a creative player, or one of another
+    /// region, whose use crossed a line: `region/materials.rs`), who keeps what they use.
     pub(crate) creative: bool,
     pub(crate) sneaking: bool,
     /// Whether anything rides the mob (`isVehicle`).
@@ -1120,6 +1121,24 @@ pub(crate) struct Used<'a> {
     pub(crate) did: Vec<Did>,
 }
 
+impl Used<'_> {
+    /// One of what the hand used holds used up ([`Did::UseUp`]), where it holds anything
+    /// and the player has no infinite materials.
+    pub(crate) fn use_up_held(&mut self) {
+        if self.held.is_some() && !self.creative {
+            self.did.push(Did::UseUp(1));
+        }
+    }
+
+    /// What the hand used holds worn by `amount` ([`Did::Wear`]), where the player has no
+    /// infinite materials.
+    pub(crate) fn wear_held(&mut self, amount: i32) {
+        if self.held.is_some() && !self.creative {
+            self.did.push(Did::Wear(amount));
+        }
+    }
+}
+
 /// What a player's use of a mob does beyond the mob itself, which the region carries
 /// out in the order given.
 #[derive(Debug, Clone, PartialEq)]
@@ -1138,7 +1157,15 @@ pub(crate) enum Did {
     Event(u8),
     /// `gameEvent(event, player)` at the mob, by its name.
     GameEvent(&'static str),
-    /// `ItemUtils.createFilledResult`: the stack goes to the player.
+    /// `ItemStack.consume(count, player)` of what the hand used holds, or the
+    /// `shrink(count)` the game puts back for a creative player (`Player.interactOn`):
+    /// used up but by a player with infinite materials (`region/materials.rs`).
+    UseUp(i32),
+    /// `ItemStack.hurtAndBreak(amount, player, hand)` of what the hand used holds: worn
+    /// but by a player with infinite materials.
+    Wear(i32),
+    /// `ItemUtils.createFilledResult`: the stack goes to the player, and for one without
+    /// infinite materials one of what the hand used holds is used up for it.
     Give {
         stack: ItemStack,
         no_duplicates: bool,

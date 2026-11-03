@@ -106,8 +106,8 @@ impl Region {
     /// `BoneMealItem.useOn` of a click of `player`'s with bone meal on a block that did
     /// nothing with it: where the clicked block takes it (`growCrop`), the
     /// `item_interact_finish` the item's use effects post at the player, then the level
-    /// event of the sparks at the block. A creative player's stack is not used up, as
-    /// the game puts back what a creative player's use took
+    /// event of the sparks at the block, and one of the stack used up. A creative
+    /// player's stack is not, as the game puts back what a creative player's use took
     /// (`ServerPlayerGameMode.useItemOn`). Whether it took the click.
     pub(crate) fn bone_meal_used_on(
         &mut self,
@@ -137,6 +137,8 @@ impl Region {
             }
         }
         level_event(PLANT_GROWTH, pos, PLANT_GROWTH_DATA, output);
+        // `growCrop`'s `stack.shrink(1)` (`materials.rs`).
+        self.consume_item(player, items::BONE_MEAL, 1, output);
         true
     }
 

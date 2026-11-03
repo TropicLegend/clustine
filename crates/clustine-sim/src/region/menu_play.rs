@@ -32,11 +32,11 @@ pub(super) struct Reported {
     carried: Option<ItemStack>,
 }
 
-/// The squared distance within which a player keeps a block's menu open
-/// (`Container.stillValidBlockEntity`: the block interaction range, 4.5 and a creative
-/// player's 0.5, and 4 more, from the eyes to the block's box), and an entity's
-/// (`isWithinEntityInteractionRange(box, 4)`: 3, a creative player's 2, and 4).
-const STILL_VALID: f64 = 9.0 * 9.0;
+/// How much further than their reach a player keeps a menu open: a block's
+/// (`Container.stillValidBlockEntity`: `getContainerInteractionRange()`, the block
+/// interaction range, and 4 more, from the eyes to the block's box), and an entity's
+/// (`isWithinEntityInteractionRange(box, 4)`).
+const STILL_VALID_SLACK: f64 = 4.0;
 
 /// A player's eyes above their feet.
 const EYES: f64 = 1.62;
@@ -350,7 +350,7 @@ impl Region {
             None => return,
         };
         for done in did {
-            self.carry_out(entity, chunk, player, from, done, output);
+            self.carry_out(entity, chunk, player, from, None, done, output);
         }
     }
 
@@ -740,8 +740,10 @@ impl Region {
                     .as_mut()
                     .map(|trade| trade as &mut dyn menus::MerchantSide),
             };
-            // Every player of Clustine is creative until survival comes.
-            menus::click(&mut slots, &mut menu, slot, button, kind, true)
+            // A clone, a clone drag and the deletion of what does not fit are a player
+            // with infinite materials' (`hasInfiniteMaterials`, `materials.rs`).
+            let creative = player.mode.current.abilities().instabuild;
+            menus::click(&mut slots, &mut menu, slot, button, kind, creative)
         };
         if !clicked.refused {
             if player.inventory != inventory {
@@ -912,6 +914,12 @@ impl Region {
         };
         let feet = player.pose.position;
         let eyes = [feet.x, feet.y + EYES, feet.z];
+        let block_reach =
+            super::materials::block_interaction_range(player.mode.current) + STILL_VALID_SLACK;
+        let block_reach = block_reach * block_reach;
+        let entity_reach =
+            super::materials::entity_interaction_range(player.mode.current) + STILL_VALID_SLACK;
+        let entity_reach = entity_reach * entity_reach;
         let positions = block_positions(menu.of);
         for pos in &positions {
             let chunk = pos.chunk();
@@ -935,7 +943,7 @@ impl Region {
                     .is_some_and(|(kind, of)| {
                         kind == menu.kind && of == MenuOf::Block { at, other }
                     });
-                if !same || box_distance_sqr(eyes, at) >= STILL_VALID {
+                if !same || box_distance_sqr(eyes, at) >= block_reach {
                     return Validity::Invalid;
                 }
                 Validity::Valid
@@ -944,7 +952,7 @@ impl Region {
                 let ender = self
                     .own_block(at)
                     .is_some_and(|state| is_class(state, BlockClass::EnderChestBlock));
-                if !ender || box_distance_sqr(eyes, at) >= STILL_VALID {
+                if !ender || box_distance_sqr(eyes, at) >= block_reach {
                     return Validity::Invalid;
                 }
                 Validity::Valid
@@ -967,7 +975,7 @@ impl Region {
                         Validity::Invalid
                     };
                 };
-                if distance_to_sqr(self.entity_box(entity), eyes) >= STILL_VALID {
+                if distance_to_sqr(self.entity_box(entity), eyes) >= entity_reach {
                     return Validity::Invalid;
                 }
                 // A horse's: alive, and its inventory the one the menu shows

@@ -195,13 +195,6 @@ pub(crate) fn cooldown_ticks(stack: &ItemStack) -> Option<i32> {
 /// remainder (a bowl, a bottle, a bucket), the remainder in the hand where the stack is
 /// gone, or the stack in the hand and the remainder given besides. The stack in the hand,
 /// and the remainder to give.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "every player of Clustine is creative, whose meals use nothing up"
-    )
-)]
 pub(crate) fn eaten(before: &ItemStack, infinite: bool) -> (Option<ItemStack>, Option<ItemStack>) {
     if infinite {
         return (Some(before.clone()), None);

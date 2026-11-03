@@ -39,8 +39,8 @@ pub(crate) struct SeenPlayer {
     /// What they wear, feet to head: a piglin leaves a player in gold alone.
     pub(crate) worn: [Option<ItemStack>; 4],
     pub(crate) sneaking: bool,
-    /// Every player is a creative one, whom no mob takes as a target (the brief's
-    /// 2.0.1).
+    /// A creative player, whom no mob takes as a target (the brief's 2.0.1); until V4
+    /// every player is taken as one here (`region/materials.rs`).
     pub(crate) creative: bool,
     pub(crate) spectator: bool,
     /// What they ride, if anything.

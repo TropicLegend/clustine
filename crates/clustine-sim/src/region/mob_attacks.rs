@@ -10,8 +10,9 @@
 //! Named differences: the player's own last movement is not kept, so a sword sweeps on
 //! the ground however fast they move; the attacker's own motion after the push and the
 //! end of their sprint are their client's; no particle is sent (the critical hit's and
-//! the sweep's, the hearts of the damage); the item is not worn by the hit (every
-//! player is creative), and no statistic is counted.
+//! the sweep's, the hearts of the damage); no statistic is counted; a sweep breaks an
+//! armour stand at once whoever swings, as a creative player's does, until survival's
+//! breaking (V2, `materials.rs`).
 
 use clustine_blocks::data::{has_water, in_tag, item_in_tag};
 use clustine_data::{ItemComponents, attributes as ids, sounds};
@@ -183,6 +184,15 @@ impl Region {
         if let Some(held) = self.players.get_mut(&player) {
             held.last_hurt_mob = Some((target, now));
         }
+        // `ItemStack.postHurtEnemy`: a weapon (`minecraft:weapon`) worn by its
+        // `item_damage_per_attack`, but a creative player's (`materials.rs`).
+        if let Some(weapon) = self
+            .in_hand(player, crate::api::Hand::Main)
+            .and_then(|held| ItemComponents::of(held.item).weapon)
+        {
+            let amount = i32::try_from(weapon.item_damage_per_attack).unwrap_or(i32::MAX);
+            self.hurt_and_break_in_hand(player, crate::api::Hand::Main, amount, output);
+        }
         let (sin, cos) = look(attack.yaw);
         if attack.knockback > 0.0 {
             // `causeExtraKnockback`: the attacker's motion and sprint after it are its
@@ -240,7 +250,8 @@ impl Region {
                         self.knock_mob(key, 0.400_000_005_960_464_5, sin, -cos, output);
                     }
                 }
-                // A creative player's hurt breaks a stand at once.
+                // A creative player's hurt breaks a stand at once, and every player's
+                // does until survival's breaking (V2).
                 EntityData::ArmorStand { flags, .. } if flags & MARKER == 0 => {
                     self.hit_armor_stand(key, true, output);
                 }

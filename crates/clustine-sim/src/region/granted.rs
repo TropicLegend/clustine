@@ -11,7 +11,7 @@ use clustine_world::{
 
 use super::Region;
 use super::riding::add_passenger;
-use super::uses::{CREATIVE_ENTITY_REACH, User, distance_to_sqr};
+use super::uses::{User, distance_to_sqr};
 use crate::api::{PlayerEvent, RegionEvent, TickOutput};
 use crate::state::PlayerRiding;
 
@@ -120,13 +120,14 @@ impl Region {
                 rider.pose.position.z,
             ],
             sneaking: rider.keys.sneak,
+            reach: super::materials::entity_interaction_range(rider.mode.current),
         };
         let waiting = rider.riding.is_some_and(|riding| riding.pending.is_some());
         // A player who sneaks gets on nothing (`canRide`), as `mount_player` says.
         let busy = rider.keys.sneak || rider.sleeping.is_some() || rider.menu.is_some() || waiting;
         // Within reach of what the region sees of it, with a block's slack for the ticks
         // the grant took.
-        let reach = (CREATIVE_ENTITY_REACH + 1.0) * (CREATIVE_ENTITY_REACH + 1.0);
+        let reach = (user.reach_sqr().sqrt() + 1.0).powi(2);
         let seen = self
             .find_entity(vehicle)
             .map(|(_, record)| record.clone())

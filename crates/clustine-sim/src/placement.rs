@@ -629,6 +629,9 @@ pub struct ItemUse {
     /// Whether water evaporates in the level (`water_evaporates`, the Nether's), which
     /// a water bucket's emptying asks.
     pub water_evaporates: bool,
+    /// How far the player reaches a block (`blockInteractionRange()`: 4.5, and
+    /// creative's 0.5), as far as a bucket's ray goes (`getPlayerPOVHitResult`).
+    pub reach: f64,
 }
 
 /// What the use of an item changes.
@@ -636,9 +639,25 @@ pub struct ItemUse {
 pub struct UsedItem {
     /// The blocks that change, all or none.
     pub changes: Vec<(BlockPos, BlockState)>,
-    /// A slot of the inventory that changes, numbered as [`Inventory`] numbers them,
-    /// and what it holds then.
+    /// A slot of the inventory that changes for a player with infinite materials,
+    /// numbered as [`Inventory`] numbers them, and what it holds then.
     pub slot: Option<(u8, Option<ItemStack>)>,
+    /// What the use leaves in the hand of a player without them.
+    pub spent: Spent,
+}
+
+/// What a use of an item leaves in the hand of a player without infinite materials
+/// (`hasInfiniteMaterials`; a creative player's is [`UsedItem::slot`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Spent {
+    /// `ItemUtils.createFilledResult` of the item: one of the hand used up, and the
+    /// filled item in the hand where that empties it, else given (an empty bucket
+    /// filled).
+    Filled(i32),
+    /// `BucketItem.getEmptySuccessItem`: an empty bucket in place of the full one.
+    Emptied,
+    /// `ItemStack.consume(1)`: one of the hand placed (a lily pad).
+    One,
 }
 
 /// What the use of `item_use`'s item changes, or `None` if nothing does.

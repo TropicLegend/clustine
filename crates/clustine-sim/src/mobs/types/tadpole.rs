@@ -152,6 +152,7 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
     let mut tadpole = read(&used.mob.state);
     if super::frog::FOOD.test(used.held.as_ref()) && !tadpole.age_locked {
         // `usePlayerItem`: a creative player keeps the ball.
+        used.use_up_held();
         let gained = animal::speed_up_seconds(tadpole.ticks_left(now)) * 20;
         let grows = tadpole.set_age(tadpole.age(now).wrapping_add(gained), now);
         used.mob.state = write(&tadpole);
@@ -165,6 +166,8 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
         && left(tadpole.lock_until, now) == 0
         && !entity_in_tag(i32::from(used.kind), "minecraft:cannot_be_age_locked");
     if dandelion {
+        // `setAgeLocked`'s `consume(1, player)`.
+        used.use_up_held();
         tadpole.age_locked = !tadpole.age_locked;
         tadpole.set_age(0, now);
         tadpole.lock_until = now + LOCK_TICKS;

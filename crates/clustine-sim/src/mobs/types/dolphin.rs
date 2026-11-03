@@ -705,6 +705,8 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
     } else {
         update(used.mob, |dolphin| dolphin.got_fish = true);
     }
+    // `usePlayerItem`.
+    used.use_up_held();
     Interaction::Success
 }
 

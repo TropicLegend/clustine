@@ -11,17 +11,21 @@
 //! four a crumb, the food's sound and burp, one for each `apply_effects` entry whether or
 //! not it gives anything, and the chorus fruit's teleport's (`teleports.rs`).
 //!
-//! What a creative player, as every player is, feels of it: nothing is used up and no
-//! remainder is given (`hasInfiniteMaterials`); the food fills nothing their client
-//! shows; instant health, harming and saturation from a potion heal, hurt and feed them
-//! not at all; every other effect is theirs as anyone's (`player_effects.rs`).
+//! What a player with infinite materials (a creative player, `hasInfiniteMaterials`)
+//! eats is not used up and leaves no remainder; anyone else's is, and leaves its
+//! remainder (a bowl, a bottle) as the game's `ItemStack.consume` and
+//! `UseRemainder.convertIntoRemainder` do (`materials.rs`). The food fills nothing their
+//! client shows; instant health, harming and saturation from a potion heal, hurt and
+//! feed them not at all; every other effect is theirs as anyone's (`player_effects.rs`).
+//! For a survival player that is named and V4's: their health and food are not kept
+//! until then (`docs/groundwork/v-plan.md`, section 4.4).
 //!
 //! Named differences: the crumbs are not shown, as the game's server shows none
 //! (`addParticle` on a server level), but the eater's own client throws them as it
 //! predicts the meal; the entity event that tells the eater's client the use is complete
 //! (`ServerPlayer.completeUsingItem`'s event 9) is `using.rs`' to send and is not sent;
-//! the food's hunger and saturation are not kept, as nothing of a creative player's food
-//! is; the order of the stack's listeners is the potion's, the stew's, the ominous
+//! the food's hunger and saturation are not kept until V4; the order of the stack's
+//! listeners is the potion's, the stew's, the ominous
 //! bottle's, then the food's, where the game's is its component map's (no item has more
 //! than the food and one other, and the other draws nothing).
 
@@ -171,15 +175,17 @@ impl Region {
             }
         }
         self.player_drew(id, &random, &start);
-        self.after_consumed(id, &stack, &consumable, output);
+        self.after_consumed(id, using.hand, &stack, &consumable, output);
     }
 
     /// The end of `onConsume` and of `finishUsingItem`: `drink` or `eat` heard where the
-    /// player is now, one of the stack used up (nothing for a creative player, and so no
-    /// remainder: `consumables::eaten`), and the stack's cooldown started.
+    /// player is now, one of the stack used up and its remainder in the hand or given
+    /// (nothing for a player with infinite materials: `consumables::eaten`), and the
+    /// stack's cooldown started.
     fn after_consumed(
         &mut self,
         id: PlayerId,
+        hand: crate::api::Hand,
         stack: &clustine_world::ItemStack,
         consumable: &clustine_data::Consumable,
         output: &mut TickOutput,
@@ -198,9 +204,19 @@ impl Region {
             let context = Context::of(Some(Source::of(entity)), None);
             self.vibrate(vibration, [feet.x, feet.y, feet.z], context);
         }
-        // `ItemStack.consume` and the `use_remainder`: every player is creative
-        // (`hasInfiniteMaterials`), so the stack is left as it was and nothing is given
-        // (`consumables::eaten` of infinite materials).
+        // `ItemStack.consume` and the `use_remainder`, of the stack as it is in the hand
+        // now (`consumables::eaten`); what is left over beyond the hand is added to the
+        // inventory, else dropped (`handleExtraItemsCreatedOnUse`).
+        let infinite = self.has_infinite_materials(id);
+        if !infinite && let Some(now) = self.in_hand(id, hand) {
+            let (left, remainder) = consumables::eaten(&now, infinite);
+            self.set_hand(id, hand, left, output);
+            if let Some(remainder) = remainder
+                && let Some(rest) = self.add_to_player_inventory(id, remainder, output)
+            {
+                self.drop_from_player(id, rest, output);
+            }
+        }
         if let Some(ticks) = consumables::cooldown_ticks(stack) {
             self.add_cooldown(id, stack, ticks, output);
         }
@@ -239,13 +255,13 @@ impl Region {
     }
 
     /// The player `id`'s stream aside, on from what it has drawn in this tick.
-    fn player_stream(&self, id: PlayerId) -> Option<Random> {
+    pub(super) fn player_stream(&self, id: PlayerId) -> Option<Random> {
         let key = self.players.get(&id)?.entity_id;
         Some(self.entity_stream(key).random)
     }
 
     /// Notes what `random`, taken from the player `id`'s stream as `start`, has drawn.
-    fn player_drew(&mut self, id: PlayerId, random: &Random, start: &Random) {
+    pub(super) fn player_drew(&mut self, id: PlayerId, random: &Random, start: &Random) {
         if let Some(key) = self.players.get(&id).map(|player| player.entity_id) {
             self.entity_drew(key, random.draws_since(start));
         }

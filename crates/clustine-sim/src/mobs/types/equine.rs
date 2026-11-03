@@ -991,6 +991,7 @@ pub(crate) fn fed_food(used: &mut Used<'_>, equine: &Equine) -> Interaction {
     }
     used.mob.state = animal::write(&shared, &horse);
     if ate {
+        used.use_up_held();
         Interaction::SuccessServer
     } else {
         Interaction::Pass
@@ -1050,6 +1051,7 @@ fn equip_chest(used: &mut Used<'_>, equine: &Equine) {
     });
     let size = inventory_size(kind, used.mob);
     update(used.mob, |horse| create_inventory(horse, size));
+    used.use_up_held();
 }
 
 /// `AbstractHorse.mobInteract`: a ridden horse or a foal is an animal's (feeding and
@@ -1103,6 +1105,8 @@ fn equip_on_interact(used: &mut Used<'_>, stack: ItemStack) -> Interaction {
     let did = on_equip_item(slot, None, Some(one), used.position, used.draws);
     used.did.extend(did);
     guarantee_drop(used.mob, slot);
+    // `stack.split(1)`, given back to a creative player by `Player.interactOn`.
+    used.use_up_held();
     Interaction::Success
 }
 
@@ -1115,6 +1119,7 @@ fn equip_body_armour(used: &mut Used<'_>, stack: ItemStack) {
     let did = on_equip_item(slot, old, Some(one), used.position, used.draws);
     used.did.extend(did);
     guarantee_drop(used.mob, slot);
+    used.use_up_held();
 }
 
 /// `doPlayerRide(player)`: eating ends, the rearing too, and the player gets on (the

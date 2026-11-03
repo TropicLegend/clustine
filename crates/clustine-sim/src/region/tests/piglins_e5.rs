@@ -488,6 +488,8 @@ fn told_to(output: &TickOutput, key: EntityId) -> Vec<Effect> {
 fn gold_by_the_line() -> (Region, Region, BlockPos) {
     let mut west = west(10, clock_at(0));
     let mut east = east(10, clock_at(0));
+    // A survival player is a piglin's target once hurts reach players (V4).
+    east.hurt_reaches_players = true;
     standing_in(&mut west, 1, 14.5);
     let gold = BlockPos::new(13, -61, 0);
     let mut output = TickOutput::default();
@@ -665,6 +667,8 @@ fn a_player_s_hit_ends_the_admiring_without_a_barter_and_refuses_gold_after() {
 #[test]
 fn a_piglin_told_of_another_s_target_is_angry_at_it_and_one_across_the_line_is_sent_it() {
     let mut region = alone(0, clock_at(0));
+    // A survival player is a piglin's target once hurts reach players (V4).
+    region.hurt_reaches_players = true;
     let feet = [10.5, -60.0, 0.5];
     region.tick(&TickInputs {
         faces: vec![face_in(2, FAR_PLAYER, feet, 0)],
@@ -739,6 +743,8 @@ const FAR_PLAYER: EntityId = EntityId(0x9_0000_0001);
 #[test]
 fn a_piglin_with_a_crossbow_angry_at_a_player_charges_and_shoots_an_arrow() {
     let mut region = alone(0, clock_at(0));
+    // A survival player is a piglin's target once hurts reach players (V4).
+    region.hurt_reaches_players = true;
     let feet = [10.5, -60.0, 0.5];
     region.tick(&TickInputs {
         faces: vec![face_in(2, FAR_PLAYER, feet, 0)],

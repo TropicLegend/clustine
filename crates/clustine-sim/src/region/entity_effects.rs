@@ -82,7 +82,8 @@ impl Region {
     }
 
     /// The use `by` addressed to the player whose stay is `entity`, where the region has
-    /// them: a hurt (refused: every player is creative), effects, a pearl's landing.
+    /// them: a hurt (refused: a creative player is invulnerable, and every player is
+    /// spared until V4, `materials.rs`), effects, a pearl's landing.
     pub(crate) fn player_used(&mut self, entity: EntityId, by: EntityUse, output: &mut TickOutput) {
         let Some(id) = self.player_with_entity(entity) else {
             return;
@@ -93,9 +94,11 @@ impl Region {
                     let Some(effect) = MobEffect::named(&instance.effect) else {
                         continue;
                     };
-                    // Instant ones heal a full player not at all and hurt them not at
-                    // all: they are creative.
-                    if effect == MobEffect::INSTANT_HEALTH || effect == MobEffect::INSTANT_DAMAGE {
+                    // Instant ones heal and hurt only a player whose health is kept and
+                    // who is not spared: none until V4 (`materials.rs`).
+                    if (effect == MobEffect::INSTANT_HEALTH || effect == MobEffect::INSTANT_DAMAGE)
+                        && self.spared_hurt(id)
+                    {
                         continue;
                     }
                     let layer = effects::Layer {
@@ -114,7 +117,8 @@ impl Region {
             EntityUse::PearlLanded { at, endermite } => {
                 self.pearl_landed(id, at.map(|value| value.0), endermite, output);
             }
-            // A creative player is hurt by nothing.
+            // A creative player is hurt by nothing, and until V4 nobody is
+            // (`Region::spared_hurt`).
             _ => {}
         }
     }
@@ -143,7 +147,8 @@ impl Region {
 
     /// `ThrownEnderpearl.onHit` for its owner, the player `id`: an endermite where the
     /// maker drew one (`teleports.rs`), off what they ride, at `at`, and the teleport's
-    /// sound; the pearl's hurt of 5 refused (creative).
+    /// sound; the pearl's hurt of 5 refused where they are spared it, as a creative
+    /// player is and every player until V4 (`Region::spared_hurt`).
     fn pearl_landed(
         &mut self,
         id: PlayerId,
@@ -154,6 +159,9 @@ impl Region {
         if endermite {
             self.pearl_endermite(id, output);
         }
+        // `hurtServer(enderPearl, 5)`, refused where the player is spared it, as every
+        // player is until V4, which lifts the refusal with health to take it from.
+        debug_assert!(self.spared_hurt(id), "a pearl's hurt waits for V4's health");
         self.dismount_player(id, output);
         let Some(player) = self.players.get_mut(&id) else {
             return;

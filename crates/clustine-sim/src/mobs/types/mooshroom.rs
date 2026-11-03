@@ -114,7 +114,9 @@ impl MobType for Mooshroom {
         }
         if item == Some(items::SHEARS) && !baby {
             // `shear(level, PLAYERS, stack)`: its sound, then the cow it becomes with its
-            // mushrooms; `gameEvent(SHEAR, player)`.
+            // mushrooms; `gameEvent(SHEAR, player)`; the shears worn by one
+            // (`hurtAndBreak(1, player, hand)`).
+            used.wear_held(1);
             used.did.push(Did::Sound {
                 sound: sounds::ENTITY_MOOSHROOM_SHEAR,
                 source: animal::SOUND_SOURCE_PLAYERS,
@@ -146,7 +148,8 @@ impl MobType for Mooshroom {
                 return cow::milk_or_feed(used);
             };
             if own.stew.is_none() {
-                // The flower is eaten (a creative player keeps it).
+                // The flower is eaten (`consume(1, player)`: a creative player keeps it).
+                used.use_up_held();
                 own.stew = Some(flower);
                 used.mob.state = animal::write(&animal, &own);
                 used.did.push(Did::Sound {

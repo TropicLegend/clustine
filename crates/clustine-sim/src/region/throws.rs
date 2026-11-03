@@ -14,10 +14,9 @@
 //! (`make_projectile`), and the crossbow's pitch of each projectile after the first
 //! from the shooter's random (the player's stream aside, `entity_stream`).
 //!
-//! Every player is creative until survival (`hasInfiniteMaterials`): they keep what they
-//! throw and shoot, their weapons do not wear and their bows draw intangible arrows.
-//! What a survival player would lose is written all the same, and runs once there is
-//! survival.
+//! A player with infinite materials (`hasInfiniteMaterials`, a creative player's;
+//! `materials.rs`) keeps what they throw and shoot, their weapons do not wear and their
+//! bows draw intangible arrows; anyone else's are used up and worn as the game's.
 //!
 //! Named differences: the game's `spawnProjectileFromRotation` with a roll (the potions'
 //! and the bottle's -20) is made here as `shoot` along the rolled look with the
@@ -32,7 +31,7 @@ use clustine_world::{Entity, EntityChange, EntityData, EntityId, ItemStack, OFF_
 
 use super::Region;
 use super::projectiles::{Aim, Making, shot_record};
-use crate::api::{Hand, PlayerEvent, RegionEvent, SOUND_SOURCE_PLAYERS, TickOutput, Using};
+use crate::api::{Hand, RegionEvent, SOUND_SOURCE_PLAYERS, TickOutput, Using};
 use crate::items::{bow, crossbow, enchantments, rockets, throwables, trident};
 use crate::mobs::ai::maths::{RADIANS, table_cos, table_sin};
 use crate::mobs::tick::Shot;
@@ -42,11 +41,6 @@ use crate::placement::{Click, ItemUse};
 /// How far above a player's feet their eyes are, standing and crouching.
 const STANDING_EYES: f32 = 1.62;
 const CROUCHING_EYES: f32 = 1.27;
-
-/// `Player.hasInfiniteMaterials`: every player is creative until survival.
-const fn has_infinite_materials(_player: PlayerId) -> bool {
-    true
-}
 
 /// The hit sound a crossbow's arrow is given (`setSoundEvent(CROSSBOW_HIT)`).
 const CROSSBOW_HIT: &str = "minecraft:item.crossbow.hit";
@@ -248,7 +242,7 @@ impl Region {
         let Some((slot, ammo)) = self.projectile_for(id, &stack) else {
             return;
         };
-        let drawn = bow::draw(&stack, &ammo, has_infinite_materials(id));
+        let drawn = bow::draw(&stack, &ammo, self.has_infinite_materials(id));
         if drawn.projectiles.is_empty() {
             return;
         }
@@ -294,7 +288,7 @@ impl Region {
         let Some(power) = bow::release_power(ticks) else {
             return;
         };
-        let drawn = bow::draw(&stack, &ammo, has_infinite_materials(id));
+        let drawn = bow::draw(&stack, &ammo, self.has_infinite_materials(id));
         self.take_ammunition(id, slot, &ammo, drawn.taken, output);
         if !drawn.projectiles.is_empty() {
             self.shoot_projectiles(
@@ -337,7 +331,7 @@ impl Region {
         if !trident::throws(&stack, ticks) {
             return;
         }
-        let infinite = has_infinite_materials(id);
+        let infinite = self.has_infinite_materials(id);
         // `hurtWithoutBreaking(1, player)`, nothing for a creative player.
         let stack = if infinite {
             stack
@@ -515,7 +509,7 @@ impl Region {
             }
             // `weapon.hurtAndBreak(getDurabilityUse(projectile), shooter, hand)`: none for
             // a creative player.
-            if !has_infinite_materials(id) {
+            if !self.has_infinite_materials(id) {
                 let use_ = match kind {
                     Weapon::Bow => 1,
                     Weapon::Crossbow => crossbow::durability_use(&projectile),
@@ -719,7 +713,8 @@ impl Region {
                 return Some((Some(slot), stack.clone()));
             }
         }
-        has_infinite_materials(id).then(|| (None, ItemStack::new(items::ARROW, 1)))
+        self.has_infinite_materials(id)
+            .then(|| (None, ItemStack::new(items::ARROW, 1)))
     }
 
     /// `taken` of the ammunition `ammo` in `slot` split off (`useAmmo`), the slot emptied
@@ -752,59 +747,11 @@ impl Region {
         count: i32,
         output: &mut TickOutput,
     ) {
-        if has_infinite_materials(id) {
+        if self.has_infinite_materials(id) {
             return;
         }
         let left = (stack.count > count).then(|| stack.with_count(stack.count - count));
         self.set_hand(id, hand, left, output);
-    }
-
-    /// The hand of `id` that holds `item`: the main hand where both do, as the client
-    /// uses the off hand only where the main hand's use did nothing.
-    fn hand_with_item(&self, id: PlayerId, item: i32) -> Option<Hand> {
-        [Hand::Main, Hand::Off].into_iter().find(|hand| {
-            self.in_hand(id, *hand)
-                .is_some_and(|stack| stack.item == item)
-        })
-    }
-
-    /// The stack in `id`'s `hand` set to `stack`, and their client told.
-    fn set_hand(
-        &mut self,
-        id: PlayerId,
-        hand: Hand,
-        stack: Option<ItemStack>,
-        output: &mut TickOutput,
-    ) {
-        let Some(player) = self.players.get(&id) else {
-            return;
-        };
-        let slot = match hand {
-            Hand::Main => usize::from(player.selected_slot),
-            Hand::Off => OFF_HAND,
-        };
-        self.set_inventory_slot(id, slot, stack, output);
-    }
-
-    /// The inventory's `slot` of `id` set to `stack`, and their client told.
-    fn set_inventory_slot(
-        &mut self,
-        id: PlayerId,
-        slot: usize,
-        stack: Option<ItemStack>,
-        output: &mut TickOutput,
-    ) {
-        let Some(player) = self.players.get_mut(&id) else {
-            return;
-        };
-        if !player.inventory.set(slot, stack.clone()) {
-            return;
-        }
-        self.journal.players.insert(id);
-        let slot = u8::try_from(slot).expect("an inventory slot fits a byte");
-        output
-            .player_events
-            .push((id, PlayerEvent::InventorySlot { slot, stack }));
     }
 
     /// Where the player `id` is and looks: their crouch and look as a use gives them, or

@@ -326,6 +326,9 @@ impl Scene {
             lent_away: Vec::new(),
         };
         let mut region = Region::restore(config(options), state, holdings);
+        // The survival players these scenes have mobs target are targets once hurts
+        // reach players (V4).
+        region.let_hurt_reach_players();
         let clock = WorldClock {
             game_time: options.day,
             day: options.day,

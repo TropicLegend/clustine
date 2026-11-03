@@ -779,7 +779,8 @@ impl MobType for IronGolem {
     }
 
     /// `IronGolem.mobInteract`: an iron ingot heals 25, and where that healed anything,
-    /// its repair sound at a pitch of two draws; the creative player keeps the ingot.
+    /// its repair sound at a pitch of two draws; the ingot used up, but a creative
+    /// player's (`itemStack.consume(1, player)`).
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
         if !used
             .held
@@ -809,6 +810,7 @@ impl MobType for IronGolem {
             pitch,
             but_the_player: false,
         });
+        used.use_up_held();
         Interaction::Success
     }
 

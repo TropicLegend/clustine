@@ -364,6 +364,8 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
     let held = used.held.as_ref().filter(|stack| stack.count > 0);
     let is = |tag: &str| held.is_some_and(|stack| item_in_tag(stack.item, tag));
     if !own.tame.is_tame() && is("minecraft:parrot_food") {
+        // `itemStack.consume(1, player)`.
+        used.use_up_held();
         let pitch = pitch(used.draws);
         used.did.push(Did::Sound {
             sound: sounds::ENTITY_PARROT_EAT,
@@ -383,7 +385,9 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
         return Interaction::Success;
     }
     if is("minecraft:parrot_poisonous_food") {
-        // Every player is creative: the hurt comes whatever the parrot is.
+        // `usePlayerItem`; the hurt comes of a creative player's whatever the parrot is,
+        // and of anyone's where it is not invulnerable, as no parrot is.
+        used.use_up_held();
         used.did.push(Did::HurtByPlayer { amount: f32::MAX });
         return Interaction::Success;
     }

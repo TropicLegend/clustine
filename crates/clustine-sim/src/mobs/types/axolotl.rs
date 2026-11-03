@@ -186,6 +186,11 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
     let at = used.did.len();
     let result = animal::mob_interact(used, FOOD, None);
     if fed && result != Interaction::Pass {
+        // `Axolotl.usePlayerItem`: the bucket becomes a water bucket rather than being
+        // used up as the animal's would be.
+        if let Some(found) = used.did[at..].iter().position(|did| *did == Did::UseUp(1)) {
+            used.did.remove(at + found);
+        }
         // Before the love's hearts: `usePlayerItem` comes first.
         used.did.insert(
             at,

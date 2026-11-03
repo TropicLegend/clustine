@@ -44,19 +44,37 @@ impl Region {
         // An end crystal on obsidian or bedrock (`EndCrystalItem.useOn`,
         // `end_crystal_item.rs`), which makes its own game event.
         if self.place_end_crystal(click, player, output) {
+            // `itemStack.shrink(1)`, put back for a creative player (`materials.rs`).
+            self.consume_used(click, player, output);
             return true;
         }
         let spawned = output.events.len();
-        let placed = self.place_minecart(click, player, output)
+        let made = self.place_minecart(click, player, output)
             || self.place_armor_stand(click, player, output)
+            || self.place_cushion(click, player, output);
+        if made {
+            // Each item's `itemStack.shrink(1)`, put back for a creative player by
+            // `ServerPlayerGameMode.useItemOn` (`materials.rs`).
+            self.consume_used(click, player, output);
+        }
+        // A painting or a frame, which takes a click it does not hang, and an egg use
+        // themselves up (`hanging.rs`, `spawn_eggs.rs`).
+        let placed = made
             || self.place_hanging(click, player, output)
-            || self.place_cushion(click, player, output)
             || self.use_spawn_egg_on(click, player, output);
         if placed {
             self.entity_placed(player, spawned, output);
             return true;
         }
         self.lead_used_on(click, player, output)
+    }
+
+    /// One of the item of `click` used up by `player`, where the region has them and
+    /// they have no infinite materials.
+    fn consume_used(&mut self, click: &Click, player: PlayerId, output: &mut TickOutput) {
+        if let Some(item) = click.held {
+            self.consume_item(player, item, 1, output);
+        }
     }
 
     /// `gameEvent(player, ENTITY_PLACE, …)` of the item that placed an entity: at the
@@ -102,7 +120,14 @@ impl Region {
             return true;
         }
         let spawned = output.events.len();
-        let placed = self.place_boat(used, player, output)
+        let boat = self.place_boat(used, player, output);
+        if boat && let Some(item) = used.held {
+            // `BoatItem.use`'s `itemStack.consume(1, player)` (`materials.rs`).
+            self.consume_item(player, item, 1, output);
+        }
+        // An egg and a bucket of a mob spend themselves (`spawn_eggs.rs`,
+        // `water_creatures.rs`).
+        let placed = boat
             || self.use_spawn_egg(used, player, output)
             || self.use_mob_bucket(used, player, output);
         if placed {

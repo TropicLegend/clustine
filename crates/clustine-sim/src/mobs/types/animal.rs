@@ -440,6 +440,9 @@ pub(crate) fn mob_interact(used: &mut Used<'_>, food: Items, eat: Option<i32>) -
     if food.test(used.held.as_ref()) {
         let age = animal.age(now);
         if age == 0 && animal.love(now) <= 0 {
+            // `usePlayerItem` (n7 Animal.mobInteract @49): one eaten, but a creative
+            // player's.
+            used.use_up_held();
             animal.set_in_love(now);
             used.mob.state = with_animal(&used.mob.state, &animal);
             used.did.push(Did::Event(18));
@@ -447,6 +450,8 @@ pub(crate) fn mob_interact(used: &mut Used<'_>, food: Items, eat: Option<i32>) -
             return Interaction::SuccessServer;
         }
         if animal.can_age_up() {
+            // `usePlayerItem` (@77).
+            used.use_up_held();
             animal.age_up(speed_up_seconds(age.wrapping_neg()), true, now);
             used.mob.state = with_animal(&used.mob.state, &animal);
             eating_sound(used, eat);
@@ -491,6 +496,8 @@ fn golden_dandelion(used: &mut Used<'_>) -> Interaction {
     if !usable {
         return Interaction::Pass;
     }
+    // `setAgeLocked`'s `stack.consume(1, player)` (n7 AgeableMob @11).
+    used.use_up_held();
     animal.age_locked = !animal.age_locked;
     animal.set_age(BABY_START_AGE, now);
     animal.lock_until = now + PARTICLE_TICKS;

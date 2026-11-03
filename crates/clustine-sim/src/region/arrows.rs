@@ -66,7 +66,7 @@ use super::items::{CartMemory, Memory, View};
 use super::projectiles::{Target, TargetKind};
 use super::random_ticks::Random;
 use super::vibrations::{Context, Source, Vibration};
-use crate::api::{PlayerEvent, RegionEvent, TickOutput};
+use crate::api::{RegionEvent, TickOutput};
 use crate::items::enchantments;
 use crate::physics::aabb::Aabb;
 use crate::physics::arrows::{self as maths, InsideEffect};
@@ -1337,9 +1337,9 @@ impl Region {
     /// the order of the players, each taking the arrows of the region's chunks in their
     /// box grown by a block sideways and half a block up and down: one in the ground (or
     /// returning) and done shaking, a trident only by its owner or where it has none.
-    /// One that may be picked up gives its stack; one only a creative player may take
-    /// gives nothing (every player is creative); either way clients see it taken and it
-    /// is gone.
+    /// One that may be picked up is taken where its stack goes into the inventory, one
+    /// only a creative player may take only by a player with infinite materials, who
+    /// gets nothing for it; either way clients see it taken and it is gone.
     pub(crate) fn players_touch_arrows(&mut self, output: &mut TickOutput) {
         let players: Vec<(clustine_world::PlayerId, EntityId, [f64; 3])> = self
             .players
@@ -1372,40 +1372,29 @@ impl Region {
                         continue;
                     }
                 }
-                let (taken, adds) = match arrow.pickup {
-                    Pickup::Allowed => (true, true),
-                    Pickup::CreativeOnly => (true, false),
-                    // `ThrownTrident.tryPickup`: its owner takes one on its way back.
-                    Pickup::Disallowed => {
-                        let back = i32::from(record.kind) == entity_types::TRIDENT
-                            && no_physics
-                            && owned_by;
-                        (back, back)
-                    }
+                // `AbstractArrow.tryPickup`: one that may be picked up where any of it goes
+                // into the inventory, one only a creative player may take where the player
+                // has infinite materials; `ThrownTrident.tryPickup` adds its owner's take
+                // of it on its way back.
+                let pickup_stack = arrow.pickup_stack.clone();
+                let mut taken = match arrow.pickup {
+                    Pickup::Allowed => self
+                        .add_to_player_inventory(id, pickup_stack.clone(), output)
+                        .is_none(),
+                    Pickup::CreativeOnly => self.has_infinite_materials(id),
+                    Pickup::Disallowed => false,
                 };
+                if !taken
+                    && i32::from(record.kind) == entity_types::TRIDENT
+                    && no_physics
+                    && owned_by
+                {
+                    taken = self
+                        .add_to_player_inventory(id, pickup_stack, output)
+                        .is_none();
+                }
                 if !taken {
                     continue;
-                }
-                if adds {
-                    let Some(player) = self.players.get_mut(&id) else {
-                        break;
-                    };
-                    let changed = super::items::add_to_inventory(
-                        &mut player.inventory,
-                        usize::from(player.selected_slot),
-                        arrow.pickup_stack.clone(),
-                    );
-                    self.journal.players.insert(id);
-                    for slot in changed {
-                        let Some(player) = self.players.get(&id) else {
-                            break;
-                        };
-                        let stack = player.inventory.0[slot].clone();
-                        let slot = u8::try_from(slot).expect("an inventory slot fits a byte");
-                        output
-                            .player_events
-                            .push((id, PlayerEvent::InventorySlot { slot, stack }));
-                    }
                 }
                 output.events.push(RegionEvent::ItemTaken {
                     item: key,

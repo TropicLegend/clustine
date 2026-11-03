@@ -132,6 +132,9 @@ impl Scene {
             lent_away: Vec::new(),
         };
         let mut region = Region::restore(config, state, holdings);
+        // The survival players these scenes have mobs target are targets once hurts
+        // reach players (V4, `materials.rs`).
+        region.hurt_reaches_players = true;
         region.tick(&TickInputs {
             tickets_added: around
                 .iter()

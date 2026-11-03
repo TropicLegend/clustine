@@ -144,8 +144,9 @@ pub(super) struct Hit {
 }
 
 /// Whether the owner `owner` is a creative player, as a vehicle and a hanging thing ask
-/// (`DamageSource.isCreativePlayer`): an owner is only ever a player, and every player
-/// is a creative one.
+/// (`DamageSource.isCreativePlayer`): an owner is only ever a player, and every player's
+/// blast breaks them as a creative player's does until survival's breaking of entities
+/// (V2, `materials.rs`), when the owner's mode is to be asked where they are.
 pub(crate) fn owner_is_creative(owner: Option<Uuid>) -> bool {
     owner.is_some()
 }

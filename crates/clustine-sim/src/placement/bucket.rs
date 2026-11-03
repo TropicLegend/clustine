@@ -10,13 +10,9 @@ use clustine_noise::trig;
 use clustine_world::{ARMOUR_START, BlockPos, Vec3};
 
 use super::geometry::{self, DirExt};
-use super::{Blocks, Click, ItemUse, UsedItem, data};
+use super::{Blocks, Click, ItemUse, Spent, UsedItem, data};
 
 use crate::api::ItemStack;
-
-/// How far a creative-mode player reaches with an item, vanilla's block interaction
-/// range.
-const REACH: f64 = 5.0;
 
 /// Where a ray hit: the block, the side it entered by, and the point.
 struct Hit {
@@ -97,6 +93,7 @@ fn empty_bucket(item_use: &ItemUse, blocks: &dyn Blocks) -> Option<UsedItem> {
     Some(UsedItem {
         changes: vec![(hit.pos, taken)],
         slot,
+        spent: Spent::Filled(filled),
     })
 }
 
@@ -110,6 +107,7 @@ fn filled_bucket(item_use: &ItemUse, blocks: &dyn Blocks, fluid: BlockState) -> 
     (!changes.is_empty()).then_some(UsedItem {
         changes,
         slot: None,
+        spent: Spent::Emptied,
     })
 }
 
@@ -260,6 +258,7 @@ fn on_water(item_use: &ItemUse, blocks: &dyn Blocks, bodies: &[[f64; 6]]) -> Opt
     Some(UsedItem {
         changes,
         slot: None,
+        spent: Spent::One,
     })
 }
 
@@ -303,9 +302,9 @@ fn ray(item_use: &ItemUse, blocks: &dyn Blocks, sources: Fluids) -> Result<Optio
     let from = eyes(item_use.feet, item_use.sneaking);
     let view = view_vector(item_use.yaw, item_use.pitch);
     let to = [
-        from[0] + view[0] * REACH,
-        from[1] + view[1] * REACH,
-        from[2] + view[2] * REACH,
+        from[0] + view[0] * item_use.reach,
+        from[1] + view[1] * item_use.reach,
+        from[2] + view[2] * item_use.reach,
     ];
     if from == to {
         return Ok(None);
@@ -488,6 +487,7 @@ mod tests {
             sneaking: false,
             inventory: Inventory::default(),
             water_evaporates: dimension.rules().water_evaporates,
+            reach: 5.0,
         }
     }
 

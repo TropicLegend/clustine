@@ -932,10 +932,12 @@ impl Region {
 
     /// The leash's part of `Entity.interact` of the boat `entity` used by `by`, which
     /// comes before the boat's own use: whether it took the use. In order: a sneaking
-    /// player's leashed boats are tied to this one; shears cut every leash it is in; its
-    /// holder lets it go (a creative player keeps the lead, as every player is); a lead
-    /// in hand ties it to the player, the leash it had dropping a lead, within the snap
-    /// distance, the lead kept (`Player.interactOn` gives a creative player's back).
+    /// player's leashed boats are tied to this one; shears cut every leash it is in,
+    /// worn by one (n7 Entity.interact @217-228); its holder lets it go, the lead dropped
+    /// but by a player with infinite materials (`removeLeash` or `dropLeash`, @343-361);
+    /// a lead in hand ties it to the player, the leash it had dropping a lead, within the
+    /// snap distance, and one of the leads used up (`shrink(1)` @480, which
+    /// `Player.interactOn` gives back to a creative player; `materials.rs`).
     pub(crate) fn leash_used(
         &mut self,
         entity: &Entity,
@@ -973,6 +975,7 @@ impl Region {
         }
         let in_hand = held.map(|stack| stack.item);
         if in_hand == Some(items::SHEARS) && self.cut_leashes(key, output) {
+            self.hurt_and_break_item_of_entity(player, items::SHEARS, 1, output);
             return true;
         }
         let leashed = leash_of(&record).is_some() && self.leash_found(key);
@@ -980,7 +983,8 @@ impl Region {
             .filter(|_| leashed)
             .and_then(|leash| self.holder_key(leash.holder));
         if holder == Some(player) {
-            self.drop_leash(key, false, output);
+            let infinite = self.entity_has_infinite_materials(player);
+            self.drop_leash(key, !infinite, output);
             self.leash_sound(sounds::ITEM_LEAD_UNTIED, record.position, output);
             return true;
         }
@@ -1000,6 +1004,7 @@ impl Region {
         }
         self.set_leashed_to(key, LeashHolder::Entity(player), player, output);
         self.leash_sound(sounds::ITEM_LEAD_TIED, record.position, output);
+        self.consume_item_of_entity(player, items::LEAD, 1, output);
         true
     }
 
@@ -1023,6 +1028,8 @@ impl Region {
         if held.is_some_and(|stack| stack.item == items::SHEARS)
             && self.cut_leashes(knot.key, output)
         {
+            // `hurtAndBreak(1, player, hand)` of the shears (`materials.rs`).
+            self.hurt_and_break_item_of_entity(player, items::SHEARS, 1, output);
             return;
         }
         let Some(id) = self.player_with_entity(player) else {

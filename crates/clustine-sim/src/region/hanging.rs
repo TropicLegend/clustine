@@ -16,9 +16,8 @@
 //! which is how a frame comes to be fixed or invisible), the world border
 //! (`hasLevelCollision` checks block shapes only), the `entityDrops` and `mobGriefing`
 //! game rules (taken as their defaults, true), spawn protection (`mayInteract`), game
-//! events, and a survival player's use of the item put in a frame: every player is a
-//! creative one (`ItemStack.consume` takes nothing from them), and a use made across a
-//! line could not take it from the player's region anyway.
+//! events, and the use of the item put in a frame by a player of another region, whose
+//! use crossed a line, who keeps it (`materials.rs`).
 
 use clustine_blocks::data::is_class;
 use clustine_data::{BlockClass, Face, TAGS, blocks, entity_types, items, sounds};
@@ -424,17 +423,19 @@ impl Region {
     /// frame hung in the block in front of the clicked face, facing out of it. A
     /// painting goes only on the four sides, a frame on any face inside the build
     /// height; either only where it would survive there, a painting with a variant
-    /// drawn as the game draws it (`Painting.create`). A creative player keeps the item
-    /// (`ServerPlayerGameMode.useItemOn` puts its count back), and every player is one.
-    /// True where the held item is one of these, whether hung or not.
+    /// drawn as the game draws it (`Painting.create`); one of the item used up, but a
+    /// creative player's (`ServerPlayerGameMode.useItemOn` puts its count back). True
+    /// where the held item is one of these, whether hung or not.
     pub(crate) fn place_hanging(
         &mut self,
         click: &crate::placement::Click,
         player: PlayerId,
         output: &mut TickOutput,
     ) -> bool {
-        let _ = player;
-        let Some(hung) = click.held.and_then(hung_by) else {
+        let Some(item) = click.held else {
+            return false;
+        };
+        let Some(hung) = hung_by(item) else {
             return false;
         };
         // The 3D data value of the face: the protocol's order is the game's.
@@ -513,6 +514,8 @@ impl Region {
             // the entity goes as an arrival as it is made, as a throw does.
             self.send_made(entity, output);
         }
+        // `itemStack.shrink(1)` (`materials.rs`).
+        self.consume_item(player, item, 1, output);
         true
     }
 
@@ -821,8 +824,8 @@ impl Region {
             (EntityData::ItemFrame { .. }, EntityUse::Attack { creative, .. }) => {
                 self.hurt_frame(entity, creative, output);
             }
-            (EntityData::ItemFrame { .. }, EntityUse::Interact { held, .. }) => {
-                self.frame_interact(entity, held, output);
+            (EntityData::ItemFrame { .. }, EntityUse::Interact { held, player, .. }) => {
+                self.frame_interact(entity, held, player, output);
             }
             _ => {}
         }
@@ -855,12 +858,14 @@ impl Region {
 
     /// `ItemFrame.interact`: nothing for a fixed frame; an empty frame takes one of what
     /// is held (the add sound, the comparators told), and one with an item turns it an
-    /// eighth (the rotate sound, the comparators told), whatever is held. The held stack
-    /// is a creative player's, which the game puts back (`Player.interactOn`).
+    /// eighth (the rotate sound, the comparators told), whatever is held. The one put in
+    /// is used up (`itemStack.consume(1, player)`), but a creative player's, and one of
+    /// another region's player, whose use crossed a line (`materials.rs`).
     fn frame_interact(
         &mut self,
         entity: &Entity,
         held: Option<ItemStack>,
+        player: EntityId,
         output: &mut TickOutput,
     ) {
         let EntityData::ItemFrame {
@@ -882,7 +887,9 @@ impl Region {
             let Some(held) = held.filter(|held| held.count > 0) else {
                 return;
             };
+            let item = held.item;
             self.set_frame_item(entity, Some(held), output);
+            self.consume_item_of_entity(player, item, 1, output);
             self.hanging_sound(entity, sounds.add, output);
             self.update_neighbour_for_output_signal(attached.block, blocks::AIR, output);
             return;

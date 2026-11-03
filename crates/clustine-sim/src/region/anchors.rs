@@ -3,8 +3,8 @@
 //! charge, it sets the spawn where anchors work (the Nether) and explodes elsewhere.
 //!
 //! Named differences: an anchor used across a line by another region's player does
-//! nothing, as a bed does (`sleep.rs`); every player is creative until survival, so the
-//! glowstone a player charges with is kept; respawning at an anchor, which spends a
+//! nothing, as a bed does (`sleep.rs`); the glowstone a player charges with is used up
+//! but by a player with infinite materials (`materials.rs`); respawning at an anchor, which spends a
 //! charge, comes with the respawn after a death (the End's milestone); where the region
 //! has no entity key left, an anchor that explodes is removed without its explosion.
 
@@ -19,11 +19,6 @@ use crate::api::{Hand, PlayerEvent, Respawn, TickOutput};
 
 /// The most charges an anchor holds (`RespawnAnchorBlock.MAX_CHARGES`).
 const MAX_CHARGES: u8 = 4;
-
-/// `Player.hasInfiniteMaterials`: every player is creative until survival.
-const fn has_infinite_materials(_player: PlayerId) -> bool {
-    true
-}
 
 /// `isWaterThatWouldFlow` (d RespawnAnchorBlock.txt 174–213) of `fluid`, whose block
 /// below holds `below`: water that is a source, or flowing water of an amount of at
@@ -102,15 +97,10 @@ impl Region {
         }
         let charges = number(state, "charges").unwrap_or(0);
         let held = self.in_hand(player, hand);
-        if let Some(stack) = held.filter(|stack| stack.item == items::GLOWSTONE)
-            && charges < MAX_CHARGES
-        {
+        if held.is_some_and(|stack| stack.item == items::GLOWSTONE) && charges < MAX_CHARGES {
             self.charge_anchor_by(pos, state, Some(player), output);
-            // `stack.consume(1, player)`.
-            if !has_infinite_materials(player) {
-                let left = (stack.count > 1).then(|| stack.with_count(stack.count - 1));
-                self.set_hand_stack(player, hand, left, output);
-            }
+            // `stack.consume(1, player)` (`materials.rs`).
+            self.consume_in_hand(player, hand, 1, output);
             return;
         }
         if charges == 0 {
@@ -190,32 +180,6 @@ impl Region {
             f64::from(pos.z) + 0.5,
         ];
         self.bad_respawn_point_explosion(centre, resistance_at, output);
-    }
-
-    /// The stack in `player`'s `hand` (the selected hotbar slot, or the off hand's) set
-    /// to `stack`, and their client told.
-    fn set_hand_stack(
-        &mut self,
-        player: PlayerId,
-        hand: Hand,
-        stack: Option<clustine_world::ItemStack>,
-        output: &mut TickOutput,
-    ) {
-        let Some(state) = self.players.get_mut(&player) else {
-            return;
-        };
-        let slot = match hand {
-            Hand::Main => usize::from(state.selected_slot),
-            Hand::Off => clustine_world::OFF_HAND,
-        };
-        if !state.inventory.set(slot, stack.clone()) {
-            return;
-        }
-        self.journal.players.insert(player);
-        let slot = u8::try_from(slot).expect("a hotbar slot fits a byte");
-        output
-            .player_events
-            .push((player, PlayerEvent::InventorySlot { slot, stack }));
     }
 }
 

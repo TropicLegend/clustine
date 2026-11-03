@@ -1095,6 +1095,8 @@ impl MobType for Panda {
             let now = used.moment;
             let mut shared = animal::animal_of(&used.mob.state);
             if shared.can_age_up() {
+                // `usePlayerItem` (n7 Panda.mobInteract @64).
+                used.use_up_held();
                 let age = shared.age(now);
                 shared.age_up(animal::speed_up_seconds(age.wrapping_neg()), true, now);
                 used.mob.state = animal::write(&shared, &own);
@@ -1105,6 +1107,8 @@ impl MobType for Panda {
                 return Interaction::Pass;
             }
             if shared.age(now) == 0 && shared.love(now) <= 0 {
+                // `usePlayerItem` (@128).
+                used.use_up_held();
                 shared.set_in_love(now);
                 used.mob.state = animal::write(&shared, &own);
                 used.did.push(Did::Event(18));
@@ -1133,6 +1137,8 @@ impl MobType for Panda {
                 used.mob.body.equipment.slots[hand] = Some(ItemStack::new(item, 1));
                 put_state(used.mob, &own);
                 used.mob.body.path.followed = None;
+                // `usePlayerItem` (@239).
+                used.use_up_held();
                 return Interaction::SuccessServer;
             }
             put_state(used.mob, &own);

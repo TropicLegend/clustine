@@ -28,7 +28,7 @@ impl Region {
     /// block (`MobBucketItem.spawn`, `EntityType.create` with `BUCKET`: as an egg makes
     /// it, its `finalizeSpawn` drawn again but where its type's returns at once, an
     /// axolotl's), marked as from a bucket where its type keeps that. The creative
-    /// player keeps the bucket. Whether it did anything.
+    /// player keeps the bucket, anyone else is left an empty one. Whether it did anything.
     pub(crate) fn use_mob_bucket(
         &mut self,
         used: &ItemUse,
@@ -79,6 +79,11 @@ impl Region {
             |mob| types::of(kind).poured_from_bucket(kind, mob),
             output,
         );
+        // `getEmptySuccessItem`: an empty bucket in its place, but for a player with
+        // infinite materials (`materials.rs`).
+        if let Some(hand) = self.hand_with_item(player, item) {
+            self.spent(player, hand, crate::placement::Spent::Emptied, output);
+        }
         true
     }
 

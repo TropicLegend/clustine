@@ -839,7 +839,7 @@ pub(crate) fn wrap_degrees_90(degrees: f32) -> f32 {
 
 /// `Equippable.equipOnTarget` of a harness on a grown, living happy ghast that wears
 /// none: put on, kept to drop whatever kills it, with its equipping sound (the seed one
-/// draw of its own) and `GameEvent.EQUIP`. The creative player keeps their harness.
+/// draw of its own) and `GameEvent.EQUIP`; one used up, but a creative player's.
 fn equip_harness(used: &mut Used<'_>) -> Interaction {
     let body = usize::from(slots::BODY);
     let Some(stack) = used.held.as_ref().filter(|stack| stack.count > 0) else {
@@ -873,6 +873,8 @@ fn equip_harness(used: &mut Used<'_>) -> Interaction {
         pitch: 1.0,
         but_the_player: false,
     });
+    // `stack.split(1)`, given back to a creative player by `Player.interactOn`.
+    used.use_up_held();
     used.did.push(Did::GameEvent("minecraft:equip"));
     Interaction::Success
 }

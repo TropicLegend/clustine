@@ -386,6 +386,8 @@ impl MobType for Ocelot {
         let tempted = goal_state::<Tempted>(used.mob, TEMPT_SLOT).running;
         let near = tamable::distance_sqr(used.from, used.position) < 9.0;
         if tempted && !own.trusting && FOOD.test(used.held.as_ref()) && near {
+            // `usePlayerItem` before the try.
+            used.use_up_held();
             if used.draws.next_int(3) == 0 {
                 own.trusting = true;
                 used.mob.state = animal::write(&shared, &own);

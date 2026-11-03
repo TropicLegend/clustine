@@ -709,10 +709,14 @@ impl Region {
     /// The players' pick-up (`Player.aiStep` → `ItemEntity.playerTouch`), after the
     /// block entities as the game's connections tick after its levels, in the order of
     /// the players: each takes the items of the region's chunks in their box grown by a
-    /// block sideways and half a block up and down, whose delay is over. A creative
-    /// player takes all of a stack, what does not fit being destroyed
-    /// (`Inventory.add`); the client is told of each slot that changed, and everyone
-    /// who sees the item of its being taken.
+    /// block sideways and half a block up and down, whose delay is over: as much of it
+    /// as finds room (`Inventory.add`); the item is taken where all of it went in, or
+    /// the player has infinite materials, whose rest is destroyed, and otherwise lies on
+    /// with what did not; the client is told of each slot that changed, and everyone who
+    /// sees the item of its being taken.
+    ///
+    /// Named difference: the game shrinks the lying item's stack in place, which tells
+    /// no client; here its record is changed and its trackers are told.
     pub(crate) fn pick_up_items(&mut self, output: &mut TickOutput) {
         let players: Vec<(PlayerId, EntityId, [f64; 3])> = self
             .players
@@ -729,7 +733,7 @@ impl Region {
                     continue;
                 };
                 let EntityData::Item {
-                    stack,
+                    ref stack,
                     pick_up_delay,
                     ..
                 } = record.data
@@ -739,13 +743,21 @@ impl Region {
                 if pick_up_delay != 0 {
                     continue;
                 }
+                if !self.players.contains_key(&id) {
+                    break;
+                }
+                // `ItemEntity.playerTouch`: `Inventory.add` of the stack, which leaves
+                // what found no room on the item and is true only where none is left or
+                // the player has infinite materials (n6 Inventory.add @63-101), who
+                // loses that rest; the item is taken where it is true.
+                let infinite = self.has_infinite_materials(id);
                 let Some(player) = self.players.get_mut(&id) else {
                     break;
                 };
-                let changed = add_to_inventory(
+                let (changed, left) = add_to_inventory(
                     &mut player.inventory,
                     usize::from(player.selected_slot),
-                    stack.clone(),
+                    stack,
                 );
                 self.journal.players.insert(id);
                 for slot in changed {
@@ -759,13 +771,33 @@ impl Region {
                         },
                     ));
                 }
+                let gone = left == 0 || infinite;
+                if !gone && left == stack.count {
+                    continue;
+                }
+                if !gone {
+                    // What did not fit stays on the ground as the item.
+                    let mut kept = record.clone();
+                    if let EntityData::Item { stack: on, .. } = &mut kept.data {
+                        on.count = left;
+                    }
+                    let change = EntityChange::Set(key, vec![EntityField::Data(kept.data.clone())]);
+                    if let Some(loaded) = self.chunks.get_mut(&chunk) {
+                        loaded.apply_entity(&change);
+                    }
+                    output.entity_changes.push((chunk, change));
+                    output
+                        .events
+                        .push(RegionEvent::EntityTracked(tracked(&kept, 0, true)));
+                    continue;
+                }
+                // `player.take(item, count)`: the whole count, as the game shows it.
                 output.events.push(RegionEvent::ItemTaken {
                     item: key,
                     collector,
                     count: stack.count,
                     chunk,
                 });
-                // A creative player takes the whole stack.
                 self.remove_entity(key, record.hops, chunk, output);
             }
         }
@@ -804,17 +836,18 @@ pub(super) fn tracked(entity: &Entity, flags: u8, with_data: bool) -> Tracked {
     }
 }
 
-/// `Inventory.add(stack)` for a player with infinite materials: into the selected slot,
-/// the off hand or the first of the main slots that has the same item with the same
-/// components and room, then
-/// into the first empty main slot, as long as a pass puts any in; what does not fit is
-/// destroyed. The slots changed, in the order changed.
+/// `Inventory.add(stack)`'s filling (`addResource`, n6 Inventory.add @16-60): into the
+/// selected slot, the off hand or the first of the main slots that has the same item
+/// with the same components and room, then into the first empty main slot, as long as a
+/// pass puts any in. The slots changed, in the order changed, and how many of the stack
+/// found no room, which the caller keeps or, for a player with infinite materials whom
+/// none of it reached, destroys (@63-87).
 pub(crate) fn add_to_inventory(
     inventory: &mut clustine_world::Inventory,
     selected: usize,
-    stack: ItemStack,
-) -> Vec<usize> {
-    let max = item::max_stack_size(&stack).min(99);
+    stack: &ItemStack,
+) -> (Vec<usize>, i32) {
+    let max = item::max_stack_size(stack).min(99);
     let mut left = stack.count;
     let mut changed = Vec::new();
     loop {
@@ -822,7 +855,7 @@ pub(crate) fn add_to_inventory(
         // `getSlotWithRemainingSpace`, then `getFreeSlot`.
         let has_room = |slot: &Option<ItemStack>| {
             slot.as_ref()
-                .is_some_and(|held| held.same_kind(&stack) && max > 1 && held.count < max)
+                .is_some_and(|held| held.same_kind(stack) && max > 1 && held.count < max)
         };
         let order = std::iter::once(selected)
             .chain(std::iter::once(clustine_world::OFF_HAND))
@@ -848,7 +881,7 @@ pub(crate) fn add_to_inventory(
             break;
         }
     }
-    changed
+    (changed, left.max(0))
 }
 
 #[cfg(test)]
@@ -866,14 +899,14 @@ mod tests {
         worn.components.set(Component::Damage(2));
         let mut inventory = Inventory::default();
         inventory.set(0, Some(worn.clone()));
-        let changed = add_to_inventory(&mut inventory, 0, ItemStack::new(items::STONE, 5));
+        let (changed, _) = add_to_inventory(&mut inventory, 0, &ItemStack::new(items::STONE, 5));
         assert_eq!(changed, [1]);
         assert_eq!(inventory.get(0), Some(Some(worn.clone())));
         assert_eq!(
             inventory.get(1),
             Some(Some(ItemStack::new(items::STONE, 5)))
         );
-        let changed = add_to_inventory(&mut inventory, 0, worn.with_count(4));
+        let (changed, _) = add_to_inventory(&mut inventory, 0, &worn.with_count(4));
         assert_eq!(changed, [0]);
         assert_eq!(inventory.get(0), Some(Some(worn.with_count(14))));
     }

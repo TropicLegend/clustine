@@ -385,6 +385,8 @@ impl MobType for Sheep {
             shear(used, &mut own);
             used.mob.state = animal::write(&animal, &own);
             used.did.push(Did::GameEvent("minecraft:shear"));
+            // `itemStack.hurtAndBreak(1, player, hand)`.
+            used.wear_held(1);
             return Interaction::SuccessServer;
         }
         animal::mob_interact(used, FOOD, None)
@@ -415,6 +417,8 @@ impl MobType for Sheep {
         });
         own.set_colour(dye);
         used.mob.state = animal::write(&animal, &own);
+        // `stack.shrink(1)`, given back to a creative player by `Player.interactOn`.
+        used.use_up_held();
         Interaction::Success
     }
 

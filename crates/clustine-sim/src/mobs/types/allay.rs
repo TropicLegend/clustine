@@ -753,8 +753,9 @@ fn pick_up(tick: &mut MobTick<'_>) {
 /// `Allay.mobInteract` (the brief's 7.10.5): dancing, an amethyst shard duplicates it;
 /// an empty hand of its own takes what the player holds, one of it, and likes them; a
 /// player with an empty main hand takes its item back, and what it gathered falls at
-/// its eyes. The player keeps what they gave (every player is creative), and the sounds
-/// are not sent to them, whose client plays its own.
+/// its eyes. What the player gave is used up but by a creative player
+/// (`removeInteractionItem`), and the sounds are not sent to them, whose client plays its
+/// own.
 fn mob_interact(used: &mut Used<'_>) -> Interaction {
     let hand = usize::from(slots::MAIN_HAND);
     let held = used.held.as_ref().filter(|stack| stack.count > 0);
@@ -788,6 +789,7 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
         });
         used.did.push(Did::Event(18));
         used.did.push(sound(sounds::BLOCK_AMETHYST_BLOCK_CHIME));
+        used.use_up_held();
         return Interaction::Success;
     }
     if holding.is_none()
@@ -795,6 +797,7 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
     {
         used.mob.body.equipment.slots[hand] = Some(given.with_count(1));
         used.did.push(sound(sounds::ENTITY_ALLAY_ITEM_GIVEN));
+        used.use_up_held();
         // `LIKED_PLAYER = player.getUUID()`.
         if let Some(player) = used.player_uuid {
             let mut memories = memories(used.mob, used.moment);

@@ -128,8 +128,9 @@ impl Region {
     /// (`docs/groundwork/n9-plan.md`, section 8.5): the chunks about it and about its
     /// target are noted, both by the region that holds the target (finding 40), so that
     /// regions that follow their players merge for a fight across their line as for an
-    /// entity sent across. Named: a face of a player is no mob's target, every player
-    /// being creative.
+    /// entity sent across. Named: a face of a player is no mob's target, as no player is
+    /// until V4 (`materials.rs`, the region's `hurt_reaches_players`); V4 merges for
+    /// those too.
     pub(super) fn target_at_line(&mut self, at: [f64; 3], target: clustine_world::EntityId) {
         if self.find_entity(target).is_some() {
             return;

@@ -10,10 +10,6 @@ use super::Region;
 use crate::api::TickOutput;
 use crate::physics::aabb::Aabb;
 
-/// A creative player's reach to an entity: `entity_interaction_range` (3), the creative
-/// modifier's 2, and the 3 the handlers add, from the eyes to the entity's box.
-pub(super) const CREATIVE_ENTITY_REACH: f64 = 3.0 + 2.0 + 3.0;
-
 /// The eyes' height of a player standing, and sneaking (`Pose.CROUCHING`).
 const STANDING_EYES: f64 = 1.62;
 const SNEAKING_EYES: f64 = 1.27;
@@ -34,6 +30,8 @@ pub(super) fn distance_to_sqr(bounds: Aabb, point: [f64; 3]) -> f64 {
 pub(crate) struct User {
     pub(crate) feet: [f64; 3],
     pub(crate) sneaking: bool,
+    /// Their `entityInteractionRange()` (`materials.rs`): 3, and creative's 2.
+    pub(crate) reach: f64,
 }
 
 impl User {
@@ -48,6 +46,13 @@ impl User {
 
     pub(crate) fn from(&self) -> [Double; 3] {
         self.feet.map(Double)
+    }
+
+    /// The square of how far from their eyes they reach an entity's box: their range
+    /// and the 3 the handlers add (`handleInteract` @80-89, `handleAttack` @88-99).
+    pub(super) fn reach_sqr(&self) -> f64 {
+        let reach = self.reach + super::materials::ENTITY_REACH_TOLERANCE;
+        reach * reach
     }
 }
 
@@ -64,7 +69,7 @@ impl Region {
         by: EntityUse,
         output: &mut TickOutput,
     ) {
-        let reach = CREATIVE_ENTITY_REACH * CREATIVE_ENTITY_REACH;
+        let reach = user.reach_sqr();
         if let Some((_, entity)) = self.find_entity(key) {
             if distance_to_sqr(self.used_box(entity, &by), user.eyes()) < reach {
                 self.entity_used(key, by, output);
@@ -79,6 +84,28 @@ impl Region {
         {
             return;
         }
+        // The region that does it has not the player's inventory: what they use there
+        // is kept, as a creative player's is (named in `materials.rs`, V2's to lift).
+        let by = match by {
+            EntityUse::Interact {
+                player,
+                held,
+                location,
+                sneaking,
+                from,
+                edge,
+                ..
+            } => EntityUse::Interact {
+                player,
+                creative: true,
+                held,
+                location,
+                sneaking,
+                from,
+                edge,
+            },
+            by => by,
+        };
         self.made.push(Effect {
             at: block_in(chunk, &entity),
             what: Effected::OnEntity { key, by },

@@ -13,8 +13,8 @@
 //!
 //! A left click on a note block plays it only in survival: the game's
 //! `ServerPlayerGameMode.handleBlockBreakAction` destroys the block at once for a
-//! player who builds instantly, without its `attack`, and every Clustine player is in
-//! creative mode.
+//! player who builds instantly, without its `attack`, and every Clustine player's break
+//! is instant until survival's breaking (V2, `materials.rs`).
 
 use clustine_blocks::data::{flag, is_class, number, relative, set, set_flag};
 use clustine_blocks::note::{self, Instrument};

@@ -149,8 +149,11 @@ impl Region {
     /// drive boosts where it is steered by that stick (`MobType::steered_by_stick`: a
     /// pig by the carrot on a stick, a strider by the warped fungus on a stick), unless
     /// it boosts already (`ItemBasedSteering.boost`, one draw of its own random); the
-    /// stick takes no wear of a creative player, which every player is. Whether the use
-    /// was this.
+    /// stick worn where it boosted by its `consumeItemDamage` (n7 Items' lambdas 216 and
+    /// 217: 7 for the carrot's, 1 for the warped fungus's), and a fishing rod left where
+    /// that wears it out
+    /// (`hurtAndConvertOnBreak(consumeItemDamage, FISHING_ROD, …)`), but a creative
+    /// player's. Whether the use was this.
     pub(crate) fn steered_boost(
         &mut self,
         id: PlayerId,
@@ -185,6 +188,15 @@ impl Region {
         self.entity_drew(vehicle.key, stream.draws_since(&start));
         if boosted {
             self.commit_mob(&vehicle, chunk, &mob, output);
+            if let Some(hand) = self.hand_with_item(id, held) {
+                let fishing_rod = clustine_data::items::FISHING_ROD;
+                let wear = if held == clustine_data::items::WARPED_FUNGUS_ON_A_STICK {
+                    1
+                } else {
+                    7
+                };
+                self.hurt_and_convert_on_break(id, hand, wear, fishing_rod, output);
+            }
         }
         boosted
     }

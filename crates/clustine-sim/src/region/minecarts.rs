@@ -266,8 +266,9 @@ enum Queued {
 impl Region {
     /// `MinecartItem.useOn`: a cart of the held item's kind placed on the clicked
     /// block where it is of `#minecraft:rails`, at its middle and a sixteenth up, half
-    /// a block higher on a slope, facing nowhere in particular (yaw 0). A creative
-    /// player keeps the item (`ServerPlayerGameMode.useItemOn` gives its count back).
+    /// a block higher on a slope, facing nowhere in particular (yaw 0). The item is used
+    /// up by the caller (`placing.rs`), but a creative player's
+    /// (`ServerPlayerGameMode.useItemOn` gives its count back).
     /// Under the old behaviour carts may be placed into one another. The game spawns
     /// it as from a dispenser (`EntitySpawnReason.DISPENSER`), which changes nothing.
     /// False, and nothing placed, for any other item or block, where the chunk is full or
@@ -1441,7 +1442,7 @@ impl Region {
                 }
                 if i32::from(entity.kind) == entity_types::FURNACE_MINECART {
                     let from = from.map(|component| component.0);
-                    self.add_fuel(entity, position, held, from, output);
+                    self.add_fuel(entity, position, held, player, from, output);
                 }
                 if super::menu_play::is_container_vehicle(entity.kind)
                     && let Some(id) = self.player_with_entity(player)
@@ -1462,13 +1463,14 @@ impl Region {
 
     /// `MinecartFurnace.addFuel(playerPosition, stack)`: 3600 ticks for a piece of
     /// `#minecraft:furnace_minecart_fuel`, but never above 32000, and the push from the
-    /// player to the cart, not made of length one. A creative player keeps the coal
-    /// (`ItemStack.consume`).
+    /// player to the cart, not made of length one; one of the fuel used up, but a
+    /// creative player's (`ItemStack.consume`, `materials.rs`).
     fn add_fuel(
         &mut self,
         entity: &Entity,
         chunk: ChunkPos,
         held: Option<ItemStack>,
+        player: EntityId,
         from: Vec3,
         output: &mut TickOutput,
     ) {
@@ -1507,6 +1509,7 @@ impl Region {
         let mut report = tracked(&after, 0, true);
         report.chunk = chunk;
         output.events.push(RegionEvent::EntityTracked(report));
+        self.consume_item_of_entity(player, held.item, 1, output);
     }
 
     /// `DetectorRailBlock.getAnalogOutputSignal` of the detector rail `state` at `pos`,

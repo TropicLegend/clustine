@@ -47,7 +47,8 @@ impl Region {
     /// held item's colour laid on the clicked top, in the clicked block if it gives way
     /// and above it if not, at the click's height, facing the player's way snapped to a
     /// side; refused where it would not rest, where it would be buried or where another
-    /// cushion is. A creative player keeps the item. Whether it took the click.
+    /// cushion is. The caller uses the item up, but a creative player's (`placing.rs`).
+    /// Whether it took the click.
     ///
     /// Not built: the click taken again on the collision shape of a cauldron, a hopper
     /// or a composter (`#cushion_uses_collision_shape`), whose outline the click is on.

@@ -88,6 +88,8 @@ impl MobType for Bogged {
         if shears && !state_of(used.mob).sheared {
             shear(used);
             used.did.push(Did::GameEvent("minecraft:shear"));
+            // `itemStack.hurtAndBreak(1, player, hand)`.
+            used.wear_held(1);
             return Interaction::Success;
         }
         Interaction::Pass

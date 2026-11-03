@@ -10,7 +10,10 @@ use crate::api::{PlayerEvent, TickOutput};
 
 impl Region {
     /// Gives `stack` to the player whose stay is `player`, who stood at `from` when they
-    /// used the mob (their hand keeps what it held: every player is creative).
+    /// used the mob, as a creative player is given it (their hand keeps what it held):
+    /// the region's own player without infinite materials has one of the hand used up
+    /// for it instead (`Did::Give` in `animals.rs`); across a line it is given so to
+    /// anyone (named in `materials.rs`).
     pub(crate) fn give_to_player(
         &mut self,
         player: EntityId,
@@ -37,7 +40,7 @@ impl Region {
         });
     }
 
-    /// `ItemUtils.createFilledResult` for the region's creative player `id`: `stack` put
+    /// `ItemUtils.createFilledResult` as for the region's creative player `id`: `stack` put
     /// into the first empty slot of the hotbar and the main inventory, unless
     /// `no_duplicates` (the game's `limitCreativeStackSize`) and a slot holds one
     /// already. A full inventory keeps out what duplicates are kept out of, and throws

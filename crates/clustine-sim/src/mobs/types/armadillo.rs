@@ -800,8 +800,8 @@ impl MobType for Armadillo {
     }
 
     /// `Armadillo.mobInteract`: a brush on a grown one brushes a scute off (its table,
-    /// its sound, the interaction's game event; the brush worn by 16, which a creative
-    /// player's is not); a scared one is not fed (`FAIL`, which passes on as nothing
+    /// its sound, the interaction's game event; the brush worn by 16, but a creative
+    /// player's); a scared one is not fed (`FAIL`, which passes on as nothing
     /// done); else an animal's use, with its eating sound.
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
         if animal::is_item(used.held.as_ref(), items::BRUSH) && !animal::is_baby(used.mob) {
@@ -825,6 +825,8 @@ impl MobType for Armadillo {
             });
             used.did
                 .push(Did::GameEvent(GameEvent::EntityInteract.name()));
+            // `hurtAndBreak(16, player, hand)`.
+            used.wear_held(16);
             return Interaction::Success;
         }
         if is_scared(used.mob) {

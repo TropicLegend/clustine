@@ -33,10 +33,10 @@ use crate::mobs::types::{self, villager, zombie_villager};
 use crate::state::{Menu, MenuOf, TradeSlots};
 use crate::trading::merchant;
 
-/// The squared reach within which a merchant's window stays open
-/// (`isWithinEntityInteractionRange(merchant, 4)`: a creative player's 5 and 4 more,
-/// from the eyes to the merchant's box), as the region keeps a vehicle's.
-const STILL_VALID: f64 = 9.0 * 9.0;
+/// How much further than their entity interaction range a merchant's window stays open
+/// (`isWithinEntityInteractionRange(merchant, 4)`, from the eyes to the merchant's box),
+/// as the region keeps a vehicle's.
+const STILL_VALID_SLACK: f64 = 4.0;
 
 /// A merchant's side of a click of its window (`MerchantResultSlot`): the merchant as
 /// its record had it, changed by the trades the click makes, and what they did beyond
@@ -466,21 +466,24 @@ impl Region {
         if mob.body.vitals.dying() {
             return false;
         }
-        let trading = merchant::trading_player(&mob, entity.kind).is_some_and(|player| {
-            self.players
-                .get(&player)
-                .and_then(|own| own.menu.as_ref())
-                .is_some_and(|menu| menu.of == MenuOf::Merchant(merchant))
-        });
-        if !trading {
+        let trader = merchant::trading_player(&mob, entity.kind)
+            .and_then(|player| self.players.get(&player))
+            .filter(|own| {
+                own.menu
+                    .as_ref()
+                    .is_some_and(|menu| menu.of == MenuOf::Merchant(merchant))
+            });
+        let Some(trader) = trader else {
             return false;
-        }
+        };
+        let reach =
+            super::materials::entity_interaction_range(trader.mode.current) + STILL_VALID_SLACK;
         if merchant::is_villager(entity.kind)
             && merchant::offers(&mob, entity.kind).is_none_or(|offers| offers.0.is_empty())
         {
             return false;
         }
-        super::uses::distance_to_sqr(self.entity_box(&entity), eyes) < STILL_VALID
+        super::uses::distance_to_sqr(self.entity_box(&entity), eyes) < reach * reach
     }
 
     /// The translation key of the merchant's window's title (`getDisplayName`): a

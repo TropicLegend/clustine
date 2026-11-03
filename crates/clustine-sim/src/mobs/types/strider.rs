@@ -396,6 +396,8 @@ fn equip_saddle(used: &mut Used<'_>) -> Interaction {
         pitch: 1.0,
         but_the_player: false,
     });
+    // `stack.split(1)`, given back to a creative player by `Player.interactOn`.
+    used.use_up_held();
     used.did.push(Did::GameEvent("minecraft:equip"));
     Interaction::Success
 }

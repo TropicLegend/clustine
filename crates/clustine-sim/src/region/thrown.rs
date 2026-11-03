@@ -218,7 +218,9 @@ impl Hit {
         DamageSource::thrown(direct, self.motion, owner)
     }
 
-    /// Whether a player threw it: every player is a creative one.
+    /// Whether a player threw it, whose throw breaks a vehicle or a frame at once as a
+    /// creative player's does: every player's until survival's breaking of entities
+    /// (V2, `materials.rs`).
     fn by_creative(&self) -> bool {
         self.owner.is_some_and(|owner| owner.player.is_some())
     }

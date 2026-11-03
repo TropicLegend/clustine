@@ -86,17 +86,18 @@ impl MobWorld for View<'_> {
     /// The players the region holds, by their keys, then the faces of others it keeps,
     /// by the player (`docs/groundwork/n7-plan.md`, 10.11).
     fn players(&self) -> Vec<SeenPlayer> {
+        let hurt = self.region.hurt_reaches_players;
         let mut players: Vec<SeenPlayer> = self
             .region
             .players
             .iter()
-            .map(|(id, player)| seen(*id, player.entity_id, &player.face()))
+            .map(|(id, player)| seen(*id, player.entity_id, &player.face(), hurt))
             .collect();
         players.sort_by_key(|player| player.key);
         let region = self.region;
         let holds = |chunk| region.land.holds(chunk) || region.copies.contains_key(&chunk);
         let faces = region.faces.seen(holds);
-        players.extend(faces.map(|(id, kept)| seen(*id, kept.entity, &kept.face)));
+        players.extend(faces.map(|(id, kept)| seen(*id, kept.entity, &kept.face, hurt)));
         players
     }
 
@@ -227,7 +228,12 @@ impl MobWorld for View<'_> {
         face.sleeping = known
             .sleeping
             .map(|counter| now.saturating_sub(u64::from(counter)));
-        Some(seen(known.player, known.entity, &face))
+        Some(seen(
+            known.player,
+            known.entity,
+            &face,
+            self.region.hurt_reaches_players,
+        ))
     }
 
     /// Those the mob reads, then the world's players beyond them as the store last
@@ -763,8 +769,9 @@ fn memory_vertical(region: &Region, key: EntityId) -> bool {
         .is_some_and(|memory| memory.vertical_collision)
 }
 
-/// What a mob reads of a player, from their face.
-fn seen(id: PlayerId, key: EntityId, face: &PlayerFace) -> SeenPlayer {
+/// What a mob reads of a player, from their face, where hurts reach players or not
+/// (until V4 they do not: `materials.rs`).
+fn seen(id: PlayerId, key: EntityId, face: &PlayerFace, hurt_reaches_players: bool) -> SeenPlayer {
     SeenPlayer {
         key,
         uuid: id.0.as_u128(),
@@ -776,7 +783,9 @@ fn seen(id: PlayerId, key: EntityId, face: &PlayerFace) -> SeenPlayer {
         off_hand: face.off_hand.clone(),
         worn: face.worn.clone(),
         sneaking: face.sneaking,
-        creative: face.game_mode == 1,
+        // `isCreative()`, which the mobs read only to pass a player over as a target:
+        // until V4 every player is so passed over (`materials.rs`).
+        creative: super::materials::untargetable(face.game_mode, hurt_reaches_players),
         spectator: face.game_mode == 3,
         vehicle: face.vehicle,
         moved_horizontally: face.moved_horizontally,

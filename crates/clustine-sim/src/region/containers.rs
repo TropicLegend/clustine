@@ -29,8 +29,7 @@
 //! (`container_open`, `container_close`) are of no entity, where the game's are of the
 //! player who opened or closed it, which a sensor reads only to pass on; the cat
 //! sitting on a chest waits for N7; a loot table is not rolled (decision 4), so a structure's chest
-//! spills nothing; a player's interaction range is a creative player's, which every
-//! player of Clustine has; an opener's count does not go below 0 where the game's would.
+//! spills nothing; an opener's count does not go below 0 where the game's would.
 
 use clustine_blocks::data::{facing, is_class, relative, same_block, set_flag, tick_id};
 use clustine_blocks::growth::chest_connected_direction;
@@ -330,10 +329,10 @@ pub(crate) const SET_OPEN_COUNT: i32 = 1;
 /// chest with openers counts them again.
 const CHECK_TICK_DELAY: i32 = 5;
 
-/// A creative player's `block_interaction_range` (4.5, and the creative 0.5), which
-/// every player of Clustine has: the recheck finds openers within it and four more of
-/// the block (`ContainerOpenersCounter.getEntitiesWithContainerOpen`).
-const INTERACTION_RANGE: f64 = 5.0;
+/// How much further than a player's `getContainerInteractionRange()` (their block
+/// interaction range, `materials.rs`) the recheck finds openers
+/// (`ContainerOpenersCounter.getEntitiesWithContainerOpen`).
+const OPENERS_SLACK: f64 = 4.0;
 
 /// The volume of every container's opening and closing sound.
 const OPENING_VOLUME: f32 = 0.5;
@@ -647,8 +646,6 @@ impl Region {
     /// The region's players whose menus show the container at `pos` and whose boxes
     /// meet the block's, grown by their reach and four more.
     fn openers_found(&self, pos: BlockPos, kind: Counted) -> u32 {
-        let reach = INTERACTION_RANGE + 4.0;
-        let area = Aabb::of_block(pos).inflate([reach; 3]);
         let found = self
             .players
             .values()
@@ -665,6 +662,9 @@ impl Region {
                     player.pose.position.z,
                 ];
                 let half = super::PLAYER_WIDTH / 2.0;
+                let reach =
+                    super::materials::block_interaction_range(player.mode.current) + OPENERS_SLACK;
+                let area = Aabb::of_block(pos).inflate([reach; 3]);
                 Aabb::new(
                     [x - half, y, z - half],
                     [x + half, y + super::PLAYER_HEIGHT, z + half],

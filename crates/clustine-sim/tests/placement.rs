@@ -2149,6 +2149,7 @@ fn use_down(held: i32, feet: Vec3) -> ItemUse {
         sneaking: false,
         inventory: Inventory::with_hotbar(hotbar_holding(held)),
         water_evaporates: false,
+        reach: 5.0,
     }
 }
 
@@ -2171,7 +2172,7 @@ fn used_among(
     bodies: &[[f64; 6]],
 ) -> Option<(Changes, SlotChange)> {
     placement::use_item(item_use, world, bodies)
-        .map(|UsedItem { changes, slot }| (as_changes(changes), slot))
+        .map(|UsedItem { changes, slot, .. }| (as_changes(changes), slot))
 }
 
 #[track_caller]

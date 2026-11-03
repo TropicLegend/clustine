@@ -3,9 +3,12 @@
 //! the ticks each has left wherever the player goes; ticked at the players' part of the
 //! region's tick (`LivingEntity.baseTick`'s `tickEffects`), before their use of an item.
 //!
-//! What a creative player feels of them: every hurt is refused, so poison, wither and
-//! harming do nothing; regeneration and instant health heal a full player not at all;
-//! hunger's exhaustion is skipped; the movement effects, night vision, invisibility,
+//! What a creative player feels of them, and until V4 a survival player too
+//! (`materials.rs`, the region's `hurt_reaches_players`): every hurt is refused, so
+//! poison, wither and
+//! harming do nothing; regeneration and instant health heal a full player not at all
+//! (a survival player's health is V4's); hunger's exhaustion is skipped (V4's hunger);
+//! the movement effects, night vision, invisibility,
 //! glowing, water breathing and fire resistance are the client's to show and to move
 //! by. So the region's part is to keep them and to say what changes: the effects
 //! themselves to the player's client (`ServerPlayer.onEffectAdded`, `onEffectUpdated`,
@@ -230,7 +233,8 @@ impl Region {
     }
 
     /// `tickEffects` of every player, in the order of the players: their effects do
-    /// their ticks (nothing a creative player feels) and count down, each that gives way
+    /// their ticks (nothing a creative player feels, and until V4 nothing anyone feels of
+    /// regeneration, poison, wither and hunger) and count down, each that gives way
     /// to the level it hid or ends told as an addition does it.
     pub(crate) fn tick_player_effects(&mut self, output: &mut TickOutput) {
         self.tick_omens(output);

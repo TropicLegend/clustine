@@ -21,8 +21,9 @@
 //! bed a villager sleeps in gets it up and lays nobody down (`kickVillagerOutOfBed`,
 //! `docs/groundwork/n10-brief.md` section 3.4).
 //!
-//! Named differences: monsters do not keep anyone awake until N9 (every player is
-//! creative anyway); a bed is slept in only by a player whose region holds its head's
+//! Named differences: only the monsters of the region's own land keep a player awake
+//! (one across a line, in a copy, does not); a bed is slept in only by a player whose
+//! region holds its head's
 //! chunk, and one used across a line does nothing; another region's sleepers count a
 //! second late, and a region announces the night's state to its own players only; the
 //! sleep counter's run from 100 to 110 after a wake (the client's fade) is not kept;
@@ -49,6 +50,23 @@ const SLEEPING_PERCENTAGE: u32 = 100;
 
 /// A sleeper is deep after this many ticks in bed (`isSleepingLongEnough`, B 3.1).
 const DEEP: u64 = 100;
+
+/// Whether a mob of the type `kind` is of the game's class `Monster`: the family of
+/// that name (`ladder.rs`), and the others of the class that it leaves to `Mob`'s
+/// defaults (a vex, a ravager, a warden, a breeze, a creaking, an illusioner, a giant).
+fn is_monster_class(kind: u16) -> bool {
+    crate::mobs::body::ladder::of(kind) == crate::mobs::body::ladder::Family::Monster
+        || matches!(
+            i32::from(kind),
+            entity_types::VEX
+                | entity_types::RAVAGER
+                | entity_types::WARDEN
+                | entity_types::BREEZE
+                | entity_types::CREAKING
+                | entity_types::ILLUSIONER
+                | entity_types::GIANT
+        )
+}
 
 /// The way one step in a horizontal direction goes.
 fn step_of(direction: Face) -> (i32, i32) {
@@ -156,6 +174,41 @@ impl Region {
             return;
         }
         self.start_sleep(id, head, head_state, toward, output);
+    }
+
+    /// Whether a monster near the bed whose head is `head` keeps the player whose entity
+    /// is `sleeper` awake (B 1.5 step 8): any `Monster` of the region's whose box meets
+    /// the box 16 wide and 10 high about the head's bottom centre, but a zombified piglin
+    /// that is not angry at the player (`ZombifiedPiglin.isPreventingPlayerRest`, its
+    /// `isAngryAt`; nobody is angry at all players, the game rule
+    /// `universal_anger` being off).
+    fn monster_keeps_awake(&self, head: BlockPos, sleeper: clustine_world::EntityId) -> bool {
+        let centre = [
+            f64::from(head.x) + 0.5,
+            f64::from(head.y),
+            f64::from(head.z) + 0.5,
+        ];
+        let near = Aabb::new(
+            [centre[0] - 8.0, centre[1] - 5.0, centre[2] - 8.0],
+            [centre[0] + 8.0, centre[1] + 5.0, centre[2] + 8.0],
+        );
+        self.entities_in(&near).into_iter().any(|(key, chunk)| {
+            let Some(record) = self.entity_record(key, chunk) else {
+                return false;
+            };
+            if !is_monster_class(record.kind) {
+                return false;
+            }
+            if i32::from(record.kind) != entity_types::ZOMBIFIED_PIGLIN {
+                return true;
+            }
+            Mob::decode(&record.data).is_ok_and(|mob| {
+                crate::mobs::types::zombified_piglin::own_of(&mob)
+                    .anger
+                    .target
+                    == Some(sleeper)
+            })
+        })
     }
 
     /// `destroyOnUse` of the bed whose head is `head`, used where its rule destroys it.
@@ -279,6 +332,15 @@ impl Region {
         let Some(player) = self.players.get(&id) else {
             return;
         };
+        // B 1.5 step 8 (n7d ServerPlayer.startSleepInBed @140-259): a player not in
+        // creative mode (`isCreative`, the mode and not its abilities) is kept awake by
+        // a monster near the bed.
+        if player.mode.current != clustine_world::GameMode::Creative
+            && self.monster_keeps_awake(head, player.entity_id)
+        {
+            self.say(id, "block.minecraft.bed.not_safe", Vec::new(), true, output);
+            return;
+        }
         if player.riding.is_some() {
             return;
         }

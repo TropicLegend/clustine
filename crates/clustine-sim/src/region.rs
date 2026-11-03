@@ -87,6 +87,7 @@ mod leashes;
 mod lends;
 mod light;
 mod loading;
+mod materials;
 mod menu_play;
 mod minecarts;
 mod mob_attacks;
@@ -408,10 +409,6 @@ impl Land {
 /// How far above a player's feet their eyes are.
 const EYE_HEIGHT: f64 = 1.62;
 
-/// How far from their eyes a creative-mode player can reach a block, with the block of
-/// tolerance vanilla allows for the client being slightly ahead of the server.
-const BLOCK_REACH: f64 = 6.0;
-
 /// The width and the height of a standing player.
 const PLAYER_WIDTH: f64 = 0.6;
 const PLAYER_HEIGHT: f64 = 1.8;
@@ -691,6 +688,11 @@ pub struct Region {
     /// next tick as the game's. Kept in memory only: a region restored within the tick
     /// has none, and such a fireball flies on.
     removed_lately: BTreeMap<EntityId, u64>,
+    /// Whether hurts reach a player who is not invulnerable and mobs take them as
+    /// targets: not until V4, which keeps their health (`docs/groundwork/v-plan.md`,
+    /// sections 4.3 and 5; `materials.rs`), and so false. The tests of the mobs' targeting
+    /// of survival players, written for when it comes, turn it on.
+    hurt_reaches_players: bool,
     /// Units sent on with a seat kept in them for a player not come yet: where each
     /// went and for how many ticks more the entry counts, so that the player follows
     /// (`docs/groundwork/n5-plan.md`, section 8 item 5). Kept in memory only: a region
@@ -891,6 +893,7 @@ impl Region {
             merged_into: Vec::new(),
             entity_memory: BTreeMap::new(),
             removed_lately: BTreeMap::new(),
+            hurt_reaches_players: false,
             forwarded: BTreeMap::new(),
             light: light::RegionLight::new(sky),
             using_across: None,
@@ -2838,16 +2841,10 @@ impl Region {
             // N5's inputs, answered by the steps that bring what they use
             // (`docs/groundwork/n5-plan.md`); until then passed over.
             PlayerInput::Attack { entity, part } => {
-                let user = uses::User {
-                    feet: [
-                        player.pose.position.x,
-                        player.pose.position.y,
-                        player.pose.position.z,
-                    ],
-                    sneaking: false,
-                };
-                // Every player is a creative one, whose hit breaks what N5 brings at
-                // once; the damage is what they hold deals by `Player.attack`'s rule
+                let user = player.user(false);
+                // Every player's hit breaks what N5 brings at once, as a creative
+                // player's does, until survival's breaking (V2, `materials.rs`); the
+                // damage is what they hold deals by `Player.attack`'s rule
                 // (`mob_attacks.rs`), at the attack strength taken as full until the
                 // player's ticker is kept.
                 let attacker = player.entity_id;
@@ -2873,17 +2870,12 @@ impl Region {
                 // `handleInteract` sets the player's shift key from the packet before
                 // anything else, so that what the use reads of it is the packet's.
                 player.keys.sneak = *sneaking;
-                let user = uses::User {
-                    feet: [
-                        player.pose.position.x,
-                        player.pose.position.y,
-                        player.pose.position.z,
-                    ],
-                    sneaking: *sneaking,
-                };
+                let user = player.user(*sneaking);
+                // What they use is kept by a player with infinite materials
+                // (`hasInfiniteMaterials`, `materials.rs`).
                 let by = EntityUse::Interact {
                     player: player.entity_id,
-                    creative: true,
+                    creative: player.mode.current.abilities().instabuild,
                     held: held.clone(),
                     location: location.map(Double),
                     sneaking: *sneaking,
@@ -2893,14 +2885,7 @@ impl Region {
                 self.player_used_entity(user, *entity, by, output);
             }
             PlayerInput::PickItemFromEntity { entity } => {
-                let user = uses::User {
-                    feet: [
-                        player.pose.position.x,
-                        player.pose.position.y,
-                        player.pose.position.z,
-                    ],
-                    sneaking: false,
-                };
+                let user = player.user(false);
                 self.pick_entity_item(id, user, *entity, output);
             }
             // A player's menus (`menu_play.rs`).
@@ -2991,6 +2976,7 @@ impl Region {
                     sneaking: *sneaking,
                     inventory: player.inventory.clone(),
                     water_evaporates: self.config.dimension.rules().water_evaporates,
+                    reach: materials::block_interaction_range(player.mode.current),
                 };
                 let sequence = *sequence;
                 let hand = if off_hand {
@@ -3015,12 +3001,16 @@ impl Region {
                     && let Some(pos) = placement::evaporated(&item_use, &Readable(self))
                 {
                     self.evaporate_player_s_water(id, pos, output);
+                    // `emptyContents` succeeded: the bucket is emptied all the same.
+                    self.spent(id, hand, placement::Spent::Emptied, output);
                 }
                 if let Some(used) = used
                     && self.change_all(&used.changes, output)
                 {
                     self.play_item_use(id, &item_use, &used, output);
-                    if let Some((slot, stack)) = used.slot
+                    if !self.has_infinite_materials(id) {
+                        self.spent(id, hand, used.spent, output);
+                    } else if let Some((slot, stack)) = used.slot
                         && let Some(player) = self.players.get_mut(&id)
                     {
                         player.inventory.set(usize::from(slot), stack);
@@ -3050,6 +3040,8 @@ impl Region {
                 }
                 // Acknowledged whatever comes of it, so the client stops guessing.
                 player.acknowledge(sequence);
+                // Every player's break is instant and drops nothing, as a creative
+                // player's is, until survival's breaking (V2, `materials.rs`).
                 if player.can_reach(position) {
                     self.break_by_player(position, Some(id), output);
                 }
@@ -3263,6 +3255,12 @@ impl Region {
                 self.play_placed(target, action.player, output);
                 self.ask_lends_for(target, output);
                 self.swung_using(action, target, output);
+                // `BlockItem.place`'s `itemStack.consume(1, player)`: one of the stack
+                // placed, but by a player with infinite materials, or by one who is
+                // another region's, whose step crossed a line (`materials.rs`).
+                if let Some(item) = click.held {
+                    self.consume_item(action.player, item, 1, output);
+                }
             }
         }
         None
@@ -3432,11 +3430,10 @@ impl Region {
         let at_block = block_centre(pos);
         let (sound, position, source) = match item_use.held {
             Some(items::BUCKET) => {
-                let filled = used
-                    .slot
-                    .as_ref()
-                    .and_then(|(_, stack)| stack.as_ref())
-                    .map(|stack| stack.item);
+                let filled = match used.spent {
+                    placement::Spent::Filled(item) => Some(item),
+                    placement::Spent::Emptied | placement::Spent::One => None,
+                };
                 let sound = match filled {
                     Some(items::LAVA_BUCKET) => sounds::ITEM_BUCKET_FILL_LAVA,
                     Some(items::POWDER_SNOW_BUCKET) => sounds::ITEM_BUCKET_FILL_POWDER_SNOW,
@@ -4409,8 +4406,14 @@ impl Player {
         self.inventory.0[usize::from(self.selected_slot)].clone()
     }
 
-    /// Whether the player's eyes are close enough to the block at `position` to work on it.
+    /// Whether the player's eyes are close enough to the block at `position` to work on
+    /// it: `isWithinBlockInteractionRange(position, 1)` (n7 Player @0-37), their
+    /// `blockInteractionRange()` (4.5, and creative's 0.5) and the block of tolerance the
+    /// handlers allow for the client being slightly ahead of the server, from the eyes to
+    /// the block's box, short of it.
     fn can_reach(&self, position: BlockPos) -> bool {
+        let reach = materials::block_interaction_range(self.mode.current)
+            + materials::BLOCK_REACH_TOLERANCE;
         let eye = [
             self.pose.position.x,
             self.pose.position.y + EYE_HEIGHT,
@@ -4427,7 +4430,21 @@ impl Player {
                 (eye - nearest).powi(2)
             })
             .sum();
-        squared <= BLOCK_REACH * BLOCK_REACH
+        squared < reach * reach
+    }
+
+    /// Where they stand and look from for a use of an entity, with their
+    /// `entityInteractionRange()`.
+    fn user(&self, sneaking: bool) -> uses::User {
+        uses::User {
+            feet: [
+                self.pose.position.x,
+                self.pose.position.y,
+                self.pose.position.z,
+            ],
+            sneaking,
+            reach: materials::entity_interaction_range(self.mode.current),
+        }
     }
 
     fn move_to(&mut self, position: Option<Vec3>, rotation: Option<(f32, f32)>, on_ground: bool) {
@@ -4517,6 +4534,7 @@ mod tests {
     mod farm;
     mod fliers;
     mod fluids;
+    mod game_modes;
     mod gateways_specification;
     mod golems;
     mod growth;

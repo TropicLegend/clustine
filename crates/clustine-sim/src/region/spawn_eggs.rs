@@ -15,7 +15,7 @@
 //! An egg used on a mob of its own type makes a baby of it (`region/animals.rs`).
 //!
 //! Named differences: a trial spawner is not set (trial spawners are inert); an egg in a dispenser is not used (`dispensers/behaviours.rs`); a renamed
-//! egg names nothing; a creative player keeps the egg, and every player is one.
+//! egg names nothing.
 
 use clustine_blocks::data::is_class;
 use clustine_data::blocks;
@@ -83,7 +83,12 @@ impl Region {
             return false;
         };
         if is_class(state, BlockClass::SpawnerBlock) {
-            return self.set_spawner_entity(pos, kind, player, output);
+            let set = self.set_spawner_entity(pos, kind, player, output);
+            if set && let Some(item) = click.held {
+                // `itemStack.consume(1, player)` (`materials.rs`).
+                self.consume_item(player, item, 1, output);
+            }
+            return set;
         }
         if is_class(state, BlockClass::TrialSpawnerBlock) {
             return false;
@@ -97,8 +102,14 @@ impl Region {
         if !crate::mobs::types::is_built(kind) {
             return false;
         }
-        self.spawn_mob(kind, player, spawn_at, true, deeper, output)
-            .is_some()
+        let made = self
+            .spawn_mob(kind, player, spawn_at, true, deeper, output)
+            .is_some();
+        if made && let Some(item) = click.held {
+            // `itemStack.consume(1, player)` (`materials.rs`).
+            self.consume_item(player, item, 1, output);
+        }
+        made
     }
 
     /// `SpawnEggItem.use` of the region's player `player`'s egg where they look: a
@@ -125,8 +136,14 @@ impl Region {
         if !liquid || !crate::mobs::types::is_built(kind) {
             return false;
         }
-        self.spawn_mob(kind, player, pos, false, false, output)
-            .is_some()
+        let made = self
+            .spawn_mob(kind, player, pos, false, false, output)
+            .is_some();
+        if made && let Some(item) = used.held {
+            // `itemStack.consume(1, player)` (`materials.rs`).
+            self.consume_item(player, item, 1, output);
+        }
+        made
     }
 
     /// `EntityType.spawn(level, stack, player, pos, SPAWN_ITEM_USE, offset, deeper)` of

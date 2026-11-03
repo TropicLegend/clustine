@@ -22,7 +22,7 @@
 //! explosion reads, is the water at its feet as its tick begins (**Inferred**).
 
 use clustine_blocks::data::{has_water, item_in_tag};
-use clustine_data::{entity_types, items, sounds};
+use clustine_data::{ItemComponents, entity_types, items, sounds};
 use clustine_world::{BlockPos, TypeState};
 use serde::{Deserialize, Serialize};
 
@@ -265,6 +265,13 @@ impl MobType for Creeper {
             but_the_player: true,
         });
         change(used.mob, |own| own.ignited = true);
+        // A fire charge is used up (`shrink(1)`, put back for a creative player by
+        // `Player.interactOn`), a flint and steel worn (`hurtAndBreak(1, player, hand)`).
+        if ItemComponents::of(held.item).max_damage.is_some() {
+            used.wear_held(1);
+        } else {
+            used.use_up_held();
+        }
         Interaction::Success
     }
 

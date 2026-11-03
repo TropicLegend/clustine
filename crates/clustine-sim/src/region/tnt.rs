@@ -310,9 +310,9 @@ impl Region {
 
     /// `TntBlock.useItemOn` of a click of `player`'s with a flint and steel or a fire
     /// charge on TNT: primed with the player as its owner, and the block set to air with
-    /// flags 11. A sneaking player with something in hand passes the block by. A
-    /// creative player's flint and steel takes no wear and their fire charge is not used
-    /// up. Whether it took the click.
+    /// flags 11. A sneaking player with something in hand passes the block by. The
+    /// flint and steel wears, the fire charge is used up, but a creative player's.
+    /// Whether it took the click.
     pub(crate) fn light_tnt(
         &mut self,
         click: &Click,
@@ -340,8 +340,25 @@ impl Region {
                 UPDATE_LIMIT,
                 output,
             );
+            // A flint and steel's `hurtAndBreak(1, player, hand)`, a fire charge's
+            // `consume(1, player)` (`materials.rs`).
+            self.fire_item_spent(click, player, output);
         }
         true
+    }
+
+    /// What lighting with the item of `click` costs `player`: a flint and steel worn by
+    /// one (`FlintAndSteelItem.useOn`'s `hurtAndBreak(1, player, hand)`), a fire charge
+    /// used up (`FireChargeItem.useOn`'s `shrink(1)`, put back for a creative player by
+    /// `ServerPlayerGameMode.useItemOn`).
+    fn fire_item_spent(&mut self, click: &Click, player: PlayerId, output: &mut TickOutput) {
+        match click.held {
+            Some(items::FLINT_AND_STEEL) => {
+                self.hurt_and_break_item(player, items::FLINT_AND_STEEL, 1, output);
+            }
+            Some(items::FIRE_CHARGE) => self.consume_item(player, items::FIRE_CHARGE, 1, output),
+            _ => {}
+        }
     }
 
     /// `FlintAndSteelItem.useOn` and `FireChargeItem.useOn` of a click of `player`'s on a
@@ -368,6 +385,7 @@ impl Region {
             self.fire_item_sound(click.position, flint, player, output);
             let flags = if flint { UPDATE_LIT } else { UPDATE_ALL };
             self.set_block_updated(click.position, lit, flags, UPDATE_LIMIT, output);
+            self.fire_item_spent(click, player, output);
             return true;
         }
         let target = click.face.neighbour(click.position);
@@ -390,6 +408,7 @@ impl Region {
         self.fire_item_sound(target, flint, player, output);
         let flags = if flint { UPDATE_LIT } else { UPDATE_ALL };
         self.set_block_updated(target, fire, flags, UPDATE_LIMIT, output);
+        self.fire_item_spent(click, player, output);
         true
     }
 

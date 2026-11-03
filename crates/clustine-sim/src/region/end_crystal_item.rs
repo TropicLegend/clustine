@@ -2,8 +2,8 @@
 //! E7 of `docs/groundwork/p-plan.md`, section 19.5 item 13): used on obsidian or bedrock
 //! whose block above is air and whose 1 × 2 × 1 box above holds no entity, it places a
 //! crystal at the bottom middle of that block, without its base, and in the End asks
-//! the fight to try its respawn. A creative player keeps the item
-//! (`ServerPlayerGameMode.useItemOn`), and every player is one.
+//! the fight to try its respawn. The item is used up (`placing.rs`), but a creative
+//! player's (`ServerPlayerGameMode.useItemOn`).
 //!
 //! Named difference: players of other regions are not known here, so one standing in
 //! the box across a line does not refuse the crystal (as for an armour stand,
