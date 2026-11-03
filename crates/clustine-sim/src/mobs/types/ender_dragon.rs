@@ -55,8 +55,13 @@
 //! - Its flight history keeps the 17 newest samples, all the server reads of 64.
 //! - Its flaps and growls are the client's: nothing of them is drawn on the server.
 //! - The arrow or wind charge a sitting phase takes nothing of is not set alight.
-//! - Its wings push only mobs of the region's own; an armour stand and a mob in a copy
-//!   are not pushed (a mob in a copy is hurt by its holder, as any `Local::Hurt`).
+//! - Its wings push only mobs and players of the region's own; an armour stand and a mob
+//!   in a copy are not pushed (a mob in a copy is hurt by its holder, as any
+//!   `Local::Hurt`). A player of another region is hurt by their holder
+//!   (`EntityUse::Hurt`), whether or not a mob hurt them in their last two ticks, and
+//!   not pushed. The players in its reach come after the mobs.
+//! - `EnchantmentHelper.doPostAttackEffects` after its wings' and head's hurt of a player
+//!   (Thorns of what the player wears) is not run.
 //! - An effect given to it is taken, where the game's `addEffect` refuses every one.
 //! - The sitting flame's cloud is found to be discarded by its owner and its making, not
 //!   by a reference to it.
@@ -113,6 +118,11 @@ pub(crate) const WALL_EVENT: i32 = 2008;
 /// Its health (`createAttributes`).
 pub(crate) const MAX_HEALTH: f32 = 200.0;
 
+/// A player's box, standing and crouching (`Player.STANDING_DIMENSIONS`, `POSES`).
+const PLAYER_WIDTH: f32 = 0.6;
+const PLAYER_HEIGHT: f32 = 1.8;
+const CROUCHING_HEIGHT: f32 = 1.5;
+
 /// `SITTING_ALLOWED_DAMAGE_PERCENTAGE`.
 const SITTING_ALLOWED: f32 = 0.25;
 
@@ -150,6 +160,18 @@ pub(crate) enum DragonLocal {
     BreathCloud { at: Vec3 },
     /// `end()` of the sitting flame: its cloud discarded.
     DiscardFlame,
+    /// Its wings or its head on the player whose stay is `player` (`knockBack`, `hurt`):
+    /// pushed by `push` where its wings reach them (`Entity.push`), then hurt by `amount`
+    /// of `mobAttack(dragon)` from the dragon at `from` where it hurts; where `fresh`, only
+    /// if no mob hurt them in their last two ticks (`getLastHurtByMobTimestamp() <
+    /// tickCount − 2`), which the region holding them judges.
+    PlayerHit {
+        player: EntityId,
+        from: Vec3,
+        push: Option<Vec3>,
+        amount: Option<f32>,
+        fresh: bool,
+    },
 }
 
 /// The samples of its flight's history the server reads, the newest first: each its
@@ -737,7 +759,41 @@ impl Step<'_, '_> {
                 locals.push(self.hurt_local(entity.key, 5.0));
             }
         }
+        let from = self.position();
+        for player in self.players_in(&reach) {
+            let dx = player.position[0] - middle[0];
+            let dz = player.position[2] - middle[1];
+            let d = (dx * dx + dz * dz).max(0.1);
+            locals.push(Local::Dragon(Box::new(DragonLocal::PlayerHit {
+                player: player.key,
+                from,
+                push: Some([dx / d * 4.0, 0.200_000_002_980_232_24, dz / d * 4.0]),
+                amount: (!sitting).then_some(5.0),
+                fresh: true,
+            })));
+        }
         self.tick.out.local.extend(locals);
+    }
+
+    /// The players whose boxes meet `reach` that the dragon's lists take in
+    /// (`EntitySelector.NO_CREATIVE_OR_SPECTATOR`): alive, neither creative nor
+    /// spectators, in the order the region reads them, after the mobs (named: the game's
+    /// one list mixes them by their sections).
+    fn players_in(&self, reach: &Aabb) -> Vec<SeenPlayer> {
+        self.tick
+            .world
+            .players()
+            .into_iter()
+            .filter(|player| !player.creative && !player.spectator && player.alive)
+            .filter(|player| {
+                let height = if player.sneaking {
+                    CROUCHING_HEIGHT
+                } else {
+                    PLAYER_HEIGHT
+                };
+                Aabb::of_entity(player.position, PLAYER_WIDTH, height).intersects(*reach)
+            })
+            .collect()
     }
 
     /// `hurt(level, entities)` (1534–1570): every living thing in `reach` but the dragon
@@ -755,6 +811,19 @@ impl Step<'_, '_> {
         for key in keys {
             let local = self.hurt_local(key, 10.0);
             self.tick.out.local.push(local);
+        }
+        let from = self.position();
+        for player in self.players_in(&reach) {
+            self.tick
+                .out
+                .local
+                .push(Local::Dragon(Box::new(DragonLocal::PlayerHit {
+                    player: player.key,
+                    from,
+                    push: None,
+                    amount: Some(10.0),
+                    fresh: false,
+                })));
         }
     }
 

@@ -11,12 +11,14 @@
 //! game sets a fire countdown no client shows, and marks it hurt, which only syncs its
 //! motion): left out.
 //!
-//! Named differences: an anvil's fall hurts no entity (the damage of living things is
-//! not ported), though it chips the anvil as the game's does, with a draw from the
-//! entity's stream; a stalactite's fall hurts no entity either. The game keeps a block
+//! An anvil's fall and a stalactite tip's hurt the players they land on (V4), and an
+//! anvil's chips it as the game's does, with a draw from the entity's stream.
+//!
+//! Named differences: the mobs they land on are not hurt. The game keeps a block
 //! entity's data with a falling block summoned with it (`TileEntityData`), which no
 //! block that falls by a rule has; Clustine keeps none. Whether a falling block hurts
-//! entities is not kept: an anvil does, as the game's `falling` sets it, and nothing
+//! entities, and by how much, is not kept: an anvil and a stalactite's tip do, as the
+//! game's `falling` and `spawnFallingStalactite` set it (`Hurting`), and nothing
 //! else chips. Where the region cannot keep the entity (its chunk is full or no key is
 //! left), the block does not fall and stays where it is; where its chunk fills up while
 //! the block gives way, it is lost.
@@ -46,6 +48,41 @@ const ANVIL_DESTROYED: i32 = 1029;
 const DRIPSTONE_LANDED: i32 = 1045;
 /// `SulfurSpikeBlock.getStalactiteLandingSound`.
 const SULFUR_SPIKE_LANDED: i32 = 1052;
+
+/// A falling block that hurts what it lands on (`FallingBlockEntity.setHurtsEntities`):
+/// how much a block of its fall and at most, and the damage type of its block's
+/// `Fallable.getFallDamageSource`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Hurting {
+    per_distance: f32,
+    most: i32,
+    damage_type: &'static str,
+}
+
+impl Hurting {
+    /// Whether a falling block of `state` hurts, as the block that made it fall set it:
+    /// an anvil (`AnvilBlock.falling`: 2 a block, at most 40, `falling_anvil`), and the
+    /// tip of a stalactite (`spawnFallingStalactite`: `max(1 + its top − the tip, 6)` a
+    /// block, at most 40, `falling_stalactite`). **Named**: what a falling block hurts
+    /// by is not kept with it, so a tip hurts 6 a block whatever the length of the
+    /// stalactite it fell from, where the game's of more than six blocks hurts by its
+    /// length; and a sulfur spike's tip is taken as dripstone's (`falling_stalactite`).
+    fn of(state: BlockState) -> Option<Self> {
+        if in_tag(state, "minecraft:anvil") {
+            return Some(Self {
+                per_distance: 2.0,
+                most: 40,
+                damage_type: "minecraft:falling_anvil",
+            });
+        }
+        let tip = matches!(state.property("thickness"), Some("tip" | "tip_merge"));
+        (is_stalactite(state) && tip).then_some(Self {
+            per_distance: 6.0,
+            most: 40,
+            damage_type: "minecraft:falling_stalactite",
+        })
+    }
+}
 
 /// `FallingBlock.isFree`: what a block falls into.
 pub(crate) fn is_free(state: BlockState) -> bool {
@@ -399,11 +436,12 @@ impl Region {
         body.apply_gravity();
         let motion = body.motion;
         move_guarded(&mut body, &view, false, motion);
-        // An anvil's fall chips it (`causeFallDamage`, from `Block.fallOn` of what it
-        // lands on).
+        // `causeFallDamage`, from `Block.fallOn` of what it lands on: a block that hurts
+        // hurts the players in its box, and an anvil's fall chips it.
         let mut drawn = 0;
+        let mut hurts = None;
         if let Some((fallen, on)) = body.fell_on
-            && in_tag(block_state, "minecraft:anvil")
+            && let Some(hurting) = Hurting::of(block_state)
         {
             let under = view.state(on);
             let fallen = if is_class(under, BlockClass::PowderSnowBlock) {
@@ -418,8 +456,12 @@ impl Region {
             };
             if let Some(fallen) = fallen {
                 let ticks = (fallen - 1.0).ceil() as i32;
-                let damage = ((ticks as f32 * 2.0).floor() as i32).min(40);
-                if ticks >= 0 && damage > 0 {
+                let damage =
+                    ((ticks as f32 * hurting.per_distance).floor() as i32).min(hurting.most) as f32;
+                if ticks >= 0 {
+                    hurts = Some((hurting.damage_type, damage));
+                }
+                if ticks >= 0 && damage > 0.0 && in_tag(block_state, "minecraft:anvil") {
                     let mut random = self.entity_stream(key).random;
                     drawn += 1;
                     if random.next_float() < 0.05 + ticks as f32 * 0.05 {
@@ -432,6 +474,9 @@ impl Region {
             }
         }
         self.entity_drew(key, drawn);
+        if let Some((damage_type, damage)) = hurts {
+            self.falling_block_hurts(&entity, body.bounds(), damage_type, damage, output);
+        }
         // `applyEffectsFromBlocks`.
         let movements = tick_movements(&mut body);
         self.falling_effects(key, &mut body, &movements, position, output);
@@ -619,6 +664,75 @@ impl Region {
         End::Falls
     }
 
+    /// `causeFallDamage`'s hurt (n6 FallingBlockEntity.txt @24-126): every player whose
+    /// box meets the falling block's `bounds`, alive and neither creative nor a spectator
+    /// (`NO_CREATIVE_OR_SPECTATOR`, `LIVING_ENTITY_STILL_ALIVE`), hurt by `damage` of
+    /// `damage_type`, dealt and caused by the falling block `entity` (a helmet takes a
+    /// quarter of it off: the hurt's own rule, `damages_helmet`). The region's own are
+    /// hurt here, another region's by their holder (`EntityUse::Hurt`). **Named**: the
+    /// mobs under it are not hurt.
+    fn falling_block_hurts(
+        &mut self,
+        entity: &Entity,
+        bounds: Aabb,
+        damage_type: &str,
+        damage: f32,
+        output: &mut TickOutput,
+    ) {
+        use super::projectiles::TargetKind;
+        let block = clustine_world::Causer {
+            key: entity.key,
+            kind: entity.kind,
+            position: bounds_feet(bounds).map(clustine_world::Double),
+            player: None,
+            living: false,
+            name: None,
+        };
+        let hurt = clustine_world::HurtBy {
+            damage_type: damage_type.to_owned(),
+            cause: Some(block.clone()),
+            direct: Some(block),
+            position: None,
+            projectile_motion: None,
+            amount: clustine_world::Float(damage),
+            knockback: None,
+            fire_before: 0,
+            fire_after: 0,
+            effects: Vec::new(),
+            arrow: false,
+            extras: Vec::new(),
+            sound: None,
+            hit: None,
+            weapon: None,
+        };
+        let creative = clustine_world::GameMode::Creative;
+        let spectator = clustine_world::GameMode::Spectator;
+        for target in self.targets(&bounds, entity.key) {
+            let hit = match target.kind {
+                TargetKind::Player => self
+                    .player_with_entity(target.key)
+                    .and_then(|id| self.players.get(&id))
+                    .is_some_and(|player| {
+                        let mode = player.mode.current;
+                        !player.dead && mode != creative && mode != spectator
+                    }),
+                TargetKind::Face => self
+                    .faces
+                    .kept
+                    .values()
+                    .find(|kept| kept.entity == target.key)
+                    .is_some_and(|kept| {
+                        let mode = kept.face.game_mode;
+                        kept.face.alive && mode != creative.id() && mode != spectator.id()
+                    }),
+                TargetKind::Here | TargetKind::Copy => false,
+            };
+            if hit {
+                self.strike(target.key, Box::new(hurt.clone()), output);
+            }
+        }
+    }
+
     /// `Fallable.onLand`: concrete powder hardens where water is, an anvil clangs.
     fn on_land(
         &mut self,
@@ -759,6 +873,15 @@ impl Region {
             output.events.push(RegionEvent::EntityTracked(report));
         }
     }
+}
+
+/// The feet of an entity whose box is `bounds`: the middle of its bottom.
+fn bounds_feet(bounds: Aabb) -> [f64; 3] {
+    [
+        (bounds.min[0] + bounds.max[0]) / 2.0,
+        bounds.min[1],
+        (bounds.min[2] + bounds.max[2]) / 2.0,
+    ]
 }
 
 /// `SpeleothemBlock.isStalactite`: a speleothem pointing down.

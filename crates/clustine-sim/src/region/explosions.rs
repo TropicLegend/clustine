@@ -16,9 +16,10 @@
 //! Across a line (decision 10): a block the rays reach in a chunk the region reads only
 //! in a copy is an [`Effected::Exploded`] effect to its holder, which breaks it, spills
 //! and primes there, and lays its drops apart from this side's (named); an entity in a
-//! copy that the explosion hits is an [`EntityUse::Blasted`] effect on it. Players of
-//! another region are not in copies and are not pushed (named). The edges send the
-//! explosion's packet to every player within 64 blocks, of whatever region.
+//! copy that the explosion hits is an [`EntityUse::Blasted`] effect on it. A player of
+//! another region the region sees (their face) is hurt by their holder
+//! ([`EntityUse::Hurt`]), and pushed by the packet. The edges send the explosion's
+//! packet to every player within 64 blocks, of whatever region, with their push.
 //!
 //! Named differences: the game event `explode` waits for step N6f; ores give no
 //! experience, as when a rule breaks them (`drops.rs`), and an infested block's
@@ -44,8 +45,8 @@ use clustine_blocks::data::{in_tag, is_class};
 use clustine_blocks::loot::{Broken, LootDraws, block_drops_as};
 use clustine_data::{BlockClass, BlockState, EntityTypeInfo, ItemComponents, blocks};
 use clustine_world::{
-    Blast, BlockPos, ChunkPos, Double, Effect, Effected, Entity, EntityData, EntityField, EntityId,
-    EntityUse, Float, ItemStack,
+    Blast, BlockPos, Causer, ChunkPos, Double, Effect, Effected, Entity, EntityData, EntityField,
+    EntityId, EntityUse, Float, GameMode, HurtBy, ItemStack, PlayerId,
 };
 use uuid::Uuid;
 
@@ -56,7 +57,7 @@ use super::random_ticks::Random;
 use super::stands::{INVISIBLE, MARKER, stand_size};
 use super::updates::{RegionView, UPDATE_ALL, UPDATE_LIMIT};
 use super::uses::block_in;
-use crate::api::{ExplosionKind, RegionEvent, TickOutput, Tracked};
+use crate::api::{ExplosionKind, PlayerEvent, RegionEvent, TickOutput, Tracked};
 use crate::physics::aabb::{Aabb, lerp};
 use crate::physics::body::clips_shape;
 use crate::physics::collide::{Context, collision_shape};
@@ -78,6 +79,20 @@ const WORLD_BORDER: i32 = 30_000_000;
 const PLAYER_EYES: f64 = 1.62;
 const PLAYER_WIDTH: f32 = 0.6;
 const PLAYER_HEIGHT: f32 = 1.8;
+/// A crouching player's height, as a face tells it.
+const CROUCHING_HEIGHT: f32 = 1.5;
+
+/// How the blocks between an explosion and a point of a player are seen: as by a player
+/// standing at `feet`.
+fn player_context(feet: [f64; 3]) -> Context {
+    Context {
+        stands_on_lava: false,
+        bottom: feet[1],
+        fall_distance: 0.0,
+        falling_block: false,
+        noclip: None,
+    }
+}
 
 /// One explosion, as `ServerLevel.explode` makes it: its source entity, its centre and
 /// radius, whom its damage source names, and what its calculator answers.
@@ -106,7 +121,8 @@ pub(crate) struct Explosion {
     pub(crate) source_in_water: bool,
     /// Whether it sets fire (`createFire`): a bed's and an anchor's.
     pub(crate) fire: bool,
-    /// Whether it hurts entities: a bed's and an anchor's hurt nobody until survival.
+    /// Whether it hurts entities (`shouldDamageEntity` of its calculator): every
+    /// explosion's here, a bed's and an anchor's too.
     pub(crate) hurts: bool,
     /// One block whose resistance the explosion's calculator takes otherwise: the
     /// anchor's own, with water beside it (`RespawnAnchorBlock$1`).
@@ -143,10 +159,9 @@ pub(super) struct Hit {
     pub(super) push: [f64; 3],
 }
 
-/// Whether the owner `owner` is a creative player, as a vehicle and a hanging thing ask
-/// (`DamageSource.isCreativePlayer`): an owner is only ever a player, and every player's
-/// blast breaks them as a creative player's does until survival's breaking of entities
-/// (V2, `materials.rs`), when the owner's mode is to be asked where they are.
+/// Whether the owner `owner` is a creative player, as `attached.rs` and `thrown.rs` ask
+/// it of a hanging thing's breaker: every owner is taken as creative there. An
+/// explosion reads the owner's real mode ([`Region::owner_creative`]).
 pub(crate) fn owner_is_creative(owner: Option<Uuid>) -> bool {
     owner.is_some()
 }
@@ -222,8 +237,8 @@ impl Region {
     /// d RespawnAnchorBlock.txt 215–270): `Level.explode` with no entity, power 5, fire,
     /// and `ExplosionInteraction.BLOCK`, whose drops decay (`block_explosion_drop_decay`
     /// is on: d ServerLevel.txt 2566–2620), centred on `centre`, with the anchor's water
-    /// rule as `resistance_at`. Its damage source, `bad_respawn_point`, hurts nobody until
-    /// survival (the owner's answer, `docs/groundwork/p-plan.md`, section 17.6). Its key
+    /// rule as `resistance_at`. Its damage source is `bad_respawn_point` from the centre
+    /// (`DamageSources.badRespawnPointExplosion`), which hurts (V4). Its key
     /// is drawn from the region's entity ids; where none is left, nothing explodes
     /// (named).
     pub(super) fn bad_respawn_point_explosion(
@@ -245,7 +260,7 @@ impl Region {
             rails_pass: false,
             source_in_water: false,
             fire: true,
-            hurts: false,
+            hurts: true,
             resistance_at,
         };
         // The game draws from the level's random; the new key's own stream stands for
@@ -272,8 +287,8 @@ impl Region {
             context,
         );
         let positions = self.exploded_positions(explosion, random);
-        // An explosion that hurts nobody (a bed's, an anchor's, until survival) neither
-        // hurts nor pushes an entity or a player.
+        // An explosion that hurts nobody (none now, a blast across a line that says so)
+        // neither hurts nor pushes an entity or a player.
         let knockback = if explosion.hurts {
             self.hurt_entities(explosion, entity, output)
         } else {
@@ -313,7 +328,7 @@ impl Region {
             decay: explosion.decay,
             direct,
             owner: explosion.owner,
-            owner_creative: owner_is_creative(explosion.owner),
+            owner_creative: self.owner_creative(explosion.owner),
         }
     }
 
@@ -451,9 +466,9 @@ impl Region {
 
     /// `hurtEntities()`: every entity in the box of twice the radius and a block about
     /// the centre, within twice the radius of its feet, is hurt by its kind's rule and
-    /// pushed away from the centre by how near it is and how much of it is seen; the
-    /// region's players, whom nothing hurts, are pushed where they do not fly. What it
-    /// returns is each player's push, for the packet.
+    /// pushed away from the centre by how near it is and how much of it is seen; then
+    /// the players ([`Region::blast_players`]). What it returns is each player's push,
+    /// for the packet.
     fn hurt_entities(
         &mut self,
         explosion: &Explosion,
@@ -513,43 +528,72 @@ impl Region {
                 }
                 continue;
             }
-            self.blasted(explosion, &record, hit, output);
+            let creative = self.owner_creative(explosion.owner);
+            self.blasted(explosion, &record, hit, (creative, entity), output);
         }
-        self.player_pushes(explosion.centre, reach, &bounds)
+        let hurt = self.explosion_hurt(explosion, entity);
+        self.blast_players(
+            explosion.centre,
+            explosion.radius,
+            &bounds,
+            Some(&hurt),
+            output,
+        )
     }
 
-    /// The push of each of the region's players within `reach` of `centre` and in
-    /// `bounds` (`hurtEntities`' hit players): away from the centre by how near they are
-    /// and how much of them is seen, none for a player who flies. A creative player is
-    /// invulnerable, and pushed unless they fly; the push reaches them only in the
-    /// packet, as the client moves the player. Their `explosion_knockback_resistance`
-    /// (Blast Protection's, `worn.rs`) takes its part off the push (`hurtEntities`
-    /// @361-407).
-    pub(super) fn player_pushes(
-        &self,
+    /// `hurtEntities`' players (n6 ServerExplosion.txt `hurtEntities` @154-528), whose
+    /// boxes meet `bounds` and whose feet are within twice `radius` of `centre`: the
+    /// region's own and, after them, the faces of other regions' players it sees, but
+    /// spectators (`getEntities` leaves them out). Each is hurt by `hurt` where the
+    /// explosion hurts (`shouldDamageEntity`), by `getEntityDamageAmount` of how near
+    /// they are and how much of them is seen; then pushed away from the centre towards
+    /// their eyes by how near they are, how much is seen and the calculator's multiplier
+    /// (a wind burst's is 0 for a player who flies,
+    /// `SimpleExplosionDamageCalculator.getKnockbackMultiplier`), less their
+    /// `explosion_knockback_resistance` (Blast Protection's, `worn.rs`): `pushFromExplosion`
+    /// adds it to the motion the server keeps for them. What it returns is each push
+    /// for the explosion's packet (`hitPlayers`), but a creative player's who flies
+    /// (@466-521): the client moves the player by it.
+    ///
+    /// The hurt comes before the push, so the motion its `markHurt` tells the client
+    /// (`PlayerEvent::Knocked`, which the game sends at the end of the tick, after the
+    /// explosion's packet, as the edges are told here) is the motion with the push in it.
+    ///
+    /// Named: a player of another region is hurt by their holder (`EntityUse::Hurt`) and
+    /// pushed only by the packet: their holder's motion has none of the push, so their
+    /// hurt's `markHurt` (a tick later) sets their client's motion to one without it;
+    /// and their push takes no Blast Protection off. A player's eyes are a standing
+    /// player's, crouching or swimming. `onExplosionHit`'s impulse
+    /// (`ServerPlayer.onExplosionHit`: the explosion's cause and place, a wind charge's
+    /// fall forgiven) is not kept: there are no wind charges.
+    pub(super) fn blast_players(
+        &mut self,
         centre: [f64; 3],
-        reach: f64,
+        radius: f32,
         bounds: &Aabb,
+        hurt: Option<&HurtBy>,
+        output: &mut TickOutput,
     ) -> Vec<(EntityId, [f64; 3])> {
-        let players: Vec<(EntityId, [f64; 3], bool, f64)> = self
+        let reach = f64::from(radius * 2.0);
+        let players: Vec<(PlayerId, EntityId, [f64; 3], bool, GameMode)> = self
             .players
             .iter()
             .map(|(id, player)| {
                 let at = player.pose.position;
-                let resistance = self.player_attribute(
-                    *id,
-                    clustine_data::attributes::EXPLOSION_KNOCKBACK_RESISTANCE,
-                );
                 (
+                    *id,
                     player.entity_id,
                     [at.x, at.y, at.z],
                     player.flying,
-                    resistance,
+                    player.mode.current,
                 )
             })
             .collect();
         let mut knockback = Vec::new();
-        for (entity, feet, flying, resistance) in players {
+        for (id, entity, feet, flying, mode) in players {
+            if mode == GameMode::Spectator {
+                continue;
+            }
             let shape = Aabb::of_entity(feet, PLAYER_WIDTH, PLAYER_HEIGHT);
             if !shape.intersects(*bounds) {
                 continue;
@@ -561,21 +605,219 @@ impl Region {
             }
             let eyes = [feet[0], feet[1] + PLAYER_EYES, feet[2]];
             let towards = physics::normalize(physics::sub(eyes, centre));
-            let context = Context {
-                stands_on_lava: false,
-                bottom: feet[1],
-                fall_distance: 0.0,
-                falling_block: false,
-                noclip: None,
+            let multiplier = if hurt.is_none() && flying { 0.0 } else { 1.0 };
+            let seen = if hurt.is_some() || multiplier != 0.0 {
+                self.seen_percent(centre, shape, player_context(feet))
+            } else {
+                0.0
             };
-            let seen = self.seen_percent(centre, shape, context);
-            if !flying {
-                let push =
-                    physics::scale(towards, (1.0 - d) * f64::from(seen) * (1.0 - resistance));
+            let told = output.player_events.len();
+            if let Some(hurt) = hurt {
+                let hurt = HurtBy {
+                    amount: Float(damage_amount(radius, distance, seen)),
+                    ..hurt.clone()
+                };
+                self.player_took_hurt(id, &hurt, output);
+            }
+            let resistance = self.player_attribute(
+                id,
+                clustine_data::attributes::EXPLOSION_KNOCKBACK_RESISTANCE,
+            );
+            let push = physics::scale(
+                towards,
+                (1.0 - d) * f64::from(seen) * multiplier * (1.0 - resistance),
+            );
+            if push.iter().all(|component| component.is_finite())
+                && let Some(player) = self.players.get_mut(&id)
+            {
+                player.vitals.motion = physics::add(player.vitals.motion, push);
+                let motion = player.vitals.motion;
+                self.journal.players.insert(id);
+                for (to, event) in &mut output.player_events[told..] {
+                    if let PlayerEvent::Knocked { motion: knocked } = event
+                        && *to == id
+                    {
+                        *knocked = motion;
+                    }
+                }
+            }
+            if !(mode == GameMode::Creative && flying) {
                 knockback.push((entity, push));
             }
         }
+        let holds = |chunk| self.land.holds(chunk) || self.copies.contains_key(&chunk);
+        let faces: Vec<(PlayerId, EntityId, [f64; 3], f32, f32)> = self
+            .faces
+            .seen(holds)
+            .filter(|(id, kept)| {
+                !self.players.contains_key(id)
+                    && kept.face.alive
+                    && kept.face.game_mode != GameMode::Spectator.id()
+            })
+            .map(|(id, kept)| {
+                let height = if kept.face.sneaking {
+                    CROUCHING_HEIGHT
+                } else {
+                    PLAYER_HEIGHT
+                };
+                (
+                    *id,
+                    kept.entity,
+                    kept.face.position,
+                    height,
+                    kept.face.eye_height,
+                )
+            })
+            .collect();
+        for (id, entity, feet, height, eye_height) in faces {
+            let shape = Aabb::of_entity(feet, PLAYER_WIDTH, height);
+            if !shape.intersects(*bounds) {
+                continue;
+            }
+            let distance = physics::distance_sqr(feet, centre).sqrt();
+            let d = distance / reach;
+            if d > 1.0 {
+                continue;
+            }
+            let eyes = [feet[0], feet[1] + f64::from(eye_height), feet[2]];
+            let towards = physics::normalize(physics::sub(eyes, centre));
+            let seen = self.seen_percent(centre, shape, player_context(feet));
+            if let Some(hurt) = hurt {
+                let hurt = HurtBy {
+                    amount: Float(damage_amount(radius, distance, seen)),
+                    ..hurt.clone()
+                };
+                let at = physics::containing(feet);
+                self.send_on_player(id, entity, at, EntityUse::Hurt(Box::new(hurt)));
+            }
+            let push = physics::scale(towards, (1.0 - d) * f64::from(seen));
+            knockback.push((entity, push));
+        }
         knockback
+    }
+
+    /// Whether the owner `owner` is a creative player (`DamageSource.isCreativePlayer`),
+    /// as a vehicle and a hanging thing ask: an owner is only ever a player, found among
+    /// the region's own, the faces it keeps, or the world's players; one found nowhere
+    /// is no player of the level (`PrimedTnt.getOwner` finds nobody).
+    pub(crate) fn owner_creative(&self, owner: Option<Uuid>) -> bool {
+        let Some(owner) = owner.map(PlayerId) else {
+            return false;
+        };
+        if let Some(player) = self.players.get(&owner) {
+            return player.mode.current == GameMode::Creative;
+        }
+        let creative = GameMode::Creative.id();
+        if let Some(kept) = self.faces.kept.get(&owner) {
+            return kept.face.game_mode == creative;
+        }
+        self.faces
+            .world
+            .iter()
+            .flatten()
+            .find(|player| player.player == owner)
+            .is_some_and(|player| player.game_mode == creative)
+    }
+
+    /// The player `owner` as a hurt names its cause, where the region finds them: among
+    /// its own (with their name), the faces it keeps, or the world's players.
+    fn player_causer(&self, owner: Uuid) -> Option<Causer> {
+        let id = PlayerId(owner);
+        let causer = |key, position: [f64; 3], name| Causer {
+            key,
+            kind: super::mob_bodies::player_kind(),
+            position: position.map(Double),
+            player: Some(owner),
+            living: true,
+            name,
+        };
+        if let Some(player) = self.players.get(&id) {
+            let at = player.pose.position;
+            return Some(causer(
+                player.entity_id,
+                [at.x, at.y, at.z],
+                Some(player.name.clone()),
+            ));
+        }
+        if let Some(kept) = self.faces.kept.get(&id) {
+            return Some(causer(kept.entity, kept.face.position, None));
+        }
+        self.faces
+            .world
+            .iter()
+            .flatten()
+            .find(|player| player.player == id)
+            .map(|player| causer(player.entity, player.position, None))
+    }
+
+    /// The hurt the explosion deals a player (of no amount yet), as it crosses a line:
+    /// `Explosion.getDefaultDamageSource`, `DamageSources.explosion(direct, indirect)`
+    /// (n6 DamageSources.txt `explosion` @0-23): `player_explosion` where it has a cause
+    /// (`getIndirectSourceEntity`: primed TNT's owner, a mob that explodes itself), else
+    /// `explosion`, dealt by the entity that exploded; a bed's and an anchor's
+    /// `badRespawnPointExplosion(centre)` of no entity, from the centre.
+    ///
+    /// Named: primed TNT is gone before it explodes, and is named as being where the
+    /// explosion is; a TNT cart's cause is whoever lit it, where the game's is the hurt
+    /// that set it off; a mob's custom name is not given for the death message.
+    pub(super) fn explosion_hurt(&self, explosion: &Explosion, entity: bool) -> HurtBy {
+        let (damage_type, cause, direct, position) = if entity {
+            let (kind, position, living) = match self.find_entity(explosion.source) {
+                Some((_, record)) => (
+                    record.kind,
+                    record.position,
+                    matches!(record.data, EntityData::Mob { .. }),
+                ),
+                None => (
+                    u16::try_from(clustine_data::entity_types::TNT)
+                        .expect("entity type ids fit 16 bits"),
+                    explosion.centre,
+                    false,
+                ),
+            };
+            let direct = Causer {
+                key: explosion.source,
+                kind,
+                position: position.map(Double),
+                player: None,
+                living,
+                name: None,
+            };
+            let cause = match explosion.owner {
+                Some(owner) => self.player_causer(owner),
+                None => living.then(|| direct.clone()),
+            };
+            let damage_type = if cause.is_some() {
+                "minecraft:player_explosion"
+            } else {
+                "minecraft:explosion"
+            };
+            (damage_type, cause, Some(direct), None)
+        } else {
+            (
+                "minecraft:bad_respawn_point",
+                None,
+                None,
+                Some(explosion.centre.map(Double)),
+            )
+        };
+        HurtBy {
+            damage_type: damage_type.to_owned(),
+            cause,
+            direct,
+            position,
+            projectile_motion: None,
+            amount: Float(0.0),
+            knockback: None,
+            fire_before: 0,
+            fire_after: 0,
+            effects: Vec::new(),
+            arrow: false,
+            extras: Vec::new(),
+            sound: None,
+            hit: None,
+            weapon: None,
+        }
     }
 
     /// `ignoreExplosion(explosion)` of the entity `record`: an invisible armour stand,
@@ -673,15 +915,23 @@ impl Region {
 
     /// The hit of the explosion on the entity `record` of the region's own chunks: its
     /// kind's `hurtServer`, then the push added to its motion where it is still there.
+    /// `creative` is whether its owner is a creative player, and `entity` whether an
+    /// entity exploded (else it is a bed's or an anchor's).
     fn blasted(
         &mut self,
         explosion: &Explosion,
         record: &Entity,
         hit: Hit,
+        (creative, entity): (bool, bool),
         output: &mut TickOutput,
     ) {
         let key = record.key;
-        let creative = owner_is_creative(explosion.owner);
+        // Its damage source's entity, the player who primed the TNT, as a block-attached
+        // entity's drop asks (`dropItem(level, breaker)`), in their real mode.
+        let breaker = match explosion.owner {
+            Some(_) => Breaker::Player { creative },
+            None => Breaker::Nothing,
+        };
         let mut flags = 0;
         match record.data {
             EntityData::Item { ref stack, .. } => {
@@ -715,7 +965,9 @@ impl Region {
             // `LivingEntity.hurtServer` of the explosion's source (`mob_bodies.rs`),
             // which pushes nothing of itself (`#no_knockback`).
             EntityData::Mob { .. } => {
-                let kind = if explosion.owner.is_some() {
+                let kind = if !entity {
+                    crate::mobs::body::hurt::DamageType("minecraft:bad_respawn_point")
+                } else if explosion.owner.is_some() {
                     crate::mobs::body::hurt::DamageType("minecraft:player_explosion")
                 } else {
                     crate::mobs::body::hurt::DamageType("minecraft:explosion")
@@ -745,13 +997,13 @@ impl Region {
                 // `ItemFrame.hurtServer`: a fixed frame only to a creative player, and
                 // an explosion takes the frame with its item, not the item alone.
                 if !fixed || creative {
-                    self.hurt_attached(key, Breaker::of_owner(explosion.owner), output);
+                    self.hurt_attached(key, breaker, output);
                 }
             }
             EntityData::Painting { .. }
             | EntityData::Cushion { .. }
             | EntityData::LeashKnot { .. } => {
-                self.hurt_attached(key, Breaker::of_owner(explosion.owner), output);
+                self.hurt_attached(key, breaker, output);
             }
         }
         self.push_from_explosion(key, hit.push, flags, output);
@@ -1101,7 +1353,13 @@ impl Region {
             damage: damage.0,
             push: push.map(|component| component.0),
         };
-        self.blasted(&explosion, &record, hit, output);
+        self.blasted(
+            &explosion,
+            &record,
+            hit,
+            (blast.owner_creative, blast.direct),
+            output,
+        );
     }
 }
 

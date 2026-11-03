@@ -10,9 +10,9 @@
 //! nothing; to another it ends the old (`end`), and begins the new (`begin`).
 //!
 //! The players a phase looks for are found by `TargetingConditions.forCombat()`, which
-//! no creative or spectator player passes (`Player.canBeSeenAsEnemy`): with every player
-//! creative the dragon never strafes or charges a player, and lands with no player in
-//! mind (`docs/groundwork/p-plan.md`, section 19.5 item 14).
+//! no creative or spectator player passes (`Player.canBeSeenAsEnemy`): the dragon
+//! strafes and charges survival and adventure players, and with only creative ones about
+//! lands with no player in mind (`docs/groundwork/p-plan.md`, section 19.5 item 14).
 
 use clustine_world::EntityId;
 use serde::{Deserialize, Serialize};

@@ -18,13 +18,14 @@
 //!
 //! Clients are sent the explosion's packet as any explosion's, of the wind's kind
 //! ([`ExplosionKind::Wind`]: the gust emitters, `breeze_wind_charge_burst`, no particles
-//! over the blocks), with each of the region's players' push as a TNT's
-//! (`explosions.rs`): the wind charge's calculator pushes them by 1, and a player who
-//! flies not at all (`SimpleExplosionDamageCalculator.getKnockbackMultiplier`).
+//! over the blocks), with each player's push as a TNT's (`explosions.rs`,
+//! `blast_players`, which adds it to the motion the server keeps for the region's own):
+//! the wind charge's calculator pushes them by 1, and a player who flies not at all
+//! (`SimpleExplosionDamageCalculator.getKnockbackMultiplier`). A player of another
+//! region is pushed by the packet alone.
 //!
-//! Named differences: a block, an entity or a player in another region's land is not
-//! reached (an explosion's effects across a line break and hurt, which this burst must
-//! not do). A beehive's bees are not angered (`BeehiveBlock.onExplosionHit`), as
+//! Named differences: a block or an entity in another region's land is not reached (an
+//! explosion's effects across a line break and hurt, which this burst must not do). A beehive's bees are not angered (`BeehiveBlock.onExplosionHit`), as
 //! Clustine's bees take no anger from a hive.
 
 use std::collections::BTreeSet;
@@ -164,7 +165,7 @@ impl Region {
     /// within twice the radius of its feet, but `source`, is pushed away from the centre
     /// by how near it is and how much of it the burst sees, less what of it resists an
     /// explosion's push (`explosion_knockback_resistance`). Only the region's own
-    /// entities. What it returns is each of the region's players' push, for the packet.
+    /// entities. What it returns is each player's push, for the packet.
     fn burst_push(
         &mut self,
         source: EntityId,
@@ -229,7 +230,7 @@ impl Region {
             let push = physics::scale(hit.push, 1.0 - resists);
             self.push_from_explosion(record.key, push, 0, output);
         }
-        self.player_pushes(at, reach, &bounds)
+        self.blast_players(at, radius, &bounds, None, output)
     }
 
     /// `interactWithBlocks(positions)` of a burst that triggers: the positions shuffled

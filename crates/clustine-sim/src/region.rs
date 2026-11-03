@@ -4741,6 +4741,7 @@ mod tests {
     mod piglins_e5;
     mod pigs;
     mod pistons;
+    mod player_blasts;
     mod player_effects;
     mod player_projectiles;
     mod player_sources;

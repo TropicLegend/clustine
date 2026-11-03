@@ -8,7 +8,7 @@
 use clustine_data::entity_types;
 use clustine_world::components::{EffectInstance, PotionContents};
 use clustine_world::projectiles::Cloud;
-use clustine_world::{BlockPos, Entity, EntityData, EntityId, EntityUse, Float};
+use clustine_world::{BlockPos, Double, Entity, EntityData, EntityId, EntityUse, Float, HurtBy};
 use uuid::Uuid;
 
 use super::Region;
@@ -17,6 +17,10 @@ use crate::mobs::body::held_effects;
 use crate::mobs::body::hurt::{self, Causer, DamageSource, DamageType};
 use crate::mobs::types::ender_dragon::{self, DRAGON, DragonLocal, parts};
 use crate::physics::aabb::Aabb;
+
+/// How long a mob that hurt a player is remembered (`LivingEntity.setLastHurtByMob`'s 100
+/// ticks), from which when it hurt them is told.
+const BLAME_TICKS: i64 = 100;
 
 /// `AreaEffectCloud`'s `DEFAULT_WAIT_TIME` and `DEFAULT_REAPPLICATION_DELAY`, which no
 /// breath of the dragon's changes.
@@ -118,7 +122,77 @@ impl Region {
                 self.make_cloud(at, cloud, output);
             }
             DragonLocal::DiscardFlame => self.discard_flames(key, output),
+            DragonLocal::PlayerHit {
+                player,
+                from,
+                push,
+                amount,
+                fresh,
+            } => self.dragon_hits_player(key, player, from, (push, amount, fresh), output),
         }
+    }
+
+    /// The dragon `key`'s wings or head on the player whose stay is `player`
+    /// (`EnderDragon.knockBack` 1425–1533, `hurt` 1534–1570): the region's own pushed
+    /// by `push` (`Entity.push`, the motion the server keeps for them, which a hurt's
+    /// `markHurt` tells their client), then hurt by `amount` of `mobAttack(dragon)` from
+    /// `from`, where `fresh` only if no mob hurt them in their last two ticks; a player
+    /// of another region hurt by their holder ([`Region::strike`]).
+    fn dragon_hits_player(
+        &mut self,
+        key: EntityId,
+        player: EntityId,
+        from: [f64; 3],
+        (push, amount, fresh): (Option<[f64; 3]>, Option<f32>, bool),
+        output: &mut TickOutput,
+    ) {
+        let own = self.player_with_entity(player);
+        if let (Some(id), Some(push)) = (own, push)
+            && push.iter().all(|component| component.is_finite())
+            && let Some(state) = self.players.get_mut(&id)
+        {
+            state.vitals.motion = crate::physics::add(state.vitals.motion, push);
+            self.journal.players.insert(id);
+        }
+        let Some(amount) = amount else {
+            return;
+        };
+        // `getLastHurtByMobTimestamp() < tickCount − 2`: the hurt that set who hurt them
+        // last was at `until − 100`.
+        let tick = i64::try_from(self.tick).unwrap_or(i64::MAX);
+        let hurt_lately = own
+            .and_then(|id| self.players.get(&id))
+            .and_then(|state| state.vitals.last_hurt_by.as_ref())
+            .is_some_and(|by| by.until - BLAME_TICKS >= tick - 2);
+        if fresh && hurt_lately {
+            return;
+        }
+        let dragon = clustine_world::Causer {
+            key,
+            kind: DRAGON,
+            position: from.map(Double),
+            player: None,
+            living: true,
+            name: None,
+        };
+        let hurt = HurtBy {
+            damage_type: "minecraft:mob_attack".to_owned(),
+            cause: Some(dragon.clone()),
+            direct: Some(dragon),
+            position: None,
+            projectile_motion: None,
+            amount: Float(amount),
+            knockback: None,
+            fire_before: 0,
+            fire_after: 0,
+            effects: Vec::new(),
+            arrow: false,
+            extras: Vec::new(),
+            sound: None,
+            hit: None,
+            weapon: None,
+        };
+        self.strike(player, Box::new(hurt), output);
     }
 
     /// The sitting flames of the dragon `owner` the region holds, discarded.
@@ -235,9 +309,10 @@ impl Region {
     /// destroyed by what `player` names (`source.getEntity()`, a player's UUID and key):
     /// where it was the dragon's nearest crystal, 10 of `explosion(crystal, player)` to
     /// its head. **Named**: the holding pattern's strafe at that player
-    /// (`DragonHoldingPatternPhase.onCrystalDestroyed`) is not made, as no creative player
-    /// can be attacked (`canAttack`), and the nearest player within 64 of the crystal
-    /// that it asks for where no player destroyed it is never one for the same reason.
+    /// (`DragonHoldingPatternPhase.onCrystalDestroyed`, where `canAttack` lets it: one
+    /// who is not creative), or at the nearest player within 64 of the crystal where no
+    /// player destroyed it, is not made: the dragon flies on in its pattern, and strafes
+    /// a player only as its own phases choose one.
     pub(crate) fn dragon_crystal_destroyed(
         &mut self,
         dragon: EntityId,

@@ -394,10 +394,31 @@ fn an_armour_stand_breaks_dropping_what_it_wears_and_not_itself_and_a_marker_is_
 fn a_minecart_breaks_and_drops_its_item_unless_a_creative_player_primed_the_tnt() {
     for (owner, drops) in [(None, 1), (Some(Uuid::from_u128(3)), 0)] {
         let mut region = world(8, nothing);
+        // The owner, creative, out of reach.
+        add_player(&mut region, 3, [-20.5, -60.0, 4.5], false);
         let minecart = cart(&mut region, entity_types::MINECART, [6.5, -60.0, 4.5]);
         goes_off(&mut region, TNT_AT, owner);
         assert!(region.find_entity(minecart).is_none(), "owner {owner:?}");
         assert_eq!(count_of(&region, items::MINECART), drops, "owner {owner:?}");
+    }
+}
+
+/// `DamageSource.isCreativePlayer` asks the owner's mode as it is: TNT a survival player
+/// primed breaks a minecart into its item, and so does TNT whose owner is nowhere (the
+/// game's `getOwner` finds nobody).
+#[test]
+fn a_minecart_drops_its_item_where_a_survival_player_or_nobody_found_primed_the_tnt() {
+    for (number, present) in [(5_u128, true), (6, false)] {
+        let mut region = world(8, nothing);
+        if present {
+            let (owner, _) = add_player(&mut region, number, [-20.5, -60.0, 4.5], false);
+            region.players.get_mut(&owner).expect("added").mode =
+                clustine_world::PlayerMode::new(clustine_world::GameMode::Survival);
+        }
+        let minecart = cart(&mut region, entity_types::MINECART, [6.5, -60.0, 4.5]);
+        goes_off(&mut region, TNT_AT, Some(Uuid::from_u128(number)));
+        assert!(region.find_entity(minecart).is_none());
+        assert_eq!(count_of(&region, items::MINECART), 1, "owner {number}");
     }
 }
 
@@ -426,6 +447,7 @@ fn a_painting_drops_itself_unless_a_creative_player_primed_the_tnt_and_tnt_in_wa
     let obsidian = move |pos: BlockPos| (pos == wall).then_some(blocks::OBSIDIAN);
     for (owner, drops) in [(None, 1), (Some(Uuid::from_u128(4)), 0)] {
         let mut region = world(9, obsidian);
+        add_player(&mut region, 4, [-20.5, -60.0, 4.5], false);
         let painting = painting_record(&mut region, wall);
         goes_off(&mut region, [4.5, -60.0, 5.5], owner);
         assert!(region.find_entity(painting).is_none(), "owner {owner:?}");
@@ -483,6 +505,8 @@ fn a_block_and_an_entity_across_a_line_are_made_into_effects_with_the_blast() {
         .get_mut(&ChunkPos::new(1, 0))
         .expect("copied")
         .apply_entity(&EntityChange::Whole(across.clone()));
+    // The owner, creative, out of reach.
+    add_player(&mut region, 6, [-20.5, -60.0, 4.5], false);
     let owner = Some(Uuid::from_u128(6));
     let feet = [14.5, -60.0, 4.5];
     let tnt = primed(&mut region, feet, 1, owner);
