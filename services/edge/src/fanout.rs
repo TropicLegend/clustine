@@ -10586,6 +10586,7 @@ mod scenarios {
     mod explosions;
     mod gateways_specification;
     mod hanging;
+    mod inventory_screen;
     mod items;
     mod items_specification;
     mod leashes;
@@ -11418,6 +11419,9 @@ mod scenarios {
         /// Every packet of a menu's window it was sent, in order: openings, contents,
         /// slots, the cursor and closes.
         menus: Vec<ClientboundPlay>,
+        /// Every whole of window 0, the player's own inventory screen, it was sent, in
+        /// order (`container_set_content` of window 0, which `menus` leaves out).
+        inventories: Vec<clustine_protocol::packets::play::SetContainerContent>,
         /// Every explosion it was sent, in order.
         explosions: Vec<clustine_protocol::packets::play::Explode>,
         /// The teleport its connection waits for the client to accept, as the edge sets
@@ -11505,6 +11509,7 @@ mod scenarios {
                 teleports: Vec::new(),
                 tracking: Vec::new(),
                 menus: Vec::new(),
+                inventories: Vec::new(),
                 explosions: Vec::new(),
                 ids: Vec::new(),
             }
@@ -11682,6 +11687,7 @@ mod scenarios {
                 {
                     self.menus.push(decoded);
                 }
+                ClientboundPlay::SetContainerContent(content) => self.inventories.push(content),
                 ClientboundPlay::SetPassengers(passengers) => self.passengers.push(passengers),
                 ClientboundPlay::SetEntityLink(link) => self.links.push(link),
                 ClientboundPlay::SynchronizePlayerPosition(teleport) => {

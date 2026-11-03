@@ -245,6 +245,17 @@ pub fn region_at(
     inventory: Inventory,
     clock: Option<clustine_sim::api::WorldClock>,
 ) -> Region {
+    region_configured(layout, world, config(inventory), clock)
+}
+
+/// As [`region_at`], with the region's config `config` (a test that wants the homes of
+/// other dimensions, which a portal sends a player to).
+pub fn region_configured(
+    layout: &Layout,
+    world: &World,
+    config: RegionConfig,
+    clock: Option<clustine_sim::api::WorldClock>,
+) -> Region {
     let mut state = RegionState::new(EntityIds::block(layout.block).expect("a block"));
     state.edges.insert(
         EDGE,
@@ -253,7 +264,7 @@ pub fn region_at(
             ..EdgeState::default()
         },
     );
-    let mut region = Region::restore(config(inventory), state, layout.holdings());
+    let mut region = Region::restore(config, state, layout.holdings());
     region.tick(&TickInputs {
         // The chunks beyond the line are wanted too, so that the region claims them and
         // learns who holds them: a player who walks into them is let go there.
@@ -348,6 +359,22 @@ impl Scene {
     /// Player `n` joins and enters at `feet` with the scene's inventory, as the store's
     /// place for them says. Returns their index among the actors.
     pub fn join(&mut self, n: u128, feet: Vec3) -> usize {
+        self.join_with(n, feet, |_| {})
+    }
+
+    /// As [`Scene::join`], with the place the store has for them changed by `change`
+    /// first (their game mode, what their inventory screen holds).
+    pub fn join_with(&mut self, n: u128, feet: Vec3, change: impl FnOnce(&mut Place)) -> usize {
+        self.join_seen(n, feet, change).0
+    }
+
+    /// As [`Scene::join_with`], with the output of the tick they entered in.
+    pub fn join_seen(
+        &mut self,
+        n: u128,
+        feet: Vec3,
+        change: impl FnOnce(&mut Place),
+    ) -> (usize, TickOutput) {
         self.region.tick(&TickInputs {
             player_changes: vec![PlayerChange::Join(
                 EDGE,
@@ -365,37 +392,39 @@ impl Scene {
             .entering_state(player(n))
             .expect("the join is entering")
             .entity_id;
-        self.region.tick(&TickInputs {
+        let mut place = Place {
+            health: 20.0,
+            dead: false,
+            dimension: Default::default(),
+            travel: None,
+            seen_credits: false,
+            portal_cooldown: 0,
+            respawn: None,
+            last_death: None,
+            mode: Default::default(),
+            experience: Default::default(),
+            pose: Pose {
+                position: feet,
+                yaw: 0.0,
+                pitch: 0.0,
+                on_ground: true,
+            },
+            flying: false,
+            inventory: self.inventory.clone(),
+            selected_slot: 0,
+            ender: EnderChest::default(),
+            effects: Vec::new(),
+            time_since_rest: 0,
+            raid_omen_position: None,
+            crafting: Default::default(),
+        };
+        change(&mut place);
+        let entered = self.region.tick(&TickInputs {
             entered: vec![Entered {
                 unit: None,
                 player: player(n),
                 entity: entering,
-                place: Some(Place {
-                    health: 20.0,
-                    dead: false,
-                    dimension: Default::default(),
-                    travel: None,
-                    seen_credits: false,
-                    portal_cooldown: 0,
-                    respawn: None,
-                    last_death: None,
-                    mode: Default::default(),
-                    experience: Default::default(),
-                    pose: Pose {
-                        position: feet,
-                        yaw: 0.0,
-                        pitch: 0.0,
-                        on_ground: true,
-                    },
-                    flying: false,
-                    inventory: self.inventory.clone(),
-                    selected_slot: 0,
-                    ender: EnderChest::default(),
-                    effects: Vec::new(),
-                    time_since_rest: 0,
-                    raid_omen_position: None,
-                    crafting: Default::default(),
-                }),
+                place: Some(place),
                 holder: None,
             }],
             ..TickInputs::default()
@@ -414,7 +443,7 @@ impl Scene {
         let who = self.actors.len() - 1;
         let feet_now = self.region.player(player(n)).expect("there").1.position;
         assert_eq!(feet_now, feet, "player {n} stands where the test puts them");
-        who
+        (who, entered)
     }
 
     pub fn me(&self) -> EntityId {

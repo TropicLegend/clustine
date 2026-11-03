@@ -378,6 +378,10 @@ pub struct Bot {
     pub cursor: Option<ItemStack>,
     /// The windows the server closed (`container_close`), in order.
     pub menus_closed: Vec<i32>,
+    /// Window 0, the player's own inventory screen, as a client shows it: its 46 slots
+    /// (`container_set_content` and `container_set_slot` of window 0, and the slots
+    /// `set_player_inventory` sets) and its state id.
+    pub inventory_window: ShownMenu,
     /// Every explosion the server showed, in order.
     pub explosions: Vec<clustine_protocol::packets::play::Explode>,
     /// Every block entity's data the server sent on its own (not with a chunk), in
@@ -634,6 +638,13 @@ impl Bot {
             menu: None,
             cursor: None,
             menus_closed: Vec::new(),
+            inventory_window: ShownMenu {
+                window_id: inventory::PLAYER_WINDOW,
+                menu: -1,
+                title: clustine_protocol::text::Text::translatable(""),
+                slots: vec![None; inventory::SLOT_COUNT],
+                state_id: 0,
+            },
             explosions: Vec::new(),
             block_entity_updates: Vec::new(),
             particles: Vec::new(),
@@ -1198,6 +1209,68 @@ impl Bot {
             .write(
                 &clustine_protocol::packets::play::ServerboundContainerClose {
                     window_id: menu.window_id,
+                },
+            )
+            .await?;
+        self.has_sent();
+        Ok(())
+    }
+
+    /// Clicks the slot `slot` of window 0, the bot's own inventory screen, as
+    /// [`Bot::click_window`] clicks a window shown: only while no other window is shown,
+    /// as a client can show only one.
+    pub async fn click_inventory(
+        &mut self,
+        slot: i16,
+        button: i8,
+        input: i32,
+        changed: Vec<(i16, Option<ItemStack>)>,
+        carried: Option<ItemStack>,
+    ) -> Result<()> {
+        if self.menu.is_some() {
+            bail!("another window is shown");
+        }
+        let hashed = |stack: Option<&ItemStack>| {
+            stack.map(|stack| clustine_protocol::packets::play::HashedStack {
+                item: stack.item,
+                count: stack.count,
+                added: Vec::new(),
+                removed: Vec::new(),
+            })
+        };
+        let window = &mut self.inventory_window;
+        let packet = clustine_protocol::packets::play::ContainerClick {
+            window_id: inventory::PLAYER_WINDOW,
+            state_id: window.state_id,
+            slot,
+            button,
+            input,
+            changed: changed
+                .iter()
+                .map(|(slot, stack)| (*slot, hashed(stack.as_ref())))
+                .collect(),
+            carried: hashed(carried.as_ref()),
+        };
+        for (at, stack) in &changed {
+            if let Some(place) = usize::try_from(*at)
+                .ok()
+                .and_then(|at| window.slots.get_mut(at))
+            {
+                *place = stack.clone();
+            }
+        }
+        self.cursor = carried;
+        self.connection.write(&packet).await?;
+        self.has_sent();
+        Ok(())
+    }
+
+    /// Closes window 0, as a client does when its player closes the inventory screen.
+    pub async fn close_inventory(&mut self) -> Result<()> {
+        self.connection
+            .write(
+                &clustine_protocol::packets::play::ServerboundContainerClose {
+                    window_id: inventory::PLAYER_WINDOW,
                 },
             )
             .await?;
@@ -2032,6 +2105,14 @@ impl Bot {
                 });
             }
             ClientboundPlay::ContainerSetSlot(packet) => {
+                if packet.window_id == inventory::PLAYER_WINDOW
+                    && let Some(slot) = usize::try_from(packet.slot)
+                        .ok()
+                        .and_then(|slot| self.inventory_window.slots.get_mut(slot))
+                {
+                    *slot = packet.stack.clone();
+                    self.inventory_window.state_id = packet.state_id;
+                }
                 if let Some(menu) = self
                     .menu
                     .as_mut()
@@ -2081,9 +2162,14 @@ impl Bot {
                 {
                     menu.slots.clone_from(&packet.slots);
                     menu.state_id = packet.state_id;
-                    self.cursor = packet.carried;
+                    self.cursor.clone_from(&packet.carried);
                 }
                 if packet.window_id == inventory::PLAYER_WINDOW {
+                    self.inventory_window.slots.clone_from(&packet.slots);
+                    self.inventory_window.state_id = packet.state_id;
+                    if self.menu.is_none() {
+                        self.cursor.clone_from(&packet.carried);
+                    }
                     for (slot, held) in self.hotbar.iter_mut().enumerate() {
                         *held = packet
                             .slots
@@ -2099,6 +2185,13 @@ impl Bot {
             // A slot the server changed of its own accord, numbered as the game's
             // inventory numbers them: the hotbar is its first nine.
             ClientboundPlay::SetPlayerInventory(packet) => {
+                if let Some(at) = usize::try_from(packet.slot)
+                    .ok()
+                    .and_then(inventory_window_slot)
+                    .and_then(|at| self.inventory_window.slots.get_mut(at))
+                {
+                    *at = packet.stack.clone();
+                }
                 if let Some(slot) = usize::try_from(packet.slot)
                     .ok()
                     .filter(|slot| *slot < self.hotbar.len())
@@ -2260,5 +2353,18 @@ impl JoinInfo {
             self.login.spawn.dimension_name,
             self.login.view_distance,
         )
+    }
+}
+
+/// The slot of window 0 that shows the inventory's slot `slot` (`InventoryMenu.<init>`):
+/// the hotbar's 0-8 at 36-44, the main 9-35 at 9-35, the armour 36-39 from the feet up
+/// at 8-5, the off hand 40 at 45.
+fn inventory_window_slot(slot: usize) -> Option<usize> {
+    match slot {
+        0..=8 => Some(inventory::HOTBAR_START + slot),
+        9..=35 => Some(slot),
+        36..=39 => Some(44 - slot),
+        40 => Some(45),
+        _ => None,
     }
 }
