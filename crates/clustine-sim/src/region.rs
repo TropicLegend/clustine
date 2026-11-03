@@ -704,11 +704,6 @@ pub struct Region {
     /// next tick as the game's. Kept in memory only: a region restored within the tick
     /// has none, and such a fireball flies on.
     removed_lately: BTreeMap<EntityId, u64>,
-    /// Whether hurts reach a player who is not invulnerable and mobs take them as
-    /// targets: not until V4, which keeps their health (`docs/groundwork/v-plan.md`,
-    /// sections 4.3 and 5; `materials.rs`), and so false. The tests of the mobs' targeting
-    /// of survival players, written for when it comes, turn it on.
-    hurt_reaches_players: bool,
     /// Units sent on with a seat kept in them for a player not come yet: where each
     /// went and for how many ticks more the entry counts, so that the player follows
     /// (`docs/groundwork/n5-plan.md`, section 8 item 5). Kept in memory only: a region
@@ -912,7 +907,6 @@ impl Region {
             merged_into: Vec::new(),
             entity_memory: BTreeMap::new(),
             removed_lately: BTreeMap::new(),
-            hurt_reaches_players: false,
             forwarded: BTreeMap::new(),
             light: light::RegionLight::new(sky),
             using_across: None,

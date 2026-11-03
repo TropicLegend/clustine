@@ -14,9 +14,6 @@
 //!   treated as having infinite materials, as everyone was before.
 //! - A tool or a weapon that wears out is gone from the hand without the game's sound and
 //!   particles of its breaking (`onEquippedItemBroken`'s entity event).
-//! - A survival player is **invulnerable until V4**: no hurt reaches them and no mob
-//!   takes them as a target (`entity_effects.rs`, `region/mobs.rs`, the region's
-//!   `hurt_reaches_players`), though their abilities say otherwise to their client.
 //! - A survival player's break of a block is the game's dig (`digging.rs`), but where the
 //!   block is another region's: that break is still instant and drops nothing, and wears
 //!   nothing (V2, across a line). Their hits break armour stands, vehicles and hanging
@@ -73,31 +70,18 @@ pub(crate) fn entity_interaction_range(mode: clustine_world::GameMode) -> f64 {
 
 /// Whether a player in the game mode of id `mode`, as a face carries it, is passed over
 /// by mobs choosing a target (`EntitySelector.NO_CREATIVE_OR_SPECTATOR` and the like,
-/// which read `isCreative`): a creative player, and until V4 every player, a survival
-/// player being spared every hurt and every mob's targeting as a creative player is,
-/// though their abilities say otherwise to their client (the region's
-/// `hurt_reaches_players`, false until V4).
-pub(crate) fn untargetable(mode: u8, hurt_reaches_players: bool) -> bool {
-    mode == clustine_world::GameMode::Creative.id() || !hurt_reaches_players
+/// which read `isCreative` and `isSpectator`): a creative or a spectating player.
+pub(crate) fn untargetable(mode: u8) -> bool {
+    mode == clustine_world::GameMode::Creative.id()
+        || mode == clustine_world::GameMode::Spectator.id()
 }
 
 impl Region {
-    /// Lets hurts reach players who are not invulnerable, and mobs take them as targets,
-    /// as V4 will (`docs/groundwork/v-plan.md`, section 4.3): for the tests of the mobs'
-    /// targeting of survival players, written for when it comes. Nothing else turns it
-    /// on before V4.
-    pub fn let_hurt_reach_players(&mut self) {
-        self.hurt_reaches_players = true;
-    }
-
     /// Whether the region's player `id` is spared a hurt: an invulnerable one (a creative
-    /// player's `Abilities.invulnerable`), and until V4 every one (the region's
-    /// `hurt_reaches_players`).
+    /// player's `Abilities.invulnerable`), and one the region does not have.
     pub(crate) fn spared_hurt(&self, id: PlayerId) -> bool {
-        let invulnerable = self
-            .abilities_of(id)
-            .is_none_or(|abilities| abilities.invulnerable);
-        invulnerable || !self.hurt_reaches_players
+        self.abilities_of(id)
+            .is_none_or(|abilities| abilities.invulnerable)
     }
 
     /// What the region's player `id`'s game mode lets them do; `None` for a player the

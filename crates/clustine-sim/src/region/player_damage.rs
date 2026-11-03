@@ -6,7 +6,7 @@
 //! costs, who is blamed, the combat tracker's entry, and the death.
 
 use clustine_data::{ConsumeEffect, ItemComponents, attributes};
-use clustine_world::PlayerId;
+use clustine_world::{HitExtra, PlayerId};
 
 use super::Region;
 use super::vibrations::{Context, Source, Vibration};
@@ -23,8 +23,10 @@ const BLAME_TICKS: i64 = 100;
 /// The entity event of a totem's save (`LivingEntity.checkTotemDeathProtection`).
 const TOTEM_EVENT: u8 = 35;
 
-/// The players' sound source (`SoundSource.PLAYERS`).
+/// The players' sound source (`SoundSource.PLAYERS`), and the neutral one a hit's own
+/// sound plays in.
 const SOUND_SOURCE_PLAYERS: i32 = 7;
+const SOUND_SOURCE_NEUTRAL: i32 = 6;
 
 /// The inventory slot of each `EquipmentSlot` ordinal a hurt names, but the main hand's,
 /// which is the selected hotbar slot: the off hand, the feet, the legs, the chest and the
@@ -57,6 +59,215 @@ impl Region {
         };
         self.apply_hurt(id, source, &hurt, hurting, output);
         hurt.took
+    }
+
+    /// A hurt that names the region's player `id` (`EntityUse::Hurt`: a mob's melee hit
+    /// here or across a line, a projectile, a fang): taken as a mob takes it
+    /// (`take_hurt`), with what comes with it if it took: a burning arrow's fire set
+    /// before (taken back if refused) and after, the effects, the arrow counted, the
+    /// attacker's extra knockback, its type's extras, and its sound.
+    pub(crate) fn player_took_hurt(
+        &mut self,
+        id: PlayerId,
+        hurt: &clustine_world::HurtBy,
+        output: &mut TickOutput,
+    ) -> bool {
+        let Some(source) = super::entity_effects::source_of(hurt) else {
+            return false;
+        };
+        let Some(fire_before) = self.players.get(&id).map(|player| player.vitals.fire) else {
+            return false;
+        };
+        if hurt.fire_before > 0 {
+            self.set_player_fire(id, fire_before.max(hurt.fire_before));
+        }
+        let hurting = Hurting {
+            weapon: hurt.weapon.as_ref(),
+            pierce_level: 0,
+        };
+        if !self.hurt_player(id, &source, hurt.amount.0, hurting, output) {
+            if hurt.fire_before > 0 {
+                self.set_player_fire(id, fire_before);
+            }
+            return false;
+        }
+        if let Some([strength, x, z]) = hurt.knockback {
+            self.knock_player(id, strength.0, x.0, z.0, output);
+        }
+        if hurt.fire_after > 0 {
+            let now = self.players.get(&id).map_or(0, |player| player.vitals.fire);
+            self.set_player_fire(id, now.max(hurt.fire_after));
+        }
+        for instance in &hurt.effects {
+            self.give_player(id, instance, output);
+        }
+        if hurt.arrow
+            && let Some(player) = self.players.get_mut(&id)
+        {
+            player.vitals.arrows += 1;
+            self.journal.players.insert(id);
+        }
+        self.player_hit_extras(id, hurt, output);
+        if let Some((sound, volume, pitch)) = hurt.sound
+            && let Some(player) = self.players.get(&id)
+        {
+            output.events.push(RegionEvent::Sound {
+                sound,
+                source: SOUND_SOURCE_NEUTRAL,
+                position: player.pose.position,
+                volume: volume.0,
+                pitch: pitch.0,
+                except: None,
+            });
+        }
+        true
+    }
+
+    /// What the attacker's type adds to its hit that took on the region's player `id`,
+    /// drawn from the hit's stream, as [`Region::hit_extras`] does for a mob.
+    fn player_hit_extras(
+        &mut self,
+        id: PlayerId,
+        hurt: &clustine_world::HurtBy,
+        output: &mut TickOutput,
+    ) {
+        if hurt.extras.is_empty() {
+            return;
+        }
+        let Some(key) = self.players.get(&id).map(|player| player.entity_id) else {
+            return;
+        };
+        let mut stream = hurt
+            .hit
+            .map(|(attacker, lived)| super::Random::of_hit(self.seed(), attacker, lived, key));
+        let from = hurt
+            .cause
+            .as_ref()
+            .map_or([0.0; 3], |cause| cause.position.map(|value| value.0));
+        let difficulty = self.difficulty_at(clustine_world::BlockPos::new(
+            crate::physics::floor(from[0]),
+            crate::physics::floor(from[1]),
+            crate::physics::floor(from[2]),
+        ));
+        for extra in &hurt.extras {
+            match *extra {
+                // `Zombie.doHurtTarget`: the draw is made whether or not it sets fire.
+                HitExtra::ZombieFire => {
+                    let Some(stream) = stream.as_mut() else {
+                        continue;
+                    };
+                    if stream.next_float() < difficulty * 0.3 {
+                        let ticks = 2 * difficulty as i32 * 20;
+                        let now = self.players.get(&id).map_or(0, |player| player.vitals.fire);
+                        self.set_player_fire(id, now.max(ticks));
+                    }
+                }
+                // `Husk.doHurtTarget`: hunger for `140 · (int) eff` ticks.
+                HitExtra::HuskHunger => {
+                    let hunger = clustine_world::components::EffectInstance {
+                        effect: "minecraft:hunger".to_owned(),
+                        amplifier: 0,
+                        duration: 140 * difficulty as i32,
+                        ambient: false,
+                        visible: true,
+                        show_icon: true,
+                    };
+                    self.give_player(id, &hunger, output);
+                }
+                // `IronGolem.doHurtTarget`'s fling: up by what knockback resistance leaves.
+                HitExtra::Fling(up) => {
+                    let resistance = self.player_attribute(id, attributes::KNOCKBACK_RESISTANCE);
+                    self.push_player(id, output, |motion| {
+                        motion[1] += f64::from(up.0) * (1.0 - resistance).max(0.0);
+                    });
+                }
+                // `HoglinBase.throwTarget`, as [`Region::throw_mob`] reads it.
+                HitExtra::Throw(knockback) => {
+                    let Some(stream) = stream.as_mut() else {
+                        continue;
+                    };
+                    let resistance = self.player_attribute(id, attributes::KNOCKBACK_RESISTANCE);
+                    let f = f64::from(knockback.0) - resistance;
+                    if f <= 0.0 {
+                        continue;
+                    }
+                    let Some(feet) = self.players.get(&id).map(|player| player.pose.position)
+                    else {
+                        continue;
+                    };
+                    let (g, h) = (feet.x - from[0], feet.z - from[2]);
+                    let turn = (stream.next_int(21) as i32 - 10) as f32;
+                    let j = f * f64::from(stream.next_float() * 0.5 + 0.2);
+                    let away = crate::physics::scale(crate::physics::normalize([g, 0.0, h]), j);
+                    let away = super::riding::y_rot(away, turn);
+                    let up = f * f64::from(stream.next_float()) * 0.5;
+                    self.push_player(id, output, |motion| {
+                        motion[0] += away[0];
+                        motion[1] += up;
+                        motion[2] += away[2];
+                    });
+                }
+            }
+        }
+    }
+
+    /// `LivingEntity.knockback(strength, x, z)` of the region's player `id`, from the
+    /// motion their body keeps, and their client told it.
+    pub(crate) fn knock_player(
+        &mut self,
+        id: PlayerId,
+        strength: f64,
+        x: f64,
+        z: f64,
+        output: &mut TickOutput,
+    ) {
+        let resistance = self.player_attribute(id, attributes::KNOCKBACK_RESISTANCE);
+        let strength = strength * (1.0 - resistance);
+        if strength <= 0.0 {
+            return;
+        }
+        let Some(on_ground) = self.players.get(&id).map(|player| player.pose.on_ground) else {
+            return;
+        };
+        let away = crate::physics::scale(crate::physics::normalize([x, 0.0, z]), strength);
+        self.push_player(id, output, |motion| {
+            *motion = [
+                motion[0] / 2.0 - away[0],
+                if on_ground {
+                    (motion[1] / 2.0 + strength).min(0.4)
+                } else {
+                    motion[1]
+                },
+                motion[2] / 2.0 - away[2],
+            ];
+        });
+    }
+
+    /// Changes the motion the region's player `id`'s body keeps by `push`, and tells their
+    /// client (`hurtMarked`).
+    fn push_player(
+        &mut self,
+        id: PlayerId,
+        output: &mut TickOutput,
+        push: impl FnOnce(&mut [f64; 3]),
+    ) {
+        let Some(player) = self.players.get_mut(&id) else {
+            return;
+        };
+        push(&mut player.vitals.motion);
+        let motion = player.vitals.motion;
+        self.journal.players.insert(id);
+        output
+            .player_events
+            .push((id, PlayerEvent::Knocked { motion }));
+    }
+
+    /// Sets the region's player `id`'s fire ticks (`setRemainingFireTicks`).
+    pub(crate) fn set_player_fire(&mut self, id: PlayerId, ticks: i32) {
+        if let Some(player) = self.players.get_mut(&id) {
+            player.vitals.fire = ticks;
+            self.journal.players.insert(id);
+        }
     }
 
     /// What the hurt does to the player as they are now, the knockback's draws taken from

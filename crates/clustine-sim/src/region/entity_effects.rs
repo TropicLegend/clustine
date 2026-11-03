@@ -39,6 +39,9 @@ const SENSITIVE_TO_WATER: [i32; 4] = [
     entity_types::STRIDER,
 ];
 
+/// What an ender pearl's landing hurts its thrower (`ThrownEnderpearl.onHit`).
+const PEARL_HURT: f32 = 5.0;
+
 /// The cause or the deal of a hurt as the simulation's damage source names it.
 fn causer(of: &clustine_world::Causer) -> Causer {
     Causer {
@@ -118,8 +121,10 @@ impl Region {
             EntityUse::PearlLanded { at, endermite } => {
                 self.pearl_landed(id, at.map(|value| value.0), endermite, output);
             }
-            // A creative player is hurt by nothing, and until V4 nobody is
-            // (`Region::spared_hurt`).
+            // A hurt of the player, here or across a line (V4).
+            EntityUse::Hurt(hurt) => {
+                self.player_took_hurt(id, &hurt, output);
+            }
             _ => {}
         }
     }
@@ -135,7 +140,8 @@ impl Region {
             self.take_hurt(&entity, &hurt, output);
             return;
         }
-        if self.player_with_entity(key).is_some() {
+        if let Some(id) = self.player_with_entity(key) {
+            self.player_took_hurt(id, &hurt, output);
             return;
         }
         if let Some((player, at, _)) = super::thrown::far_player_of(self, key) {
@@ -147,9 +153,9 @@ impl Region {
     }
 
     /// `ThrownEnderpearl.onHit` for its owner, the player `id`: an endermite where the
-    /// maker drew one (`teleports.rs`), off what they ride, at `at`, and the teleport's
-    /// sound; the pearl's hurt of 5 refused where they are spared it, as a creative
-    /// player is and every player until V4 (`Region::spared_hurt`).
+    /// maker drew one (`teleports.rs`), off what they ride, at `at`, their fall forgotten,
+    /// the pearl's hurt of 5 (`enderPearl`, which a creative player is spared), and the
+    /// teleport's sound.
     fn pearl_landed(
         &mut self,
         id: PlayerId,
@@ -160,15 +166,14 @@ impl Region {
         if endermite {
             self.pearl_endermite(id, output);
         }
-        // `hurtServer(enderPearl, 5)`, refused where the player is spared it, as every
-        // player is until V4, which lifts the refusal with health to take it from.
-        debug_assert!(self.spared_hurt(id), "a pearl's hurt waits for V4's health");
         self.dismount_player(id, output);
         let Some(player) = self.players.get_mut(&id) else {
             return;
         };
         let previous_chunk = player.chunk();
         player.pose.position = clustine_world::Vec3::new(at[0], at[1], at[2]);
+        player.vitals.fall_distance = 0.0;
+        player.vitals.impulse = None;
         let (entity, pose) = (player.entity_id, player.pose);
         self.journal.players.insert(id);
         output.events.push(RegionEvent::EntityMoved {
@@ -179,6 +184,8 @@ impl Region {
         output
             .player_events
             .push((id, PlayerEvent::Teleported { pose }));
+        let pearl = DamageSource::of(crate::mobs::body::hurt::DamageType::ENDER_PEARL);
+        self.hurt_player(id, &pearl, PEARL_HURT, Default::default(), output);
         output.events.push(RegionEvent::Sound {
             sound: sounds::ENTITY_PLAYER_TELEPORT,
             source: crate::api::SOUND_SOURCE_PLAYERS,

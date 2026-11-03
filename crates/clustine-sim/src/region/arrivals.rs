@@ -128,18 +128,21 @@ impl Region {
     /// (`docs/groundwork/n9-plan.md`, section 8.5): the chunks about it and about its
     /// target are noted, both by the region that holds the target (finding 40), so that
     /// regions that follow their players merge for a fight across their line as for an
-    /// entity sent across. Named: a face of a player is no mob's target, as no player is
-    /// until V4 (`materials.rs`, the region's `hurt_reaches_players`); V4 merges for
-    /// those too.
+    /// entity sent across, and for a chase of a player another region holds (their face,
+    /// the V4 design's section 3 and plan 4.11).
     pub(super) fn target_at_line(&mut self, at: [f64; 3], target: clustine_world::EntityId) {
         if self.find_entity(target).is_some() {
             return;
         }
-        let Some((chunk, record)) = self.copied_entity(target) else {
-            return;
+        let there = match self.copied_entity(target) {
+            Some((chunk, record)) => (chunk, record.position),
+            None => match self.face_of_entity(target) {
+                Some(face) => (super::faces::chunk_of(face), face.position),
+                None => return,
+            },
         };
+        let (chunk, there) = there;
         let to = self.land.knowledge(chunk).holder();
-        let there = record.position;
         self.at_line_to(at, to);
         self.at_line_to(there, to);
     }
