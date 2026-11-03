@@ -10,6 +10,9 @@ use clustine_region::RegionId;
 use clustine_rpc::Order;
 use clustine_world::{ChunkPos, GameMode};
 
+#[cfg(test)]
+mod order_words_spec;
+
 /// Settings of `clustine move`.
 #[derive(Debug, Clone)]
 pub struct MoveArgs {

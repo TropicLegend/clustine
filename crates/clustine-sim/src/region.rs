@@ -4597,6 +4597,7 @@ mod tests {
     mod n9b_spawning;
     mod n9b_thrown;
     mod nether_e3;
+    mod orders_spec;
     #[path = "../p11_spec_tests.rs"]
     mod p11_spec_tests;
     #[path = "../p12_spec_tests.rs"]
