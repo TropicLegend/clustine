@@ -3163,8 +3163,8 @@ mod tests {
         let kind = MenuKind::Crafting;
         let mut fixture = Fixture::new(kind);
         fixture.container[1] = stack(STONE, 60);
-        for index in 2..10 {
-            fixture.container[index] = stack(DIRT, 64);
+        for slot in fixture.container.iter_mut().take(10).skip(2) {
+            *slot = stack(DIRT, 64);
         }
         fixture.inventory.set(9, stack(STONE, 10));
         fixture.survival(10, 0, ClickKind::QuickMove);

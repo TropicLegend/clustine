@@ -589,7 +589,7 @@ impl Region {
                     face_of(opposite(attached.direction)),
                 );
                 let (solid, diode) = supporting(behind);
-                if !solid && !(is_horizontal(attached.direction) && diode) {
+                if !(solid || is_horizontal(attached.direction) && diode) {
                     return false;
                 }
                 self.hanging_coexists(entity, attached.direction, bounds, true)

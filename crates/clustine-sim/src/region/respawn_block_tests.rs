@@ -110,7 +110,7 @@ fn placed(answer: RespawnBlock) -> ([f64; 3], f32, Option<(BlockPos, BlockState)
 /// Whether two yaws are the same angle to within the table's error (180 and -180 alike).
 fn same_angle(a: f32, b: f32) -> bool {
     let difference = (a - b).rem_euclid(360.0);
-    difference < 1.0e-3 || difference > 360.0 - 1.0e-3
+    !(1.0e-3..=360.0 - 1.0e-3).contains(&difference)
 }
 
 fn bed_respawn(land: &Land, yaw: f32) -> RespawnBlock {

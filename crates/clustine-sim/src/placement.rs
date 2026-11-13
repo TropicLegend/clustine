@@ -140,7 +140,7 @@ pub fn click_with(click: &Click, off_hand: bool, blocks: &dyn Blocks) -> Clicked
     }
     // Sneaking with something in hand passes the block by and places against it, and a
     // click with the off hand uses no other block (`RemoteStep::OffHandOn`).
-    if !off_hand && !(click.sneaking && click.held.is_some()) && is_used(clicked, click.held) {
+    if !(off_hand || click.sneaking && click.held.is_some()) && is_used(clicked, click.held) {
         let used = use_block(click, clicked, blocks);
         // Wire that is neither a dot nor a cross, or would not change, a bell hit
         // where it does not ring, a note block clicked on top with a head and an anchor

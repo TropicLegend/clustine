@@ -579,7 +579,7 @@ impl Lighting {
     /// that would change it: nothing waits in it or in a chunk about it, and nothing
     /// about it went.
     pub fn is_lit(&self, at: ChunkPos) -> bool {
-        if !self.slot(at).is_some_and(|slot| slot.lit.is_some()) {
+        if self.slot(at).is_none_or(|slot| slot.lit.is_none()) {
             return false;
         }
         let near = |other: ChunkPos| (other.x - at.x).abs() <= 1 && (other.z - at.z).abs() <= 1;

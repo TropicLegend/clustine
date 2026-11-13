@@ -815,7 +815,7 @@ impl Region {
         let EntityData::Minecart { enabled, .. } = &mut data else {
             return;
         };
-        if *enabled == !powered {
+        if *enabled != powered {
             return;
         }
         *enabled = !powered;

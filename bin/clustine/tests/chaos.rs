@@ -873,11 +873,11 @@ impl Chaos {
                 owners.iter().all(|worker| {
                     // One whose process has been replaced since has nothing to notice.
                     chaos.log_since(*worker).contains("lost the world store")
-                        || !chaos
+                        || chaos
                             .cluster
                             .log(&worker_name(*worker))
                             .get(..chaos.since[worker])
-                            .is_some_and(|before| !before.is_empty())
+                            .is_none_or(|before| before.is_empty())
                 })
             })
             .await;

@@ -260,7 +260,7 @@ impl Step<'_, '_> {
     /// everything: `noPhysics`).
     fn reached(&self, target: Option<Vec3>) -> bool {
         let d = target.map_or(0.0, |target| physics::distance_sqr(target, self.position()));
-        d < 100.0 || d > 22_500.0
+        !(100.0..=22_500.0).contains(&d)
     }
 
     /// `navigateToNextPathNode()` of the holding pattern, the strafe and the landing
@@ -732,7 +732,7 @@ impl Step<'_, '_> {
             let dot =
                 (facing[0] * towards[0] + facing[1] * towards[1] + facing[2] * towards[2]) as f32;
             let angle = (libm::acos(f64::from(dot)) * DEGREES) as f32 + 0.5;
-            if angle < 0.0 || angle > 10.0 {
+            if !(0.0..=10.0).contains(&angle) {
                 let head = self.own.parts[usize::from(HEAD)];
                 let dx = player.position[0] - head[0];
                 let dz = player.position[2] - head[2];
@@ -781,7 +781,7 @@ impl Step<'_, '_> {
             }
         }
         let d = physics::distance_sqr(target, self.position());
-        if d < 100.0 || d > 22_500.0 {
+        if !(100.0..=22_500.0).contains(&d) {
             self.own.phases.charge.time += 1;
         }
     }

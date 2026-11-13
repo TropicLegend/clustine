@@ -1015,7 +1015,7 @@ async fn fight(bot: &mut Bot, watch: &mut Watch) -> Result<(usize, u32, u32)> {
         }
         wait(bot, &mut [], PERCH_PATIENCE, "the dragon up again", |bot| {
             watch.read(bot);
-            watch.is_dead() || !watch.sat.is_some_and(|(sat, _)| sat == sitting)
+            watch.is_dead() || watch.sat.is_none_or(|(sat, _)| sat != sitting)
         })
         .await?;
     }

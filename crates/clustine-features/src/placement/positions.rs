@@ -212,7 +212,7 @@ impl Modifier for Cuboid {
                     let y_side = y == 0 || y == height;
                     let z_side = z == 0 || z == length;
                     // An edge is where two sides meet; the inside touches none.
-                    let edge = x_side && y_side || z_side && y_side || x_side && z_side;
+                    let edge = (x_side || z_side) && y_side || x_side && z_side;
                     let inside = !x_side && !y_side && !z_side;
                     if (self.include_edges || !edge) && (self.include_interior || !inside) {
                         out.push(BlockPos::new(origin.x + x, origin.y + y, origin.z + z));

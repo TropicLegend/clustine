@@ -1538,10 +1538,9 @@ impl Lanes {
                 arrivals_taken.sort_unstable();
                 arrivals_taken.dedup();
                 let refused = arrivals_taken.iter().find(|id| {
-                    !self
-                        .arrivals
+                    self.arrivals
                         .get(**id)
-                        .is_some_and(|kept| self.table.holder(kept.chunk) == Some(region))
+                        .is_none_or(|kept| self.table.holder(kept.chunk) != Some(region))
                 });
                 if let Some(id) = refused {
                     error!(

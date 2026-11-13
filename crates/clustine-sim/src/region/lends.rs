@@ -145,11 +145,11 @@ impl Region {
     fn may_ask_for(&self, position: ChunkPos) -> bool {
         !self.land.holds(position)
             && !self.land.is_pinned(position)
-            && !self
+            && self
                 .land
                 .not_lendable
                 .get(&position)
-                .is_some_and(|told| self.tick.saturating_sub(*told) < NOT_LENDABLE_FOR)
+                .is_none_or(|told| self.tick.saturating_sub(*told) >= NOT_LENDABLE_FOR)
             && !self.lends_asked.contains_key(&position)
     }
 

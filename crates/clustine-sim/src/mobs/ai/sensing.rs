@@ -288,10 +288,7 @@ impl Conditions {
                 return false;
             }
         }
-        if self.line_of_sight && !has_line_of_sight(ai, target) {
-            return false;
-        }
-        true
+        !self.line_of_sight || has_line_of_sight(ai, target)
     }
 }
 
