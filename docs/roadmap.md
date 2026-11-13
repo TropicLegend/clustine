@@ -11,7 +11,7 @@ vanilla mechanics on top of it.
 | **M3 Dynamic regions** | Merge and split, live migration, crash recovery from the log, fencing | Chaos tests killing workers lose no acknowledged state | Done on 2026-10-10 |
 | **M4 Kubernetes** | Operator, Helm chart, autoscaling on tick time, drain on termination, metrics and tracing | Rolling update of all workers under bot load with no disconnects | Not begun |
 | **M5 Dense crowds** | Independent fan-out scaling, per-region time dilation, dynamic view distance | Benchmark with 1,000+ bots in one place published | Not begun |
-| **M6+ Vanilla parity** | Tiers T1–T5 of the [parity matrix](parity-matrix.md), worked on in parallel | Nightly differential tests against the vanilla server | Begun: terrain and placing |
+| **M6+ Vanilla parity** | Tiers T1–T5 of the [parity matrix](parity-matrix.md), worked on in parallel | Nightly differential tests against the vanilla server | Begun: terrain, placing and survival |
 | **M7 Plugins** | WebAssembly plugin API, later the Bukkit bridge | Example plugins run unchanged on one and on many workers | Not begun |
 
 M6 can start once M3 has stabilised the simulation API; it does not wait for M4 and M5.
@@ -19,10 +19,11 @@ After M3 the owner asked for two pieces of work as milestones of their own
 (2026-10-08): every service with several replicas, and terrain generation. Both have
 agreed plans, below.
 
-## Where the work stands (2026-11-03)
+## Where the work stands (2026-11-13)
 
-This section is the current state; the sections after it are the history of how it
-came about, with what was measured on the way.
+The maintained, concise status is in [`current-state.md`](current-state.md). This roadmap
+is a development history and its detailed phase notes describe the state at the time each
+was written; use the status page and parity matrix for current implementation state.
 
 **What a player has.** A creative world with its three dimensions: flat, or with
 `--seed` the game's overworld, Nether and End for that seed, block for block what the
@@ -43,11 +44,11 @@ that follow their players across several workers, with no seam where they meet; 
 worker or the world store can die without anyone being disconnected or losing what
 they were shown. A player who leaves comes back where they left.
 
-**What a player will miss within minutes** (the [parity matrix](parity-matrix.md),
-brought up to date on 2026-11-02, has the whole list): survival mode (health, hunger,
-damage, breaking times and drops, crafting, smelting, the menus of the blocks that work
-items, most enchantments' effects); chat and commands; weather; signs' text, jukeboxes, cauldrons, structures' chests' loot; the breeze, the creaking, the
-warden and the wither.
+**What a player will miss within minutes** is kept current in the
+[parity matrix](parity-matrix.md). V1 to V4 of survival are built; V5 (furnaces) is the
+next planned phase, after which survival becomes the default. The remaining gaps include
+work-block menus and enchantment effects, chat and commands, weather, signs' text,
+jukeboxes, cauldrons, structure chest loot, and several mobs.
 
 **Built since M3:**
 
@@ -123,18 +124,15 @@ warden and the wither.
   same ticks (L6), once a click that came with its chunk's grant waited for the chunk's
   load instead of being lost.
 
-**Next:** entities, phase N, planned in [n-plan.md](groundwork/n-plan.md) and agreed
-with the owner's answers on 2026-10-17: keys, items, crossing, physics, vehicles, TNT,
-animals and the structures' entities (N1 to N7); then light in the simulation (N8,
-brought forward); then monsters and natural spawning (N9) and the villagers' brain and
-trading (N10); then the Nether and the End. Survival mode later, with the rest of parity
-by the matrix's tiers. Its record, ADR-0028, is accepted (2026-10-18, after five
-reviews). **Done:** N1, keys of 64 bits for entities, a fresh block of them at every
-hello, and wire ids of each edge's own (a world made before it is refused and made
-again); N2a, the whole inventory (36 slots, armour, the off hand), F and the off hand's
-use; N2b and N2c, entities kept in their chunks and in every commit, saved apart from
-the blocks, replayed, copied and folded, and the item thrown by Q, ctrl+Q and the
-creative screen, shown to every client in view.
+- *Survival* (phase V, [plan](groundwork/v-plan.md)): V1 to V4 are built, covering game
+  modes, digging, crafting, health, hunger, damage, death and respawn. V5 (furnaces) is
+  next; the [parity matrix](parity-matrix.md) tracks remaining differences and evidence.
+
+**Next:** survival phase V5, furnaces, from the
+[survival plan](groundwork/v-plan.md). V1 to V4 are built. Once V5 is complete, the plan
+continues with V6 to V13 (enchantments, work-block menus, recipe book, brewing, beacon,
+advancements and statistics). Earlier phases N and P are described in the development
+history below; remaining parity gaps are tracked in the [parity matrix](parity-matrix.md).
 
 **N4, physics, items and falling blocks** (2026-10-18, [plan](groundwork/n4-plan.md) and
 [brief](groundwork/n4-brief.md) read from the jar): the game's data for physics
@@ -629,12 +627,11 @@ which the client has already, of a cause not found. A player who comes through a
 into chunks another region holds is now sent on to that region to be placed. An ender
 pearl thrown into a gateway carries its thrower through and back, tested end to end
 (`gateway_pearls.rs`, by someone who did not write the gateways); it found the pearl
-stranded where nobody was, as nothing placed the game's portal ticket, mended. Next:
-what phase P left named (pearls kept with an owner who leaves, the dragon's respawn by
-four crystals, arrows on the dragon's parts, entities through a portal into another
-region's chunks), the gaps a survey of the repository found on 2026-11-02 (CI red
-since 2026-10-31 on tests of timing),
-then survival: its plan ([v-plan.md](groundwork/v-plan.md), reviewed twice) was agreed
+stranded where nobody was, as nothing placed the game's portal ticket, mended. At the
+phase-P handoff, the remaining items recorded were pearls kept with an owner who leaves,
+the dragon's respawn by four crystals, arrows on the dragon's parts, and entities through
+a portal into another region's chunks. Work then moved to survival: its plan
+([v-plan.md](groundwork/v-plan.md), reviewed twice) was agreed
 by the owner on 2026-11-03, every recommendation but one (formats rise at each step that
 needs it, not once). It is built as two milestones: the core, V1 to V5 (game modes,
 breaking, crafting, health with hunger and death, furnaces, after which survival is the
@@ -666,8 +663,8 @@ has (a click, a shift-click that crafts while there is room, a number key, Q, a 
 middle click), leaving the remainders (buckets, bottles) in the grid; the table's grid
 goes back to the inventory when it closes, is broken, or the player crosses a line or
 changes level; the client is sent the recipes' property sets and the stonecutter's list
-at a join. The recipe book stays empty (V9). V4 (health) is built, its specification tests
-being written: a survival player is hurt as the game's `Player.hurtServer` and
+at a join. The recipe book stays empty (V9). V4 (health) is built, with specification
+tests from the plan: a survival player is hurt as the game's `Player.hurtServer` and
 `actuallyHurt` hurt (difficulty, armour and toughness, the protections, resistance,
 absorption, the cooldown's two halves, shields with their delay and an axe's disabling,
 the totem), knocked back with their client told, by every source of the first hours:

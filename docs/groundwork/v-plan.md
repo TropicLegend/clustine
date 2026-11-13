@@ -1,13 +1,13 @@
-# V: survival mode, planned
+# V: survival mode implementation plan
 
 **Agreed by the owner on 2026-11-03**, with every recommendation of section 11 but one:
 formats rise at each step that needs it, not once in V1 (question 8; section 7 says
-how). Drafted on 2026-11-02 and revised the same day after an independent review and a
-second reading (section 12 lists each finding and what changed for it). It is the first item of the parity matrix's "In short", the
-largest gap a player meets, and the roadmap's next plan after phase P ("survival with the
-rest of parity by the matrix's tiers, written and agreed with the owner before it is
-built"). Its steps are V1 to V13; the names are new (`n10-brief.md`'s V1 to V3 were
-subagents' batches inside N10 and are done).
+how). V1 to V4 are built; V5 (furnaces) is next. The current status is in
+[`../current-state.md`](../current-state.md). Drafted on 2026-11-02 and revised the same
+day after an independent review and a second reading (section 12 lists each finding and
+what changed for it). Survival is the first item of the parity matrix's "In short" and
+the largest remaining gap a player meets. Its steps are V1 to V13; the names are new
+(`n10-brief.md`'s V1 to V3 were subagents' batches inside N10 and are done).
 
 Marks, as `n-plan.md` and `p-plan.md` use them:
 
