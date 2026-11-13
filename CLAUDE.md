@@ -1,18 +1,20 @@
 # Working on Clustine
 
-Clustine is a from-scratch Minecraft: Java Edition server (26.3, protocol 777) in Rust that
-simulates one world on several worker processes. Read `README.md` and
-`docs/architecture.md` first, then `docs/roadmap.md`, which has what is done, the agreed
-plan for the current milestone and **where it stands** (the first section of that file).
-The decision records in `docs/adr/` say why things are the way they are.
+Read `AGENTS.md` for instructions shared by all coding agents. Clustine is a from-scratch
+Minecraft: Java Edition server (26.3, protocol 777) in Rust that simulates one world on
+several worker processes. Start task context with `docs/current-state.md`, then read the
+relevant part of `README.md`, `docs/architecture.md`, an ADR, or a plan. `docs/roadmap.md`
+is a long development history; do not read it end to end for routine tasks.
 
 ## How the owner wants the work done
 
 - **Plan carefully before a milestone**: a written plan, the open questions asked, the
   plan agreed, then built. An independent reviewer goes over a design before it is built;
   that has found real defects every time.
-- **One verified commit per step, straight to `main`, pushed.** No pull requests.
-- **Use subagents to go faster, without them getting in each other's way.** Fix the
+- **When a task authorizes commits**, the owner's preference is one verified commit per
+  step, straight to `main`, pushed. No pull requests.
+- **Use subagents when the task and available tools permit it**, without them getting in
+  each other's way. Fix the
   shared types and messages first; give each subagent crates of its own (and a worktree
   of its own) and a brief that states the interface, the tests expected and how to
   verify; they do not commit to `main`, push, download, or start Docker, kind or the
@@ -23,10 +25,9 @@ The decision records in `docs/adr/` say why things are the way they are.
 - **Do not defer what a player would notice within minutes.** The owner judges by playing
   with real clients. A gap that shows only under rare timing or only in operation can
   wait; a seam in ordinary play cannot, whatever a later milestone will do about it.
-- **After each of M3's three phases the owner tries it with real clients.** Since
-  2026-10-08 the work does not wait for that: what to try is written into the roadmap
-  (its first section, "Where the work stands", says where) and the next phase begins.
-  The owner asked for as much as possible to be done without them.
+- **Keep the owner unblocked.** For a change that needs a real-client check, write the
+  exact steps in the current status or phase plan and continue independent work where
+  possible. The current phase and next step live in `docs/current-state.md`.
 - Downloads: since 2026-10-10 the owner allows downloading what the work needs on
   their machine ("You can generally download stuff you need"): a JDK, reference clones
   of other projects, crates, the Mojang server jar (the owner has agreed to the
@@ -36,8 +37,9 @@ The decision records in `docs/adr/` say why things are the way they are.
 
 ## Checking work
 
-Judge by exit codes. Piping `cargo` into `grep` or `tail` hides them and has let a red
-commit through once.
+For a change-sized verification loop, see `docs/agent-workflow.md`. When running checks,
+judge by exit codes: piping `cargo` into `grep` or `tail` hides them and has let a red
+commit through once. The full local checks are:
 
 ```bash
 cargo fmt --all --check
@@ -48,9 +50,9 @@ CLUSTINE_TEST_PINS=0,4 cargo test -p clustine --locked
 
 The last line runs the end-to-end tests on a world divided into three regions. The tests
 of chaos and of moves divide their worlds themselves and run only in the third line. CI
-runs all four, and names failed tests on the run's summary page (readable without
-signing in through the check run's annotations). `tools/check.sh` runs the four, the two
-test runs at the same time, and `cargo datagen --check` where the jar is in
+runs these checks in parallel jobs and names failed tests on the run's summary page.
+`tools/check.sh` runs the checks, the two test runs at the same time, and
+`cargo datagen --check` where the jar is in
 `target/datagen/`, and says which failed; on the owner's machine (twelve processors,
 2026-11-02) the first run takes about 70 minutes and the pinned run, held to a third of
 the processors so that the two do not overload the machine together, about 20 beside

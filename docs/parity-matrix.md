@@ -1,9 +1,8 @@
 # Vanilla parity matrix
 
 Tracks how closely Clustine matches the vanilla server. This is the main place to find
-something to work on. Brought up to date on 2026-11-02, row by row against the code and
-the tests at commit `97c3bc4` (phases N and P done), with the evidence in each row;
-since then each step of V updates its rows.
+something to work on. Updated through survival phase V4 on 2026-11-13, row by row against
+the code and tests, with the evidence in each row.
 
 Target Minecraft version: **26.3** (protocol 777).
 
@@ -33,10 +32,10 @@ What is missing, by what a player would notice first:
    illusioner, the giant and the sulfur cube.
 7. **Online mode**: offline login only, no encryption.
 
-The order of the work after phase P is in the roadmap's first section: what phase P
-left named, then survival with the rest of this matrix. Survival is planned in
-[v-plan.md](groundwork/v-plan.md) (drafted and reviewed once on 2026-11-02, steps V1 to V13, to be read again
-and agreed with the owner before it is built).
+Survival is in progress under [v-plan.md](groundwork/v-plan.md): V1 to V4 are built and
+V5 (furnaces) is next. After V5, the plan covers V6 to V13. See
+[`current-state.md`](current-state.md) for the short project status and this matrix for
+the remaining parity gaps and evidence.
 
 ## Status values
 

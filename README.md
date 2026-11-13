@@ -4,22 +4,24 @@ A from-scratch Minecraft: Java Edition server that simulates **one world across 
 instances**. Adding instances adds compute and memory to the same world rather than
 creating more separate servers.
 
-> **Status: pre-alpha.** Players play a creative world with its overworld, Nether and
-> End, flat or with `--seed` the game's own land for that seed, block for block. Blocks
+> **Status: pre-alpha.** Players play a creative world by default with its overworld,
+> Nether and End, flat or with `--seed` the game's own land for that seed, block for
+> block. Blocks
 > are placed, used and updated by vanilla's rules: water and lava flow, sand falls,
 > plants grow by their light, redstone runs with the game's order of updates. Animals,
 > monsters and villagers live with the game's AI and spawn by its rules; villagers trade
 > and raids come; minecarts, boats and mounts ride; containers open with the game's
 > menus. The Nether's portals and the End's dragon fight, gateways and credits are
 > built. Most of this is compared with Mojang's own server ([parity
-> matrix](docs/parity-matrix.md)). Not yet: survival mode (health, hunger, breaking
-> times and drops, crafting, smelting), chat and commands, weather, and online mode.
+> matrix](docs/parity-matrix.md)). Survival is in progress: game modes, digging, crafting,
+> health, hunger, damage, death, and respawn are built; furnaces and other parity gaps
+> remain. Chat and commands, weather, and online mode are also not built.
 > The world is simulated in regions that follow the players, split when a group goes
 > off on its own and merged when it comes back, and shared out among several worker
 > processes, with no seam where regions meet; a worker or the world store can die
 > without anyone being disconnected or losing anything they were shown. A player who
 > leaves comes back where they left. There is one coordinator. See the
-> [roadmap](docs/roadmap.md), whose first section says where the work stands.
+> [current status](docs/current-state.md) and the [roadmap](docs/roadmap.md).
 
 ## Goals
 
@@ -38,8 +40,10 @@ creating more separate servers.
 
 ## Documentation
 
+- [Current status](docs/current-state.md)
 - [Architecture](docs/architecture.md)
 - [Roadmap](docs/roadmap.md)
+- [Agent verification workflow](docs/agent-workflow.md)
 - [Parity matrix](docs/parity-matrix.md)
 - [Library evaluation](docs/library-evaluation.md)
 - [World format](docs/world-format.md)
