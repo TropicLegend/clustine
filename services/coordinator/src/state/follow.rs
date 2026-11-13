@@ -1081,7 +1081,7 @@ impl Coordinator {
                 continue;
             }
             let empty = self.without_players_since(region, now);
-            if !empty.is_some_and(|since| now.saturating_duration_since(since) >= empty_for) {
+            if empty.is_none_or(|since| now.saturating_duration_since(since) < empty_for) {
                 continue;
             }
             // The home of its dimension, then the regions of its dimension with a lower

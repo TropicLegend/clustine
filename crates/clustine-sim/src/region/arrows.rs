@@ -1297,7 +1297,7 @@ impl Region {
                     .copied_entity(target.key)
                     .is_some_and(|(_, record)| record.riding.vehicle.is_some());
                 self.send_on_entity(target.key, EntityUse::Hurt(Box::new(hurt)));
-                !(enderman && !rides)
+                !enderman || rides
             }
             // A player is never an enderman: the bounce follows whether or not the hurt
             // took, here or (sent to their region) across a line.

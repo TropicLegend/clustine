@@ -363,7 +363,7 @@ fn decay_penalty(pos: BlockPos, origin: BlockPos, charge: i32) -> i32 {
 /// sensors and shriekers near.
 fn can_place_growth(level: &mut Level<'_>, pos: BlockPos) -> bool {
     let above = level.block(relative(pos, Face::Up));
-    if !above.props().is_air() && !(same_block(above, blocks::WATER) && still_water(above)) {
+    if !(above.props().is_air() || same_block(above, blocks::WATER) && still_water(above)) {
         return false;
     }
     let mut growths = 0;

@@ -407,13 +407,6 @@ pub(crate) fn experience(reward: i32, mob: &Mob, draws: &mut Random) -> i32 {
 
 /// `AbstractIllager.IllagerArmPose`: how a client draws an illager's arms, which it
 /// derives from what it is sent (nothing of it is sent itself).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "what a client derives; the server only keeps what it derives it from"
-    )
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ArmPose {
     Crossed,

@@ -730,8 +730,8 @@ fn the_nether_has_the_five_climates_the_game_gives_it() {
         assert_eq!(biomes.entries[usize::from(entry.biome)], biome);
         assert_eq!(entry.bounds[0], [temperature, temperature], "{biome}");
         assert_eq!(entry.bounds[1], [humidity, humidity], "{biome}");
-        for parameter in 2..6 {
-            assert_eq!(entry.bounds[parameter], [0, 0], "{biome}");
+        for bounds in &entry.bounds[2..6] {
+            assert_eq!(bounds, &[0, 0], "{biome}");
         }
         assert_eq!(entry.offset, offset, "{biome}");
     }

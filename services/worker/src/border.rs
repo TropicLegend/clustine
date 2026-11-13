@@ -388,7 +388,7 @@ impl Border {
     /// reshape ends soon and has no such need: what was in stays in, nothing more goes
     /// in.
     fn handable(&self, copy: &Copy) -> bool {
-        if !copy.base.as_ref().is_some_and(|base| base.chunk.is_some()) {
+        if copy.base.as_ref().is_none_or(|base| base.chunk.is_none()) {
             return false;
         }
         match copy.used {

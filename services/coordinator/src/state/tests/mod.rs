@@ -3748,7 +3748,7 @@ fn epochs_only_rise_and_nothing_is_shared_whatever_workers_do() {
                 .filter(|(_, release)| release.mover.is_none())
                 .filter(|(region, release)| {
                     let before = releases_before.get(region);
-                    !before.is_some_and(|before| before.epoch == release.epoch)
+                    before.is_none_or(|before| before.epoch != release.epoch)
                 })
                 .partition(|(_, release)| leaves(&release.from));
 

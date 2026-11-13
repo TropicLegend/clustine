@@ -3011,13 +3011,14 @@ impl RegionRunner {
         let taken = output.taken;
         let arrivals = output.arrivals;
         let arrivals_taken = output.arrivals_taken;
-        let needs_commit = !(unchanged && output.stays.is_empty())
-            || !taken.is_empty()
-            || !arrivals.is_empty()
-            || !arrivals_taken.is_empty()
-            || !output.travellers.is_empty()
-            || self.border.has_made()
-            || self.border.commits_every_tick();
+        let needs_commit = !(unchanged
+            && output.stays.is_empty()
+            && taken.is_empty()
+            && arrivals.is_empty()
+            && arrivals_taken.is_empty()
+            && output.travellers.is_empty()
+            && !self.border.has_made()
+            && !self.border.commits_every_tick());
         if needs_commit {
             let blocks = changes
                 .iter()

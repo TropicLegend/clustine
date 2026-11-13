@@ -520,8 +520,8 @@ fn the_evoker_registers_casting_its_three_spells_and_its_targets_in_the_game_s_o
         setup.goals[6].slot.flags(),
         crate::mobs::ai::selector::flags::MOVE | crate::mobs::ai::selector::flags::LOOK
     );
-    for spell in 9..12 {
-        assert_eq!(setup.goals[spell].slot.flags(), 0);
+    for spell in setup.goals.iter().skip(9).take(3) {
+        assert_eq!(spell.slot.flags(), 0);
     }
 }
 

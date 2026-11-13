@@ -411,7 +411,7 @@ fn shake(tick: &mut MobTick<'_>) {
             own.shake = 0.0;
             own.shake_before = 0.0;
         }
-    } else if (own.wet || own.shaking) && own.shaking {
+    } else if own.shaking {
         if own.shake == 0.0 {
             let pitch = (tick.draws.next_float() - tick.draws.next_float()) * 0.2 + 1.0;
             tick.out.events.push(Event::Sound {

@@ -4743,10 +4743,10 @@ impl Run {
 
     /// Whether the worker runs the region with that epoch and its handle is good.
     fn runs(&self, name: &str, id: u32, epoch: u64) -> Result<(), Off> {
-        if !self.workers[name]
+        if self.workers[name]
             .runs
             .get(&id)
-            .is_some_and(|held| held.epoch == epoch)
+            .is_none_or(|held| held.epoch != epoch)
         {
             Err(Off::NotRunning)
         } else if !self.store.holds(id, epoch, name) {

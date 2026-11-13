@@ -10,7 +10,6 @@ license = "AGPL-3.0-or-later"
 publish = false
 
 [workspace.dependencies]
-clustine = { path = "bin/clustine" }
 clustine-blocks = { path = "crates/clustine-blocks" }
 clustine-botswarm = { path = "tools/botswarm" }
 clustine-coordinator = { path = "services/coordinator" }
